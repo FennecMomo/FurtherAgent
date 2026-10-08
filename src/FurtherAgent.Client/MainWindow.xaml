@@ -1,0 +1,58 @@
+<Window x:Class="FurtherAgent.Client.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="FurtherAgent · 0.1.1" Width="1320" Height="860" MinWidth="1080" MinHeight="700" Background="#F3F6FB" FontFamily="Microsoft YaHei UI" FontSize="13" Closing="Window_Closing">
+  <Grid Margin="24">
+    <Grid.RowDefinitions><RowDefinition Height="64"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel><TextBlock Text="FurtherAgent" FontSize="25" FontWeight="Bold"/><TextBlock Text="让另一台电脑上的工作，继续在这里。   /   0.1.1 中继验证版" Foreground="#64748B" Margin="0,5,0,0"/></StackPanel>
+    <Grid Grid.Row="1">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="270"/><ColumnDefinition Width="245"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Border Background="White" CornerRadius="10" Padding="18" Margin="0,0,14,0">
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock Text="01  中继服务" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+            <TextBlock Text="服务端地址"/><TextBox x:Name="ServerUrl" Text="http://127.0.0.1:47320"/>
+            <TextBlock Text="02  共享本机 · B" FontSize="16" FontWeight="SemiBold" Margin="0,12,0,12"/>
+            <TextBlock Text="打开本机 Codex，开启共享后将授权码提供给 A。" TextWrapping="Wrap" Foreground="#64748B" Margin="0,0,0,8"/>
+            <Button x:Name="ShareButton" Content="开启共享" Click="Share_Click" Background="#DCECE7"/>
+            <TextBlock Text="本机授权码" Foreground="#64748B" Margin="0,12,0,0"/>
+            <TextBox x:Name="LocalCode" IsReadOnly="True" Text="尚未开启共享" FontFamily="Consolas" FontSize="16"/>
+            <Button x:Name="CopyCodeButton" Content="复制授权码" Click="CopyCode_Click" IsEnabled="False"/>
+            <TextBlock x:Name="HostStatus" Text="在本机打开 Codex，再开启共享。" TextWrapping="Wrap" Foreground="#64748B"/>
+            <Separator Margin="0,20,0,15"/>
+            <TextBlock Text="03  连接远端 · A" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+            <TextBlock Text="对方显示的授权码"/><TextBox x:Name="RemoteCode"/>
+            <WrapPanel><Button x:Name="ConnectButton" Content="连接" Click="Connect_Click"/><Button x:Name="DisconnectButton" Content="断开" Click="Disconnect_Click" IsEnabled="False"/></WrapPanel>
+            <TextBlock x:Name="RemoteStatus" Text="尚未连接" Margin="0,8,0,0" TextWrapping="Wrap" Foreground="#64748B"/>
+            <TextBlock Text="授权码允许控制本机 Codex。仅分享给可信任的人；停止共享会立即断开远程端。" TextWrapping="Wrap" Foreground="#64748B" Margin="0,20,0,0" FontSize="12"/>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+      <Border Grid.Column="1" Background="White" CornerRadius="10" Padding="14" Margin="0,0,14,0">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top">
+            <TextBlock Text="远端会话" FontSize="16" FontWeight="SemiBold"/>
+            <ComboBox x:Name="AgentPicker" Margin="0,12,0,8" Padding="6" IsEnabled="False"><ComboBoxItem Content="Codex 桌面" IsSelected="True"/></ComboBox>
+            <TextBlock Text="按会话标题搜索" Foreground="#64748B"/><TextBox x:Name="SearchBox" TextChanged="Search_Changed"/>
+            <Button x:Name="RefreshButton" Content="刷新会话" Click="Refresh_Click" IsEnabled="False"/>
+            <TextBlock Text="选择已有会话。如连接失败，请先在 B 桌面打开该会话。" TextWrapping="Wrap" Foreground="#64748B" FontSize="12" Margin="0,8,0,12"/>
+          </StackPanel>
+          <ListBox x:Name="SessionList" BorderThickness="0" SelectionChanged="Session_Changed" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate><DataTemplate><StackPanel Margin="3,8"><TextBlock Text="{Binding Title}" TextWrapping="Wrap" FontWeight="SemiBold"/><TextBlock Text="{Binding UpdatedAt}" Foreground="#64748B" FontSize="10" Margin="0,5,0,0"/></StackPanel></DataTemplate></ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+      </Border>
+      <Border Grid.Column="2" Background="White" CornerRadius="10" Padding="18">
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <StackPanel Margin="0,0,0,12"><TextBlock x:Name="SessionTitle" Text="选择远端会话，继续工作" FontSize="19" FontWeight="SemiBold" TextWrapping="Wrap"/><TextBlock x:Name="SessionMeta" Text="连接后显示原桌面会话的消息与执行状态" Foreground="#64748B" TextWrapping="Wrap" Margin="0,6,0,0"/></StackPanel>
+          <TextBox Grid.Row="1" x:Name="Transcript" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" BorderThickness="0" Background="#F8FAFC" FontSize="13" Text="远程会话的消息将在这里显示。"/>
+          <Border Grid.Row="2" x:Name="PromptBorder" Visibility="Collapsed" Background="#FFF6DE" Padding="12" Margin="0,4,0,10" MaxHeight="250"><ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel x:Name="PromptPanel"/></ScrollViewer></Border>
+          <StackPanel Grid.Row="3">
+            <TextBox x:Name="Composer" Height="85" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" IsEnabled="False" ToolTip="输入消息，点击发送；执行中发送会作为补充指令。"/>
+            <DockPanel><Button x:Name="SendButton" DockPanel.Dock="Right" Content="发送消息" Click="Send_Click" Background="#2857C5" Foreground="White" IsEnabled="False"/><Button x:Name="StopButton" DockPanel.Dock="Right" Content="停止任务" Click="Stop_Click" IsEnabled="False"/><TextBlock Text="原会话 · 原项目 · 原工具环境" VerticalAlignment="Center" Foreground="#64748B" FontSize="12"/></DockPanel>
+          </StackPanel>
+        </Grid>
+      </Border>
+    </Grid>
+    <TextBlock Grid.Row="2" x:Name="StatusBar" Text="就绪。双方连接同一个中继服务，使用授权码连接，无需填写客户端 IP 或开放入站端口。" TextWrapping="Wrap" Foreground="#52627B" Margin="0,12,0,0"/>
+  </Grid>
+</Window>

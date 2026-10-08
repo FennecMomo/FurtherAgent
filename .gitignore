@@ -1,0 +1,51 @@
+# .NET / WPF build output
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+[Tt]est[Rr]esults/
+*.trx
+*.coverage
+*.coveragexml
+
+# Visual Studio user settings and caches
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+
+# JetBrains Rider local settings
+.idea/
+*.sln.iml
+*.DotSettings.user
+
+# NuGet-generated files and legacy package restore directory
+packages/
+*.nupkg
+*.snupkg
+*.nuget.props
+*.nuget.targets
+
+# Local publish settings and application secrets
+*.pubxml.user
+*.pfx
+*.p12
+.env
+.env.*
+!.env.example
+appsettings.Local.json
+appsettings.*.Local.json
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+~$*
+
+# OS-generated files
+Thumbs.db
+Desktop.ini
+.DS_Store

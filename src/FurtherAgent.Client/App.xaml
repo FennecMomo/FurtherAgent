@@ -1,0 +1,15 @@
+<Application x:Class="FurtherAgent.Client.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" StartupUri="MainWindow.xaml">
+  <Application.Resources>
+    <SolidColorBrush x:Key="Ink" Color="#192438" />
+    <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource Ink}" /></Style>
+    <Style TargetType="Button">
+      <Setter Property="Padding" Value="14,8" /><Setter Property="Margin" Value="0,4,8,4" />
+      <Setter Property="Background" Value="#E8EDF6" /><Setter Property="Foreground" Value="#243B64" />
+      <Setter Property="BorderThickness" Value="0" /><Setter Property="Cursor" Value="Hand" />
+    </Style>
+    <Style TargetType="TextBox">
+      <Setter Property="Padding" Value="8" /><Setter Property="Margin" Value="0,5,0,12" />
+      <Setter Property="BorderBrush" Value="#CBD5E1" /><Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+  </Application.Resources>
+</Application>
