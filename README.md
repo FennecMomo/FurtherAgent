@@ -2,7 +2,39 @@
 
 FurtherAgent 是基于 **WPF** 的 Windows 远程 Agent 客户端。A 输入 B 显示的授权码，通过常开的服务端连接 B 上的 Codex 桌面会话，继续原项目中的工作。
 
-当前版本：**0.1.1，中继流程验证版**。本版只接入 Codex；DeepseekHarness 后续通过独立适配器接入，不限定 MCP。
+当前版本：**0.5.0，会话展示与原生归档**。新增原生 WPF Markdown、图片粘贴与文件预览、可折叠工具详情、Hermes 原生归档/按 ID 恢复。保留共享文件传输和 TLS 有限重试。当前能力及实机验收见 [0.5.0 报告](docs/Features-0.5.0-Validation.md)。DeepseekHarness 后续通过独立适配器接入，不限定 MCP。
+
+Hermes 的部署、只读探测、授权码连接和能力边界见 [Hermes 接入与联调](docs/Hermes.md)。Linux 接入端提供自包含包，无需在服务器安装 .NET 10。
+
+服务器第一阶段已反馈：Linux 启动、鉴权后的能力探测和 25 条会话列表读取成功，见 [阶段验证记录](docs/Hermes-Validation.md)。0.4.0 后台 CLI 已在独立测试会话完成真实文件任务，见 [文件实机联调记录](docs/File-Transfer-Live-Validation.md)；停止、审批和其他入口运行接管不属于本次通过范围。
+Linux 中继另用 `scripts/Publish-Relay.ps1` 生成自包含包，临时启动及公网接入前提见 [中继部署说明](docs/Relay.md)。
+
+## 0.4.0 双向文件
+
+WPF 的「添加文件」「会话文件 / 下载」与 CLI 的 upload/files/download/send --file 共用 Core 文件传输服务。文件经中继分块传送，上传与下载均校验 SHA256；Agent 在专用会话输出目录交付产物。需更新接入端至 0.4.0，现有中继不必重启。详见 [文件传输说明](docs/File-Transfer.md)。
+
+## 0.3.0 使用入口
+
+- 主界面：左侧搜索、刷新及「＋ 新建会话」，右侧消息、确认和输入框；Ctrl+Enter 发送，运行中发送为追加指令。
+- 「设置」：中继地址、本机 Codex 共享、授权码和断开连接。地址保存在 `%LocalAppData%/FurtherAgent/settings.json`；不保存授权码。环境变量 `FURTHERAGENT_SERVER` 在启动时优先于保存值。
+- 「连接设备」：输入授权码，弹窗会显示当前中继地址。默认预置 `https://furtheragent.fennecmomo.top`。
+- 「模型与模式」：在打开会话后使用，修改成功后供后续轮次使用。实际执行权限仍由 Agent 管理。
+
+| 功能 | Hermes 接入端 0.3.0 | Codex 桌面适配 |
+| --- | --- | --- |
+| 新建空会话 | 支持；固定请求 ID 重试避免重复创建 | 尚不支持；需在远端桌面创建后刷新 |
+| 切换模型 | 原生模型列表、提供商和会话模型锁定 | 填写远端可用的模型 ID，实验性设置接口 |
+| Build / Plan | 仅 Build；原生 HTTP 接口未确认 Plan 能力 | 原生 default / plan 协作模式，实验性 |
+| 会话草稿 | 窗口内切换会话时保留 | 同左 |
+| 复制对话、停止、审批 | 支持；控制范围限本接入端发起的运行 | 支持已有适配类型 |
+
+旧 0.2.0 接入端仍可读历史、发送及停止，但不会声明新功能。升级 Windows 客户端和 Hermes 接入端后才会启用新建与模型设置；中继协议没有变化，已有 0.2.0 中继可继续运行。**不要仅替换正在运行的 Linux 二进制文件**；等待接入端运行结束后，停止该接入端、解压新目录再启动，并使用新授权码连接。详见 [0.3.0 验收说明](docs/Session-UI-0.3.0.md)。
+
+## 后台 CLI 联调
+
+新增独立 `FurtherAgent.Cli`，在后台通过中继配对、读取/新建会话、发送、观察、停止、审批和修改模型。不启动桌面窗口，不使用 WPF 设置。使用 `scripts/Publish-Cli.ps1` 生成自包含包，详见 [CLI 使用说明](docs/CLI.md)。
+
+六项待扩展功能的难度和接口证据见 [可行性排查](docs/Feature-Feasibility.md)；无 SSH 时可将 [独立接入端准备指令](docs/Hermes-Integration-Handoff.md) 转给服务器 Hermes。
 
 ## 技术方向
 
@@ -47,8 +79,8 @@ dotnet run --project src/FurtherAgent.Client
 本机测试时，两端服务地址均为 `http://127.0.0.1:47320`：
 
 1. 在 B 打开 Codex 桌面，使用与 FurtherAgent 相同的 Windows 用户。
-2. B 点击「开启共享」，复制服务端生成的授权码。
-3. A 输入该授权码并连接，选择远端会话。
+2. B 进入「设置」，点击「开启共享」，复制服务端生成的授权码。
+3. A 点击「连接设备」，输入该授权码并连接，选择远端会话。
 4. 若会话未连接成功，先在 B 的 Codex 桌面打开该会话，再在 A 重新选择。
 5. A 可以查看输出、发送消息、停止任务、回答支持的确认。执行中的消息作为补充指令。
 
@@ -86,7 +118,7 @@ dotnet tests/FurtherAgent.SmokeTests/bin/Debug/net10.0/FurtherAgent.SmokeTests.d
 powershell -ExecutionPolicy Bypass -File scripts/Publish.ps1
 ```
 
-生成 `artifacts/release/0.1.1` 目录与 ZIP，包含客户端、服务端和说明。该包依赖 .NET 10：客户端机器安装 Desktop Runtime，服务端机器安装 ASP.NET Core Runtime。脚本只在本地构建与打包，不提交 Git、不推送、不创建 GitHub Release。
+生成 `artifacts/release/0.2.0` 目录与 ZIP，包含客户端、服务端和说明。该包依赖 .NET 10：客户端机器安装 Desktop Runtime，服务端机器安装 ASP.NET Core Runtime。脚本只在本地构建与打包，不提交 Git、不推送、不创建 GitHub Release。
 
 ## 版本规则
 

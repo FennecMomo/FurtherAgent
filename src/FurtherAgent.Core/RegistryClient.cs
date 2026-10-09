@@ -6,6 +6,7 @@ namespace FurtherAgent.Core;
 public sealed class RegistryClient : IDisposable
 {
     private readonly HttpClient http;
+    public event Action<string, int, Exception>? ConnectionRetry;
     public RegistryClient(string url)
     {
         var uri = new Uri(url.TrimEnd('/') + '/');
@@ -15,12 +16,18 @@ public sealed class RegistryClient : IDisposable
     }
     public async Task<T> PostAsync<T>(string path, object value, CancellationToken ct = default)
     {
-        using var response = await http.PostAsJsonAsync(path, value, Json.Options, ct);
+        using var response = await TlsHandshakeRetry.RunAsync(
+            () => http.PostAsJsonAsync(path, value, Json.Options, ct),
+            (attempt, error) => ConnectionRetry?.Invoke(path, attempt, error), ct);
         if (!response.IsSuccessStatusCode)
             throw new HttpRequestException($"中继服务 {response.StatusCode}：{await response.Content.ReadAsStringAsync(ct)}", null, response.StatusCode);
         return (await response.Content.ReadFromJsonAsync<T>(Json.Options, ct))!;
     }
     public async Task<WebSocketTransport> OpenSocketAsync(string path, CancellationToken ct)
+        => await TlsHandshakeRetry.RunAsync(() => OpenSocketOnceAsync(path, ct),
+            (attempt, error) => ConnectionRetry?.Invoke(path, attempt, error), ct);
+
+    private async Task<WebSocketTransport> OpenSocketOnceAsync(string path, CancellationToken ct)
     {
         var uri = new UriBuilder(new Uri(http.BaseAddress!, path));
         uri.Scheme = uri.Scheme == "https" ? "wss" : "ws";

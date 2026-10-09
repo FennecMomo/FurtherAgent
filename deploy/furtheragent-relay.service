@@ -1,0 +1,16 @@
+[Unit]
+Description=FurtherAgent relay
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/furtheragent-relay
+ExecStart=%h/.local/share/furtheragent-relay/FurtherAgent.Server --urls http://127.0.0.1:47320
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

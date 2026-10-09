@@ -11,11 +11,12 @@ public sealed class DeviceHost : IAsyncDisposable
     private Task? supervisor;
     private WebSocketTransport? control;
     private string name = "";
+    private readonly Lazy<FileTransferStore> files;
     public DeviceLease? Lease { get; private set; }
     public event Action<string>? Status;
     public event Action<string>? CodeChanged;
-    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null)
-    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); }
+    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null)
+    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); files = new(() => new FileTransferStore(filesRoot)); }
 
     public async Task StartAsync(string name, CancellationToken ct = default)
     {
@@ -102,11 +103,39 @@ public sealed class DeviceHost : IAsyncDisposable
             var updates = Channel.CreateBounded<SessionView>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
             adapter.Changed += view => updates.Writer.TryWrite(view);
             adapter.Faulted += message => { Status?.Invoke(message); socket.Abort(); };
+            string? attachedSession = null;
+            async Task<JsonNode> Attach(string id, CancellationToken token)
+            {
+                var view = await adapter.AttachAsync(id, token); attachedSession = view.Id; return Json.Node(view);
+            }
+            string FileSession(JsonNode? args)
+            {
+                string id = args?["session"]?.ToString() ?? "";
+                if (id.Length == 0 || id != attachedSession) throw new IOException("请先打开对应会话再操作文件。");
+                return id;
+            }
+            async Task<JsonNode?> FileOperation(string method, JsonNode? args, CancellationToken token)
+            { _ = FileSession(args); return await files.Value.HandleAsync(method, args!, token); }
+            async Task<JsonNode?> SendFiles(JsonNode? args, CancellationToken token)
+            {
+                string id = FileSession(args), text = args!["text"]?.ToString() ?? "";
+                if (text.Length > 100000) throw new ArgumentException("消息过长。");
+                var ids = args["files"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
+                if (string.IsNullOrWhiteSpace(text) && ids.Length == 0) throw new ArgumentException("消息不能为空。");
+                string composed = await files.Value.ComposeMessageAsync(id, text, ids, token);
+                await adapter.SendAsync(composed, token); return Json.Node(new { ok = true });
+            }
             peer.Handler = async (method, args, token) => method switch
             {
-                "agents" => Json.Node(new[] { adapter.Info }),
+                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = true } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
-                "attach" => Json.Node(await adapter.AttachAsync(args!["id"]!.GetValue<string>(), token)),
+                "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
+                "send-files" => await SendFiles(args, token),
+                _ when method.StartsWith("files/", StringComparison.Ordinal) => await FileOperation(method, args, token),
+                "create" => Json.Node(await adapter.CreateAsync(args!["id"]!.GetValue<string>(), args["title"]?.ToString() ?? "新会话", token)),
+                "settings" => Json.Node(await adapter.SettingsAsync(token)),
+                "archive" => await Execute(() => adapter.ArchiveAsync(FileSession(args), args!["archived"]!.GetValue<bool>(), token)),
+                "configure" => await Execute(() => adapter.ConfigureAsync(args!["model"]?.ToString() ?? "", args["provider"]?.ToString() ?? "", args["mode"]?.ToString() ?? "default", token)),
                 "send" => await Execute(() => adapter.SendAsync(args!["text"]!.GetValue<string>(), token)),
                 "interrupt" => await Execute(() => adapter.InterruptAsync(token)),
                 "respond" => await Execute(() => adapter.RespondAsync(args!["id"]!.GetValue<string>(), args["decision"]?.GetValue<string>() ?? "", args["response"], token)),
@@ -134,6 +163,7 @@ public sealed class DeviceHost : IAsyncDisposable
     {
         lifetime.Cancel(); control?.Abort();
         if (supervisor is not null) await supervisor;
+        if (files.IsValueCreated) files.Value.Dispose();
         if (control is not null) await control.DisposeAsync();
         if (Lease is not null)
             try { await registry.PostAsync<JsonNode>("unregister", new LeaseProof(Lease.Code, Lease.Secret)); } catch { }

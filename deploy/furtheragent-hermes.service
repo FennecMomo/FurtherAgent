@@ -1,0 +1,16 @@
+[Unit]
+Description=FurtherAgent Hermes connector
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.local/share/furtheragent
+ExecStart=%h/.local/share/furtheragent/FurtherAgent.Host
+EnvironmentFile=%h/.config/furtheragent/host.env
+# First version keeps run ownership in memory. Do not silently restart during a run.
+Restart=no
+TimeoutStopSec=30
+UMask=0077
+
+[Install]
+WantedBy=default.target

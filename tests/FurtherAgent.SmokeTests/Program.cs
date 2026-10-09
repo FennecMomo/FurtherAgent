@@ -26,6 +26,7 @@ int FreePort()
     var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
     int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port;
 }
+await TlsRetryChecks.Run(Check);
 using (var stream = new MemoryStream())
 {
     await Frames.WriteAsync(stream, Json.Node(new { text = "你好，Codex 🚀" }), default);
@@ -67,6 +68,9 @@ try
 {
     await WaitForServer();
     using var registry = new RegistryClient($"http://127.0.0.1:{serverPort}");
+    await FileChecks.RunAsync(registry, Check);
+    await HermesChecks.RunAsync(registry, Check);
+    await CliChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
     await Reject(async () => await registry.PostAsync<PairResult>("pair", new PairRequest("INVALID")), "unknown authorization code rejected");
     await using (var host = new DeviceHost(registry, () => new TestAdapter()))
     {
@@ -88,14 +92,22 @@ try
             Check((await raw.ReadAsync(timeout.Token))["ok"]?.GetValue<bool>() == true, "relay negotiates both outbound sockets");
             await using var replay = await registry.OpenSocketAsync("control", timeout.Token);
             await replay.WriteAsync(Json.Node(new { ticket = pair.Ticket }), timeout.Token);
-            Check((await replay.ReadAsync(timeout.Token))["error"] is not null, "pairing ticket cannot be replayed");
+            // Rejection can arrive as JSON or immediate socket close: the server aborts
+            // rejected sockets, so delivery of its final error frame is not guaranteed.
+            bool rejectedReplay;
+            try { rejectedReplay = (await replay.ReadAsync(timeout.Token))["error"] is not null; }
+            catch (System.Net.WebSockets.WebSocketException) { rejectedReplay = true; }
+            Check(rejectedReplay, "pairing ticket cannot be replayed");
         }
         await Task.Delay(300);
         await using (var forged = await registry.OpenSocketAsync("join", default))
         {
             await forged.WriteAsync(Json.Node(new { code = originalCode, secret = "wrong", sessionId = "fake" }), default);
             using var timeout = new CancellationTokenSource(5000);
-            Check((await forged.ReadAsync(timeout.Token))["error"] is not null, "unauthorized B data socket rejected");
+            bool rejectedJoin;
+            try { rejectedJoin = (await forged.ReadAsync(timeout.Token))["error"] is not null; }
+            catch (System.Net.WebSockets.WebSocketException) { rejectedJoin = true; }
+            Check(rejectedJoin, "unauthorized B data socket rejected");
         }
         await using var remote = new RemoteDevice();
         await remote.ConnectAsync(registry, originalCode);

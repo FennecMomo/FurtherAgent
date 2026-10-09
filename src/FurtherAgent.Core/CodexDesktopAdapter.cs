@@ -20,7 +20,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private long revision;
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
-    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 保留原会话与工具 · 需在 B 打开 Codex");
+    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 保留原会话与工具 · 需在 B 打开 Codex", false, true);
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
     public CodexDesktopAdapter(string? codexHome = null) => home = codexHome ??
@@ -159,6 +159,37 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         if (resync) { await FollowAsync(false, lifetime.Token); await FollowAsync(true, lifetime.Token); return; }
         if (view is not null) { snapshot?.TrySetResult(view); Changed?.Invoke(view); }
     }
+    public Task<AgentSettings> SettingsAsync(CancellationToken ct)
+    {
+        lock (gate)
+        {
+            var value = state ?? throw new IOException("请先打开会话。");
+            string model = Text(value["latestCollaborationMode"]?["settings"]?["model"] ?? value["latestModel"]);
+            return Task.FromResult(new AgentSettings(model, Text(value["modelProvider"]),
+                Text(value["latestCollaborationMode"]?["mode"]) is "plan" ? "plan" : "default", [], true, true,
+                "实验性桌面接口：填写远端可用的模型 ID；Build / Plan 使用 Codex 原生协作模式，权限仍由远端控制。空闲时修改，后续轮次生效。"));
+        }
+    }
+    public async Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct)
+    {
+        JsonNode collaboration;
+        string id;
+        lock (gate)
+        {
+            var value = state ?? throw new IOException("请先选择会话。");
+            if (ToView(value).Status == "active") throw new IOException("请等待当前任务结束后修改模型或模式。");
+            if (string.IsNullOrWhiteSpace(model) || mode is not ("default" or "plan")) throw new ArgumentException("模型或模式无效。");
+            id = sessionId!;
+            collaboration = value["latestCollaborationMode"]?.DeepClone() ?? throw new IOException("桌面快照缺少协作模式，请升级适配器。");
+            collaboration["mode"] = mode;
+            collaboration["settings"]!["model"] = model.Trim();
+            // Let Codex apply its native mode instructions, rather than copying instructions from a different mode.
+            collaboration["settings"]!["developer_instructions"] = null;
+        }
+        var result = await RequestAsync("thread-follower-update-thread-settings", new { conversationId = id,
+            threadSettings = new { model = model.Trim(), collaborationMode = collaboration }, activeTurnId = (string?)null }, 2, ct);
+        if (result["result"]?["applied"]?.GetValue<bool>() != true) throw new IOException("桌面未应用会话设置。");
+    }
     public async Task SendAsync(string text, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 100000) throw new ArgumentException("消息不能为空或超过 100000 字符。");
@@ -216,19 +247,25 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                 {
                     "userMessage" => string.Join("\n", item?["content"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? []),
                     "agentMessage" => Text(item?["text"]),
+                    "reasoning" => Text(item?["summary"] ?? item?["text"] ?? item?["content"]),
                     "commandExecution" => Text(item?["command"]) + "\n" + Text(item?["aggregatedOutput"]),
                     "mcpToolCall" => Text(item?["server"]) + "/" + Text(item?["tool"]) + " · " + Text(item?["status"]),
                     "fileChange" => "文件修改 · " + Text(item?["status"]) + "\n" + string.Join("\n", item?["changes"]?.AsArray().Select(c => Text(c?["path"])) ?? []),
                     _ => ""
                 };
-                if (!string.IsNullOrWhiteSpace(content)) messages.Add(new(kind == "userMessage" ? "你" : kind == "agentMessage" ? "Codex" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content));
+                if (!string.IsNullOrWhiteSpace(content))
+                {
+                    string? detail = kind is "userMessage" or "agentMessage" ? null : item?.ToJsonString();
+                    if (detail?.Length > 20000) detail = detail[..20000] + "\n[详情截断]";
+                    messages.Add(new(kind == "userMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail));
+                }
             }
         }
         var prompts = (s["requests"]?.AsArray() ?? []).Select(r => new PendingPrompt(Text(r?["id"]), Text(r?["method"]),
             Text(r?["method"]), r?["params"]?.ToJsonString() ?? "", r?["params"]?.DeepClone())).ToList();
         var last = turns.LastOrDefault(t => Text(t["status"]) == "inProgress");
         return new(Text(s["id"]), Text(s["title"]), Text(s["cwd"]), Text(s["threadRuntimeStatus"]?["type"]),
-            last is null ? null : Text(last["turnId"]), messages.TakeLast(250).ToList(), prompts);
+            last is null ? null : Text(last["turnId"]), messages.TakeLast(250).ToList(), prompts, Model: Text(s["latestCollaborationMode"]?["settings"]?["model"] ?? s["latestModel"]), Mode: Text(s["latestCollaborationMode"]?["mode"]));
     }
     internal static string Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var text) ? text : n?.ToJsonString() ?? "";
     public async ValueTask DisposeAsync()

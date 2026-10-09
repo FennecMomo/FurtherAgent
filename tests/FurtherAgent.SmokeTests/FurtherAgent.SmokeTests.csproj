@@ -1,4 +1,4 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup><OutputType>Exe</OutputType></PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../src/FurtherAgent.Core/FurtherAgent.Core.csproj" /></ItemGroup>
+  <ItemGroup><ProjectReference Include="../../src/FurtherAgent.Core/FurtherAgent.Core.csproj" /><ProjectReference Include="../../src/FurtherAgent.Cli/FurtherAgent.Cli.csproj" /></ItemGroup>
 </Project>
