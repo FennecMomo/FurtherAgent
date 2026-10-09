@@ -32,6 +32,7 @@ public partial class MainWindow : Window
 
     private readonly Dictionary<string, string> drafts = [];
     private static string SettingsFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "settings.json");
+    private readonly SavedConnectionStore connectionStore = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "connection.json"));
     public MainWindow()
     {
         InitializeComponent();
@@ -50,6 +51,17 @@ public partial class MainWindow : Window
         }
         catch { StatusBar.Text = "保存的地址无法读取，请在设置中重新保存。"; }
         ServerUrl.Text = Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER") ?? ServerUrl.Text;
+        try
+        {
+            var saved = connectionStore.Load(ServerUrl.Text);
+            if (saved is not null)
+            {
+                RemoteCode.Text = saved.Code;
+                RemoteStatus.Text = "已记住设备 · " + saved.Name;
+                if (saved.AutoConnect) Loaded += (_, _) => Connect_Click(this, new RoutedEventArgs());
+            }
+        }
+        catch { StatusBar.Text = "已保存连接无法解密，请重新输入授权码连接；原记录未删除。"; }
     }
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
@@ -76,14 +88,16 @@ public partial class MainWindow : Window
     }
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
+        if (!ConnectButton.IsEnabled) return;
+        string server = ServerUrl.Text.Trim(), code = RemoteCode.Text.Trim();
         ConnectButton.IsEnabled = false; ConnectError.Text = "";
         try
         {
             await DisconnectAsync();
-            remoteRegistry = new RegistryClient(ServerUrl.Text);
+            remoteRegistry = new RegistryClient(server);
             remote = new RemoteDevice();
             RemoteStatus.Text = "正在通过授权码建立中继连接…";
-            await remote.ConnectAsync(remoteRegistry, RemoteCode.Text.Trim());
+            await remote.ConnectAsync(remoteRegistry, code);
             var connected = remote;
             remote.Notification += (method, node) =>
             {
@@ -106,6 +120,12 @@ public partial class MainWindow : Window
             await RefreshAsync();
             EmptyTitle.Text = "选择会话，继续工作"; EmptyDescription.Text = "从左侧打开已有会话，或点击「新建会话」。"; EmptyConnect.Visibility = Visibility.Collapsed;
             StatusBar.Text = agent.Detail; ConnectOverlay.Visibility = Visibility.Collapsed; ShowConversations();
+            try
+            {
+                SaveServerAddress(server);
+                connectionStore.Save(new(server, code, remote.Device!.Name, true));
+            }
+            catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
         }
         catch (Exception ex) { await DisconnectAsync(); Error(ex); ConnectError.Text = ex.Message; RemoteStatus.Text = "连接失败。请检查中继服务地址、授权码及 B 是否已开启共享。"; }
         finally { ConnectButton.IsEnabled = true; }
@@ -155,7 +175,21 @@ public partial class MainWindow : Window
         RemoteStatus.Text = "尚未连接"; SessionTitle.Text = "选择远端会话，继续工作";
         SessionMeta.Text = "连接后显示远端会话历史与可用的运行状态"; Messages.ItemsSource = null; transcriptText = ""; Composer.Clear(); EmptyState.Visibility = Visibility.Visible;
     }
-    private async void Disconnect_Click(object sender, RoutedEventArgs e) { await DisconnectAsync(); }
+    private async void Disconnect_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var saved = connectionStore.Load(remoteRegistry?.ServerIdentity ?? ServerUrl.Text);
+            if (saved is not null) connectionStore.Save(saved with { AutoConnect = false });
+        }
+        catch { StatusBar.Text = "无法保存自动连接设置，请使用忘记已保存连接。"; }
+        await DisconnectAsync();
+    }
+    private void ForgetConnection_Click(object sender, RoutedEventArgs e)
+    {
+        try { connectionStore.Forget(); RemoteCode.Clear(); StatusBar.Text = "已忘记保存的连接；当前连接不受影响，下次启动不会自动连接。"; }
+        catch (Exception ex) { Error(ex); }
+    }
     private async Task RefreshAsync()
     {
         if (remote is null) return;
@@ -297,10 +331,8 @@ public partial class MainWindow : Window
         try
         {
             using var validation = new RegistryClient(ServerUrl.Text.Trim());
-            Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile)!);
-            string temporary = SettingsFile + ".tmp";
-            File.WriteAllText(temporary, JsonSerializer.Serialize(new { serverUrl = ServerUrl.Text.Trim() }));
-            File.Move(temporary, SettingsFile, true);
+            SaveServerAddress(ServerUrl.Text.Trim());
+            RemoteCode.Text = connectionStore.Load(ServerUrl.Text)?.Code ?? "";
             StatusBar.Text = "服务端地址已保存，下次连接生效。";
         }
         catch (Exception ex) { Error(ex); }
@@ -424,6 +456,13 @@ public partial class MainWindow : Window
         if (dialog.ShowDialog(this) != true) return;
         string id = filesSession!; CloseOverlays();
         await TransferAsync(async (client, progress, ct) => { await client.DownloadAsync(id, file.Id, dialog.FileName, progress, ct); });
+    }
+    private static void SaveServerAddress(string server)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile)!);
+        string temporary = SettingsFile + ".tmp";
+        File.WriteAllText(temporary, JsonSerializer.Serialize(new { serverUrl = server }));
+        File.Move(temporary, SettingsFile, true);
     }
     private async void PasteImage_Click(object sender, RoutedEventArgs e)
     {

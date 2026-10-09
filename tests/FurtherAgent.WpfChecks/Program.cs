@@ -33,7 +33,21 @@ static class Program
         Require(ChatPresentation.Display(new("user", "你好" + footer)).Text == "你好", "generated workspace footer hidden without changing original user text");
         Require(ChatPresentation.Display(new("user", "解释\n\n[FurtherAgent 文件工作区]\n示例")).Text.EndsWith("示例"), "user-authored marker alone is preserved");
         Require(ChatPresentation.Display(new("assistant", "回复" + footer)).Text.EndsWith(footer), "assistant content never stripped as user metadata");
-        Console.WriteLine("ALL 11 WPF DOCUMENT AND CHAT CHECKS PASSED (no windows opened)");
+        string stateFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fa-state-" + Guid.NewGuid().ToString("N"), "connection.json");
+        try
+        {
+            var store = new SavedConnectionStore(stateFile);
+            store.Save(new("https://relay.example", "test-only-pairing-code", "test device", true));
+            Require(!System.IO.File.ReadAllText(stateFile).Contains("test-only-pairing-code"), "saved authorization code is encrypted on disk");
+            var restored = new SavedConnectionStore(stateFile).Load("https://relay.example/")!;
+            Require(restored.Code == "test-only-pairing-code" && restored.AutoConnect && restored.Name == "test device", "new process store restores canonical endpoint and encrypted connection");
+            Require(store.Load("https://different.example") is null, "saved credentials are never restored for another server");
+            store.Save(restored with { AutoConnect = false });
+            Require(store.Load(restored.Server) is { AutoConnect: false, Code: "test-only-pairing-code" }, "manual disconnect preference persists without forgetting code");
+            store.Forget(); Require(store.Load(restored.Server) is null, "forget removes persistent connection");
+        }
+        finally { System.IO.Directory.Delete(System.IO.Path.GetDirectoryName(stateFile)!, true); }
+        Console.WriteLine("ALL 16 WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");
         if (args.Length == 2) Preview(args[0], args[1]);
     }
     static void Preview(string repo, string output)
