@@ -20,3 +20,18 @@ WPF 本机共享与 Linux Host 默认保存设备身份，注册时提交 256 �
 123 项回环/协议检查通过，新增覆盖磁盘身份读回、接入端重启码不变、中继进程真实重启后原码重新连接、活动身份重置拒绝、显式重置换码、错误身份不能占原码、损坏身份文件失败而不悄悄换码。此前 16 位临时码协议的测试继续通过。
 
 这些是本地真实回环服务验证，不代表公网中继已经切换。线上部署需要更新中继并迁移常用 Host，切换时现有连接会短暂断开；不要通过升级 Hermes 网关来做这件事。
+
+## 2026-10-09 线上迁移完成
+
+用户明确授权立即切换后，通过旧专用 CLI 上传受限迁移包。脚本先在 127.0.0.1:47321 验证新中继、Host 及固定码，成功后替换 47320 的线上中继，启动新版常用设备 Hermes-default。代码和身份均不覆盖旧目录。
+
+- 公网 `/health` 已返回 0.6.0。
+- 新中继 PID 3399847；新常用 Host PID 3399885（启动后主动从 PID 3399870 重启一次），固定码不变。
+- Windows CLI 用预期固定码真实连接 Hermes-default 成功，读取到 CanCreate/CanConfigure/CanFiles/CanArchive 全为 true。
+- 实际新建“固定配对码迁移验收”会话成功，ID furtheragent_7173990b098f43fba0628959c56cd42f，未提交 Agent 任务。
+- 原业务 Host 3341714 在新端重启验收通过后优雅退出；Hermes 网关仍为 PID 15657，未重启。旧的两个专用测试 Host 保留，因中继重启，其旧临时码可能变化。
+- 程序目录 `/home/ubuntu/furtheragent-0.6.0`，身份 `/home/ubuntu/.config/furtheragent/hermes-default.identity`（600），文件根 `/home/ubuntu/furtheragent-files`。
+- 私有启动环境保存于 `/home/ubuntu/furtheragent-0.6.0/host-environment.json`（600，含 API key，不可转发）。后续启动必须沿用其中的 FURTHERAGENT_IDENTITY_FILE，并设置 FURTHERAGENT_SERVER=http://127.0.0.1:47320。身份不能重新生成或随升级删除。
+- 本次进程为独立后台进程，未安装 systemd/开机自启。固定身份跨重启保留不等于服务自动启动；机器重启后需要用保存的配置启动程序。
+
+固定码仅交付给用户，报告和 Git 不保存码或设备密钥。本地凭据/迁移材料位于忽略目录 artifacts/integration/migration-060。
