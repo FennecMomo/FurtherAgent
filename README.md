@@ -2,7 +2,7 @@
 
 FurtherAgent 是基于 **WPF** 的 Windows 远程 Agent 客户端。A 输入 B 显示的授权码，通过常开的服务端连接 B 上的 Codex 桌面会话，继续原项目中的工作。
 
-当前版本：**0.6.2，连接持久化**。成功连接后将服务端和设备保存到 `%LOCALAPPDATA%\FurtherAgent`，授权码采用 Windows 当前用户 DPAPI 加密，更新构建目录不影响记录；启动自动重连，主动断开后暂停自动连接，设置中可忘记连接。用户和 AI 消息分色，工具与思考默认折叠；用户气泡隐藏自动文件工作区说明。关闭窗口收到托盘，双击托盘图标或桌面快捷方式恢复，托盘菜单可彻底退出。重启、更新后保留接入端身份，详见 [固定配对码](docs/Stable-Pairing.md)。新增原生 WPF Markdown、图片粘贴与文件预览、可折叠工具详情、Hermes 原生归档/按 ID 恢复。保留共享文件传输和 TLS 有限重试。当前能力及实机验收见 [0.5.0 报告](docs/Features-0.5.0-Validation.md)。DeepseekHarness 后续通过独立适配器接入，不限定 MCP。
+当前版本：**0.6.3，紧凑输入区**。附件操作改为消息输出区顶部的图标工具栏，输入容器移除多余边距。成功连接后将服务端和设备保存到 `%LOCALAPPDATA%\FurtherAgent`，授权码采用 Windows 当前用户 DPAPI 加密，更新构建目录不影响记录；启动自动重连，主动断开后暂停自动连接，设置中可忘记连接。用户和 AI 消息分色，工具与思考默认折叠；用户气泡隐藏自动文件工作区说明。关闭窗口收到托盘，双击托盘图标或桌面快捷方式恢复，托盘菜单可彻底退出。重启、更新后保留接入端身份，详见 [固定配对码](docs/Stable-Pairing.md)。新增原生 WPF Markdown、图片粘贴与文件预览、可折叠工具详情、Hermes 原生归档/按 ID 恢复。保留共享文件传输和 TLS 有限重试。当前能力及实机验收见 [0.5.0 报告](docs/Features-0.5.0-Validation.md)。DeepseekHarness 后续通过独立适配器接入，不限定 MCP。
 
 Hermes 的部署、只读探测、授权码连接和能力边界见 [Hermes 接入与联调](docs/Hermes.md)。Linux 接入端提供自包含包，无需在服务器安装 .NET 10。
 
