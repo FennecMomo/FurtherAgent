@@ -2,7 +2,7 @@
 
 FurtherAgent 是基于 **WPF** 的 Windows 远程 Agent 客户端。A 输入 B 显示的授权码，通过常开的服务端连接 B 上的 Codex 桌面会话，继续原项目中的工作。
 
-当前版本：**0.5.0，会话展示与原生归档**。新增原生 WPF Markdown、图片粘贴与文件预览、可折叠工具详情、Hermes 原生归档/按 ID 恢复。保留共享文件传输和 TLS 有限重试。当前能力及实机验收见 [0.5.0 报告](docs/Features-0.5.0-Validation.md)。DeepseekHarness 后续通过独立适配器接入，不限定 MCP。
+当前版本：**0.5.1，固定桌面启动入口**。新增原生 WPF Markdown、图片粘贴与文件预览、可折叠工具详情、Hermes 原生归档/按 ID 恢复。保留共享文件传输和 TLS 有限重试。当前能力及实机验收见 [0.5.0 报告](docs/Features-0.5.0-Validation.md)。DeepseekHarness 后续通过独立适配器接入，不限定 MCP。
 
 Hermes 的部署、只读探测、授权码连接和能力边界见 [Hermes 接入与联调](docs/Hermes.md)。Linux 接入端提供自包含包，无需在服务器安装 .NET 10。
 
@@ -118,7 +118,7 @@ dotnet tests/FurtherAgent.SmokeTests/bin/Debug/net10.0/FurtherAgent.SmokeTests.d
 powershell -ExecutionPolicy Bypass -File scripts/Publish.ps1
 ```
 
-生成 `artifacts/release/0.2.0` 目录与 ZIP，包含客户端、服务端和说明。该包依赖 .NET 10：客户端机器安装 Desktop Runtime，服务端机器安装 ASP.NET Core Runtime。脚本只在本地构建与打包，不提交 Git、不推送、不创建 GitHub Release。
+生成 `artifacts/release/<版本号>` 目录与 ZIP，包含客户端、服务端和说明。该包依赖 .NET 10：客户端机器安装 Desktop Runtime，服务端机器安装 ASP.NET Core Runtime。脚本只在本地构建与打包，不提交 Git、不推送、不创建 GitHub Release。
 
 ## 版本规则
 
@@ -145,3 +145,11 @@ powershell -ExecutionPolicy Bypass -File scripts/Publish.ps1
 本项目采用 [MIT License](LICENSE)。
 
 Copyright (c) 2026 FennecMomo
+
+## 桌面启动入口
+
+每次执行 `scripts/Publish.ps1` 完整发布成功后，自动更新桌面 `FurtherAgent.lnk`。快捷方式调用固定的 `scripts/Start-LatestClient.ps1`，每次读取 `artifacts/current/client.json`，打开最近一次成功发布的客户端。
+
+发布时将客户端复制到 `artifacts/current/builds/<版本-时间-唯一标识>`，逐文件校验后原子替换当前版本指针。旧进程继续使用旧快照，下次从桌面打开即使用新版本。构建失败不会切换目标，不自动关闭正在使用的客户端，也不自动删除旧快照。普通 `dotnet build` 只做开发编译，不更新桌面入口；交付桌面版本统一运行发布脚本。
+
+快捷方式依赖本仓库路径；移动仓库后重新执行发布脚本即可重新生成。`artifacts` 和桌面快捷方式不提交 Git。
