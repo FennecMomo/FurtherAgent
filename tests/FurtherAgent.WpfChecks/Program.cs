@@ -63,18 +63,23 @@ static class Program
         toolbar.SetAttributeValue(XNamespace.Xmlns + "x", x);
         toolbar.AddFirst(new XElement(w + "WrapPanel.Resources", new XElement(dictionary)));
         foreach (var a in toolbar.DescendantsAndSelf().Attributes().Where(a => a.Name.LocalName == "Click").ToArray()) a.Remove();
-        panel.Children.Add((UIElement)XamlReader.Parse(toolbar.ToString()));
         panel.Children.Add(new ChatMessageView { DataContext = new ChatEntry("user", "你好") });
         panel.Children.Add(new ChatMessageView { DataContext = new ChatEntry("tool", new string('x', 18042), "tool result") });
         panel.Children.Add(new ChatMessageView { DataContext = new ChatEntry("reasoning.available", "本轮思考记录，可按需展开查看。", "details") });
         panel.Children.Add(new ChatMessageView { DataContext = new ChatEntry("assistant", "你好！消息与工具记录现在分开展示。\n\n**正式回复**保留 Markdown，工具详情默认折叠。") });
+        panel.Children.Add((UIElement)XamlReader.Parse(toolbar.ToString()));
         var composer = new XElement(source.Descendants(w + "TextBox").Single(e => (string?)e.Attribute(x + "Name") == "Composer").Ancestors(w + "Border").First());
         composer.SetAttributeValue(XNamespace.Xmlns + "x", x);
         composer.AddFirst(new XElement(w + "Border.Resources", new XElement(dictionary)));
         foreach (var a in composer.DescendantsAndSelf().Attributes().Where(a => a.Name.LocalName is "Click" or "PreviewKeyDown").ToArray()) a.Remove();
-        panel.Children.Add((UIElement)XamlReader.Parse(composer.ToString()));
+        var composerView = (FrameworkElement)XamlReader.Parse(composer.ToString());
+        var input = (TextBox)composerView.FindName("Composer");
+        input.IsEnabled = true; input.FontSize = 13; input.Text = "从这里开始输入，文字贴左上方。\n第二行也保持左对齐。";
+        panel.Children.Add(composerView);
         var root = new Border { Background = Brushes.WhiteSmoke, Child = panel, Width = 1000, Height = 650 };
         root.Measure(new Size(1000, 650)); root.Arrange(new Rect(0, 0, 1000, 650)); root.UpdateLayout();
+        Require(input.GetRectFromCharacterIndex(0).Top < 6 && input.GetRectFromCharacterIndex(0).Left < 6,
+            "actual first character is at top-left, not vertically centered");
         var bitmap = new RenderTargetBitmap(1000, 650, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var file = System.IO.File.Create(output); encoder.Save(file);
