@@ -6,7 +6,7 @@ $releaseDir = Join-Path $repoRoot "artifacts/release/FurtherAgent-Hermes-$versio
 New-Item -ItemType Directory -Force $releaseDir | Out-Null
 dotnet publish (Join-Path $repoRoot 'src/FurtherAgent.Host') -c Release -r linux-x64 --self-contained true -p:UseAppHost=true -o $releaseDir
 if ($LASTEXITCODE -ne 0) { throw 'Hermes host publish failed.' }
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes.md'), (Join-Path $repoRoot 'docs/File-Transfer.md'), (Join-Path $repoRoot 'docs/Features-0.5.0-Validation.md'), (Join-Path $repoRoot 'LICENSE'), (Join-Path $repoRoot 'deploy/furtheragent-hermes.service') -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes.md'), (Join-Path $repoRoot 'docs/File-Transfer.md'), (Join-Path $repoRoot 'docs/Features-0.5.0-Validation.md'), (Join-Path $repoRoot 'docs/Stable-Pairing.md'), (Join-Path $repoRoot 'LICENSE'), (Join-Path $repoRoot 'deploy/furtheragent-hermes.service') -Destination $releaseDir -Force
 $archive = "$releaseDir.tar.gz"
 tar -czf $archive -C $releaseDir .
 if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed.' }

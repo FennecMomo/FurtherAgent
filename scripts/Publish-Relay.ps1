@@ -7,7 +7,7 @@ $releaseDir = Join-Path $repoRoot "artifacts/release/FurtherAgent-Relay-$version
 New-Item -ItemType Directory -Force $releaseDir | Out-Null
 dotnet publish (Join-Path $repoRoot 'src/FurtherAgent.Server') -c Release -r linux-x64 --self-contained true -p:UseAppHost=true -o $releaseDir
 if ($LASTEXITCODE -ne 0) { throw 'Relay publish failed.' }
-Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Relay.md'), (Join-Path $repoRoot 'LICENSE'), (Join-Path $repoRoot 'deploy/furtheragent-relay.service') -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Relay.md'), (Join-Path $repoRoot 'docs/Stable-Pairing.md'), (Join-Path $repoRoot 'LICENSE'), (Join-Path $repoRoot 'deploy/furtheragent-relay.service') -Destination $releaseDir -Force
 $archive = "$releaseDir.tar.gz"
 tar -czf $archive -C $releaseDir .
 if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed.' }

@@ -12,15 +12,25 @@ public sealed class DeviceHost : IAsyncDisposable
     private WebSocketTransport? control;
     private string name = "";
     private readonly Lazy<FileTransferStore> files;
+    private readonly bool persistentIdentity;
+    private string? identitySecret;
+    private FileStream? identityLock;
     public DeviceLease? Lease { get; private set; }
     public event Action<string>? Status;
     public event Action<string>? CodeChanged;
-    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null)
-    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); files = new(() => new FileTransferStore(filesRoot)); }
+    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false)
+    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; }
 
     public async Task StartAsync(string name, CancellationToken ct = default)
     {
         this.name = name;
+        if (persistentIdentity)
+        {
+            string path = DeviceIdentity.DefaultPath(registry.ServerIdentity, name);
+            _ = DeviceIdentity.LoadOrCreate(path);
+            identityLock = DeviceIdentity.Lock(path);
+            identitySecret = DeviceIdentity.LoadOrCreate(path);
+        }
         control = await OpenControlAsync(ct);
         supervisor = SuperviseAsync(control);
     }
@@ -28,7 +38,9 @@ public sealed class DeviceHost : IAsyncDisposable
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
-        Lease ??= await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name), timeout.Token);
+        Lease ??= await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret), timeout.Token);
+        if (identitySecret is not null && (Lease.Code != DeviceIdentity.Code(identitySecret) || Lease.Secret != identitySecret))
+            throw new IOException("中继尚不支持固定配对码，请升级中继；设备身份已保留，不会退回随机码。");
         var socket = await registry.OpenSocketAsync("host", timeout.Token);
         try
         {
@@ -167,6 +179,7 @@ public sealed class DeviceHost : IAsyncDisposable
         if (control is not null) await control.DisposeAsync();
         if (Lease is not null)
             try { await registry.PostAsync<JsonNode>("unregister", new LeaseProof(Lease.Code, Lease.Secret)); } catch { }
+        identityLock?.Dispose();
     }
 }
 

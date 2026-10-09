@@ -3,7 +3,7 @@ using FurtherAgent.Core;
 
 if (args.Contains("--help"))
 {
-    Console.WriteLine("FurtherAgent.Host [--probe]\n环境变量：FURTHERAGENT_SERVER、FURTHERAGENT_NAME、HERMES_API_URL（默认 http://127.0.0.1:8642）、HERMES_API_KEY_FILE（仅含 key 的文件）或 HERMES_API_KEY。\n--probe 只读取能力和会话数量，不连接中继、不执行 Agent。退出接入端不会停止 Hermes 运行；重启后不恢复运行归属。");
+    Console.WriteLine("FurtherAgent.Host [--probe | --reset-pairing]\n环境变量：FURTHERAGENT_IDENTITY_FILE（可选固定身份文件）、FURTHERAGENT_SERVER、FURTHERAGENT_NAME、HERMES_API_URL（默认 http://127.0.0.1:8642）、HERMES_API_KEY_FILE（仅含 key 的文件）或 HERMES_API_KEY。\n--probe 只读取能力和会话数量，不连接中继、不执行 Agent。退出接入端不会停止 Hermes 运行；重启后不恢复运行归属。");
     return;
 }
 using var lifetime = new CancellationTokenSource();
@@ -11,6 +11,14 @@ Console.CancelKeyPress += (_, e) => { e.Cancel = true; lifetime.Cancel(); };
 using var terminate = OperatingSystem.IsWindows() ? null : PosixSignalRegistration.Create(PosixSignal.SIGTERM, c => { c.Cancel = true; lifetime.Cancel(); });
 try
 {
+    if (args.Contains("--reset-pairing"))
+    {
+        using var resetRegistry = new RegistryClient(Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER") ?? throw new ArgumentException("请配置 FURTHERAGENT_SERVER。"));
+        string resetName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? Environment.MachineName + " · Hermes";
+        DeviceIdentity.Reset(DeviceIdentity.DefaultPath(resetRegistry.ServerIdentity, resetName));
+        Console.WriteLine("设备身份已重置，下次启动使用新的固定配对码。请勿删除身份文件来升级软件。");
+        return;
+    }
     string? keyFile = Environment.GetEnvironmentVariable("HERMES_API_KEY_FILE");
     string key = keyFile is null ? Environment.GetEnvironmentVariable("HERMES_API_KEY") ?? "" : (await File.ReadAllTextAsync(keyFile)).Trim();
     await using var adapter = new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key);
@@ -24,7 +32,7 @@ try
     }
     using var registry = new RegistryClient(Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER")
         ?? throw new ArgumentException("请配置 FURTHERAGENT_SERVER。"));
-    await using var host = new DeviceHost(registry, () => new BorrowedAgentAdapter(adapter));
+    await using var host = new DeviceHost(registry, () => new BorrowedAgentAdapter(adapter), persistentIdentity: true);
     host.Status += Console.WriteLine;
     host.CodeChanged += code => Console.WriteLine($"授权码：{code}（持有码可操作 Hermes，请仅提供给可信任的人）");
     await host.StartAsync(Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? Environment.MachineName + " · Hermes", lifetime.Token);

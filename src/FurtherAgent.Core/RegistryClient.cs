@@ -6,6 +6,7 @@ namespace FurtherAgent.Core;
 public sealed class RegistryClient : IDisposable
 {
     private readonly HttpClient http;
+    public string ServerIdentity => http.BaseAddress!.AbsoluteUri;
     public event Action<string, int, Exception>? ConnectionRetry;
     public RegistryClient(string url)
     {

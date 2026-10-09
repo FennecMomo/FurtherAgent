@@ -156,6 +156,48 @@ try
         Check(true, "stop sharing closes the controller connection");
         await Reject(async () => await registry.PostAsync<PairResult>("pair", new PairRequest(host.Lease!.Code)), "stop sharing revokes authorization code");
     }
+    string identityDir = Path.Combine(Path.GetTempPath(), "FurtherAgent-identity-test-" + Guid.NewGuid().ToString("N"));
+    string? previousIdentityDir = Environment.GetEnvironmentVariable("FURTHERAGENT_IDENTITY_DIR");
+    string? previousIdentityFile = Environment.GetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE");
+    Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_DIR", identityDir);
+    Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", null);
+    try
+    {
+        string path = DeviceIdentity.DefaultPath(registry.ServerIdentity, "Persistent test");
+        string secret = DeviceIdentity.LoadOrCreate(path), fixedCode = DeviceIdentity.Code(secret);
+        Check(secret == DeviceIdentity.LoadOrCreate(path) && fixedCode.Length == 32, "device identity persists and derives fixed pairing code");
+        await using (var first = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
+        {
+            await first.StartAsync("Persistent test");
+            Check(first.Lease!.Code == fixedCode, "relay registers persistent device code");
+            await Reject(() => { DeviceIdentity.Reset(path); return Task.CompletedTask; }, "active identity cannot be reset by second process");
+            var wrong = await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration("Persistent test", new string('A', 64)));
+            Check(wrong.Code != fixedCode, "another identity cannot claim existing fixed code");
+            await registry.PostAsync<JsonNode>("unregister", new LeaseProof(wrong.Code, wrong.Secret));
+        }
+        await using (var restarted = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
+        {
+            await restarted.StartAsync("Persistent test");
+            Check(restarted.Lease!.Code == fixedCode, "host restart retains pairing code");
+            server.Kill(true); await server.WaitForExitAsync(); server.Dispose();
+            server = StartServer(); await WaitForServer();
+            PairResult? paired = null;
+            for (int i = 0; i < 40 && paired is null; i++)
+            {
+                try { paired = await registry.PostAsync<PairResult>("pair", new PairRequest(fixedCode)); } catch { await Task.Delay(500); }
+            }
+            Check(paired is not null && restarted.Lease!.Code == fixedCode, "relay restart recovers same persistent code");
+            await using var stableRemote = new RemoteDevice(false);
+            await stableRemote.ConnectAsync(registry, fixedCode);
+            Check(Json.Read<AgentInfo[]>(await stableRemote.Peer.CallAsync("agents", null)).Length == 1, "persistent code reconnects to actual host after relay restart");
+        }
+        DeviceIdentity.Reset(path);
+        Check(DeviceIdentity.Code(DeviceIdentity.LoadOrCreate(path)) != fixedCode, "explicit offline reset rotates pairing code");
+        await Reject(() => registry.PostAsync<DeviceLease>("devices", new DeviceRegistration("bad", "short")), "relay rejects malformed persistent identity");
+        File.WriteAllText(path, "corrupt");
+        await Reject(() => { _ = DeviceIdentity.LoadOrCreate(path); return Task.CompletedTask; }, "corrupt identity fails without silently changing code");
+    }
+    finally { Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_DIR", previousIdentityDir); Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", previousIdentityFile); }
     string? thread = null;
     for (int i = 0; i + 1 < args.Length; i++) if (args[i] == "--codex-thread") thread = args[i + 1];
     if (thread is not null)

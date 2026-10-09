@@ -9,7 +9,7 @@ dotnet publish (Join-Path $repoRoot 'src/FurtherAgent.Client') -c Release --self
 if ($LASTEXITCODE -ne 0) { throw 'Client publish failed.' }
 dotnet publish (Join-Path $repoRoot 'src/FurtherAgent.Server') -c Release --self-contained false -o (Join-Path $releaseDir 'Server')
 if ($LASTEXITCODE -ne 0) { throw 'Server publish failed.' }
-Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md'), (Join-Path $repoRoot 'LICENSE') -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md'), (Join-Path $repoRoot 'docs/Stable-Pairing.md'), (Join-Path $repoRoot 'LICENSE') -Destination $releaseDir -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-LocalServer.ps1') -Destination $releaseDir -Force
 New-Item -ItemType Directory -Force (Join-Path $releaseDir 'docs') | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes.md'), (Join-Path $repoRoot 'docs/Session-UI-0.3.0.md'), (Join-Path $repoRoot 'docs/File-Transfer.md'), (Join-Path $repoRoot 'docs/Features-0.5.0-Validation.md') -Destination (Join-Path $releaseDir 'docs') -Force

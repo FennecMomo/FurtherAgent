@@ -38,13 +38,29 @@ async Task<WebSocketTransport?> Accept(HttpContext context)
     { context.Response.StatusCode = 400; return null; }
     return new WebSocketTransport(await context.WebSockets.AcceptWebSocketAsync());
 }
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.5.2", mode = "relay" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.6.0", mode = "relay" }));
 app.MapPost("/devices", (DeviceRegistration input) =>
 {
     if (string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 100) return Results.BadRequest("设备名称无效。");
     lock (gate)
     {
         Clean();
+        if (input.IdentitySecret is { } identity)
+        {
+            string fixedCode;
+            try { fixedCode = DeviceIdentity.Code(identity); } catch (ArgumentException) { return Results.BadRequest("设备身份无效。"); }
+            identity = identity.ToUpperInvariant();
+            if (devices.TryGetValue(fixedCode, out var existing))
+            {
+                if (!CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(existing.Secret), System.Text.Encoding.ASCII.GetBytes(identity)))
+                    return Results.Conflict("设备身份冲突。");
+                return Results.Ok(new DeviceLease(fixedCode, existing.Secret, existing.Expires));
+            }
+            if (devices.Count >= 1000) return Results.StatusCode(503);
+            var stable = new RelayDevice(input.Name, identity, DateTimeOffset.UtcNow.AddMinutes(2));
+            devices.Add(fixedCode, stable);
+            return Results.Ok(new DeviceLease(fixedCode, identity, stable.Expires));
+        }
         if (devices.Count >= 1000) return Results.StatusCode(503);
         string code;
         do { code = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)); } while (devices.ContainsKey(code));

@@ -49,7 +49,7 @@ public partial class MainWindow : Window
             else
             {
                 hostRegistry = new RegistryClient(ServerUrl.Text);
-                host = new DeviceHost(hostRegistry);
+                host = new DeviceHost(hostRegistry, persistentIdentity: true);
                 host.Status += message => Dispatcher.BeginInvoke(() => HostStatus.Text = message);
                 host.CodeChanged += code => Dispatcher.BeginInvoke(() => { LocalCode.Text = code; CopyCodeButton.IsEnabled = true; });
                 try { await host.StartAsync(Environment.MachineName); }
@@ -101,6 +101,18 @@ public partial class MainWindow : Window
     }
     private void CopyCode_Click(object sender, RoutedEventArgs e)
     { try { Clipboard.SetText(LocalCode.Text); StatusBar.Text = "授权码已复制。"; } catch (Exception ex) { Error(ex); } }
+    private async void ResetPairing_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            string server = hostRegistry?.ServerIdentity ?? new Uri(ServerUrl.Text.TrimEnd('/') + '/').AbsoluteUri;
+            if (host is not null) { await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); }
+            DeviceIdentity.Reset(DeviceIdentity.DefaultPath(server, Environment.MachineName));
+            LocalCode.Text = "身份已重置，下次开启共享后显示新码"; CopyCodeButton.IsEnabled = false;
+            ShareButton.Content = "开启共享"; HostStatus.Text = "共享已停止，旧配对码已失效。";
+        }
+        catch (Exception ex) { Error(ex); }
+    }
     private async Task RestoreSessionAsync(RemoteDevice connection)
     {
         if (remote != connection) return;
