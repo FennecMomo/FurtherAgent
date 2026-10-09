@@ -3,6 +3,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <ApplicationIcon>Assets/FurtherAgent.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../FurtherAgent.Core/FurtherAgent.Core.csproj" /></ItemGroup>
+  <ItemGroup><Resource Include="Assets/FurtherAgent.ico" /><Resource Include="Assets/FurtherAgent.png" /></ItemGroup>
 </Project>

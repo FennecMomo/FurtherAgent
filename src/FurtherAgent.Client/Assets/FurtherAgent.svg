@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>FurtherAgent — fox and relay</title>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#183F34"/>
+  <path d="M110 132 L219 193 Q256 180 293 193 L402 132 L365 304 Q330 359 256 399 Q182 359 147 304 Z" fill="#EFF5E8"/>
+  <path d="M141 179 L205 215 L162 252 Z M371 179 L307 215 L350 252 Z" fill="#89BCA0"/>
+  <path d="M179 277 L228 297 M333 277 L284 297" fill="none" stroke="#183F34" stroke-width="23" stroke-linecap="round"/>
+  <path d="M234 340 L256 359 L278 340" fill="none" stroke="#183F34" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M223 119 L289 119" stroke="#9FDBC0" stroke-width="14" stroke-linecap="round"/>
+  <circle cx="219" cy="119" r="18" fill="#9FDBC0"/>
+  <circle cx="293" cy="119" r="18" fill="#9FDBC0"/>
+</svg>
