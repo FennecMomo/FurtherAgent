@@ -1,4 +1,4 @@
-param([Parameter(Mandatory)][string]$ClientDirectory, [Parameter(Mandatory)][string]$Version)
+param([Parameter(Mandatory)][string]$ClientDirectory, [Parameter(Mandatory)][string]$Version, [switch]$AllowLegacyForce)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 $source = (Resolve-Path -LiteralPath $ClientDirectory).Path
@@ -39,3 +39,10 @@ if (Test-Path -LiteralPath $manifestPath) { [IO.File]::Replace($temp, $manifestP
 else { [IO.File]::Move($temp, $manifestPath) }
 Write-Output "Desktop shortcut updated: $shortcutPath"
 Write-Output "Current client: $target"
+$running = @(Get-Process -Name FurtherAgent.Client -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -and $_.Path.StartsWith(([IO.Path]::GetFullPath((Join-Path $currentRoot 'builds')) + [IO.Path]::DirectorySeparatorChar), [StringComparison]::OrdinalIgnoreCase)
+})
+if ($running.Count -gt 0) {
+    & (Join-Path $PSScriptRoot 'Client-Control.ps1') -Action Restart -ExecutablePath $target -AllowLegacyForce:$AllowLegacyForce
+    if (!$?) { throw 'Build published, but running client switch failed; inspect client control status.' }
+}

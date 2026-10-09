@@ -22,6 +22,9 @@ public partial class MainWindow : Window
     private bool closing, actionBusy, loadingSettings;
     private System.Windows.Forms.NotifyIcon? tray;
     private bool exitRequested;
+    private bool startSavedConnection;
+    private string? connectionFailure;
+    private CancellationTokenSource? startupRetry;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
     private string transcriptText = "";
@@ -58,10 +61,40 @@ public partial class MainWindow : Window
             {
                 RemoteCode.Text = saved.Code;
                 RemoteStatus.Text = "已记住设备 · " + saved.Name;
-                if (saved.AutoConnect) Loaded += (_, _) => Connect_Click(this, new RoutedEventArgs());
+                startSavedConnection = saved.AutoConnect;
             }
         }
-        catch { StatusBar.Text = "已保存连接无法解密，请重新输入授权码连接；原记录未删除。"; }
+        catch (Exception ex) { connectionFailure = ex.GetType().Name; StatusBar.Text = "已保存连接无法解密，请重新输入授权码连接；原记录未删除。"; }
+    }
+    public async void StartSavedConnection()
+    {
+        if (!startSavedConnection) return;
+        startupRetry = new CancellationTokenSource();
+        try
+        {
+            for (int attempt = 0; attempt < 4 && remote?.IsConnected != true; attempt++)
+            {
+                if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(5 * attempt), startupRetry.Token);
+                startupRetry.Token.ThrowIfCancellationRequested();
+                if (!ConnectButton.IsEnabled) return;
+                await ConnectAsync();
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+    public object Control(string command)
+    {
+        if (command == "status") return new { success = true, processId = Environment.ProcessId,
+            executable = Environment.ProcessPath, version = typeof(App).Assembly.GetName().Version?.ToString(3),
+            ready = true, connected = remote?.IsConnected == true, device = remote?.Device?.Name,
+            stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection,
+            connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible };
+        if (command != "shutdown") return new { success = false, error = "unknown_command" };
+        if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t)))
+            return new { success = false, error = "busy_or_unsent_draft: client left running" };
+        startupRetry?.Cancel();
+        _ = Task.Delay(200).ContinueWith(_ => Dispatcher.BeginInvoke(() => { exitRequested = true; Close(); }));
+        return new { success = true };
     }
     private async void Share_Click(object sender, RoutedEventArgs e)
     {
@@ -88,9 +121,14 @@ public partial class MainWindow : Window
     }
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
+        startupRetry?.Cancel();
+        await ConnectAsync();
+    }
+    private async Task ConnectAsync()
+    {
         if (!ConnectButton.IsEnabled) return;
         string server = ServerUrl.Text.Trim(), code = RemoteCode.Text.Trim();
-        ConnectButton.IsEnabled = false; ConnectError.Text = "";
+        ConnectButton.IsEnabled = false; ConnectError.Text = ""; connectionFailure = null;
         try
         {
             await DisconnectAsync();
@@ -127,7 +165,7 @@ public partial class MainWindow : Window
             }
             catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
         }
-        catch (Exception ex) { await DisconnectAsync(); Error(ex); ConnectError.Text = ex.Message; RemoteStatus.Text = "连接失败。请检查中继服务地址、授权码及 B 是否已开启共享。"; }
+        catch (Exception ex) { await DisconnectAsync(); Error(ex); connectionFailure = ex.GetType().Name + ": " + (code.Length == 0 ? ex.Message : ex.Message.Replace(code, "[REDACTED]")); ConnectError.Text = ex.Message; RemoteStatus.Text = "连接失败。请检查中继服务地址、授权码及 B 是否已开启共享。"; }
         finally { ConnectButton.IsEnabled = true; }
     }
     private void CopyCode_Click(object sender, RoutedEventArgs e)
@@ -177,6 +215,7 @@ public partial class MainWindow : Window
     }
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
+        startupRetry?.Cancel();
         try
         {
             var saved = connectionStore.Load(remoteRegistry?.ServerIdentity ?? ServerUrl.Text);
@@ -187,6 +226,7 @@ public partial class MainWindow : Window
     }
     private void ForgetConnection_Click(object sender, RoutedEventArgs e)
     {
+        startupRetry?.Cancel();
         try { connectionStore.Forget(); RemoteCode.Clear(); StatusBar.Text = "已忘记保存的连接；当前连接不受影响，下次启动不会自动连接。"; }
         catch (Exception ex) { Error(ex); }
     }

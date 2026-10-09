@@ -1,3 +1,4 @@
+param([switch]$AllowLegacyForce)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path $PSScriptRoot -Parent
 [xml]$props = Get-Content (Join-Path $repoRoot 'Directory.Build.props')
@@ -16,4 +17,4 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes.md'), (Join-Path $repoR
 $zip = Join-Path $repoRoot "artifacts/release/FurtherAgent-$version.zip"
 Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath $zip -Force
 Get-FileHash -LiteralPath $zip -Algorithm SHA256
-& (Join-Path $PSScriptRoot 'Update-DesktopClient.ps1') -ClientDirectory (Join-Path $releaseDir 'Client') -Version $version
+& (Join-Path $PSScriptRoot 'Update-DesktopClient.ps1') -ClientDirectory (Join-Path $releaseDir 'Client') -Version $version -AllowLegacyForce:$AllowLegacyForce
