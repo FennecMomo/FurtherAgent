@@ -18,6 +18,22 @@ static class HermesChecks
         await remote.ConnectAsync(registry, host.Lease!.Code);
         var agents = Json.Read<AgentInfo[]>(await remote.Peer.CallAsync("agents", null));
         check(agents.Single().Id == "hermes", "Hermes agent discovery through relay");
+        await using (var heartbeat = new ConnectionHeartbeat(registry, remote))
+        {
+            heartbeat.Start();
+            while (heartbeat.Relay.LastSuccess is null || heartbeat.Host.LastSuccess is null) await Task.Delay(50, ct);
+            check(heartbeat.Relay.State == "在线" && heartbeat.Host.State == "在线" && api.Submits == 0,
+                "independent relay HTTP and end-to-end Host heartbeats succeed without Agent execution");
+        }
+        using (var wrongRegistry = new RegistryClient(registry.ServerIdentity + "missing-health-route/"))
+        await using (var offline = new RemoteDevice(false))
+        await using (var heartbeat = new ConnectionHeartbeat(wrongRegistry, offline))
+        {
+            heartbeat.Start();
+            while (heartbeat.Relay.State == "检测中" || heartbeat.Host.State == "检测中") await Task.Delay(50, ct);
+            check(heartbeat.Relay.LastSuccess is null && heartbeat.Relay.State == "不可达 / 超时" &&
+                heartbeat.Host.State == "断线 / 重连中", "failed relay health and disconnected Host never report online");
+        }
         var sessions = Json.Read<SessionInfo[]>(await remote.Peer.CallAsync("sessions", null));
         check(sessions.Single().Id == "weixin-session", "Hermes existing session list");
         var view = Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = "weixin-session" }));

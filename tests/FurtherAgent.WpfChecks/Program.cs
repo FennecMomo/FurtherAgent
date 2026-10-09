@@ -33,6 +33,11 @@ static class Program
         Require(ChatPresentation.Display(new("user", "你好" + footer)).Text == "你好", "generated workspace footer hidden without changing original user text");
         Require(ChatPresentation.Display(new("user", "解释\n\n[FurtherAgent 文件工作区]\n示例")).Text.EndsWith("示例"), "user-authored marker alone is preserved");
         Require(ChatPresentation.Display(new("assistant", "回复" + footer)).Text.EndsWith(footer), "assistant content never stripped as user metadata");
+        var formatted = new ChatMessageView { DataContext = new ChatEntry("assistant", "# 结果\n__完成__\n- [x] 验收\n1. 下一步\n~~旧内容~~") };
+        var markdown = ((StackPanel)formatted.Child).Children.OfType<MarkdownView>().Single();
+        var formattedText = new TextRange(markdown.Document.ContentStart, markdown.Document.ContentEnd).Text;
+        Require(formattedText.Contains("☑ 验收") && !formattedText.Contains("__") && !formattedText.Contains("~~") && markdown.Document.Blocks.OfType<Paragraph>().First().FontSize > 13,
+            "actual assistant bubble renders headings, emphasis, task lists and strikethrough as Markdown");
         string stateFile = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fa-state-" + Guid.NewGuid().ToString("N"), "connection.json");
         try
         {
@@ -47,7 +52,7 @@ static class Program
             store.Forget(); Require(store.Load(restored.Server) is null, "forget removes persistent connection");
         }
         finally { System.IO.Directory.Delete(System.IO.Path.GetDirectoryName(stateFile)!, true); }
-        Console.WriteLine("ALL 16 WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");
+        Console.WriteLine("ALL 17 WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");
         if (args.Length == 2) Preview(args[0], args[1]);
     }
     static void Preview(string repo, string output)
@@ -76,6 +81,13 @@ static class Program
         var input = (TextBox)composerView.FindName("Composer");
         input.IsEnabled = true; input.FontSize = 13; input.Text = "从这里开始输入，文字贴左上方。\n第二行也保持左对齐。";
         panel.Children.Add(composerView);
+        var health = new XElement(source.Descendants(w + "TextBlock").Single(e => (string?)e.Attribute(x + "Name") == "RelayHealth").Ancestors(w + "StackPanel").First());
+        health.SetAttributeValue(XNamespace.Xmlns + "x", x);
+        var healthView = (FrameworkElement)XamlReader.Parse(health.ToString());
+        ((TextBlock)healthView.FindName("RelayHealth")).Text = "中继：在线 · 85 ms · 1 秒前确认";
+        ((TextBlock)healthView.FindName("HostHealth")).Text = "客户端 B：在线 · 130 ms · 1 秒前确认";
+        ((TextBlock)healthView.FindName("ActivityStatus")).Text = "Agent 正在执行 / 生成回复…";
+        panel.Children.Add(healthView);
         var root = new Border { Background = Brushes.WhiteSmoke, Child = panel, Width = 1000, Height = 650 };
         root.Measure(new Size(1000, 650)); root.Arrange(new Rect(0, 0, 1000, 650)); root.UpdateLayout();
         Require(input.GetRectFromCharacterIndex(0).Top < 6 && input.GetRectFromCharacterIndex(0).Left < 6,

@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private (RemoteDevice Connection, SessionView View)? pendingSnapshot;
     private readonly System.Windows.Threading.DispatcherTimer snapshotTimer;
     private DateTimeOffset? lastRenderedAt;
+    private ConnectionHeartbeat? heartbeat;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
     private string transcriptText = "";
@@ -46,6 +47,7 @@ public partial class MainWindow : Window
         snapshotTimer = new(System.Windows.Threading.DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(250) };
         snapshotTimer.Tick += (_, _) =>
         {
+            RenderConnectionHealth();
             (RemoteDevice Connection, SessionView View)? next;
             lock (snapshotGate) { next = pendingSnapshot; pendingSnapshot = null; }
             if (next is { } update && remote == update.Connection && selectedId == update.View.Id) { Render(update.View); lastRenderedAt = DateTimeOffset.UtcNow; }
@@ -100,7 +102,8 @@ public partial class MainWindow : Window
             executable = Environment.ProcessPath, version = typeof(App).Assembly.GetName().Version?.ToString(3),
             ready = true, connected = remote?.IsConnected == true, device = remote?.Device?.Name,
             stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection,
-            connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt };
+            connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt,
+            relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
         if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t)))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
@@ -148,6 +151,7 @@ public partial class MainWindow : Window
             remote = new RemoteDevice();
             RemoteStatus.Text = "正在通过授权码建立中继连接…";
             await remote.ConnectAsync(remoteRegistry, code);
+            heartbeat = new ConnectionHeartbeat(remoteRegistry, remote); heartbeat.Start();
             var connected = remote;
             remote.Notification += (method, node) =>
             {
@@ -212,6 +216,7 @@ public partial class MainWindow : Window
     }
     private async Task DisconnectAsync()
     {
+        if (heartbeat is not null) { await heartbeat.DisposeAsync(); heartbeat = null; }
         transferCancellation?.Cancel(); ClearAttachments();
         SaveDraft(); agent = null; ModelOverlay.Visibility = Visibility.Collapsed;
         selectionVersion++; selectedId = null; current = null; promptSignature = null;
@@ -276,6 +281,26 @@ public partial class MainWindow : Window
             if (version != selectionVersion) return;
             selectedId = null; SessionMeta.Text = "会话连接失败，请检查远端状态或重新选择原会话"; Error(ex);
         }
+    }
+    private void RenderConnectionHealth()
+    {
+        static string Describe(string label, HeartbeatState state)
+        {
+            string age = state.LastSuccess is { } last ? $" · {(int)Math.Max(0, (DateTimeOffset.UtcNow - last).TotalSeconds)} 秒前确认" : " · 尚无确认";
+            return label + "：" + state.State + (state.Milliseconds is { } ms ? $" · {ms} ms" : "") + age;
+        }
+        RelayHealth.Text = heartbeat is { } h ? Describe("中继", h.Relay) : "中继：未连接";
+        HostHealth.Text = heartbeat is { } b ? Describe("客户端 B", b.Host) : "客户端 B：未连接";
+        RelayHealth.Foreground = heartbeat?.Relay.State == "在线" ? System.Windows.Media.Brushes.SeaGreen : System.Windows.Media.Brushes.DarkGoldenrod;
+        HostHealth.Foreground = heartbeat?.Host.State == "在线" ? System.Windows.Media.Brushes.SeaGreen : System.Windows.Media.Brushes.DarkGoldenrod;
+        ActivityStatus.Text = !ConnectButton.IsEnabled ? "正在连接设备…"
+            : remote?.IsConnected != true ? "连接未就绪"
+            : transferCancellation is not null ? "正在传输文件…"
+            : actionBusy ? "正在提交操作，等待远端确认…"
+            : current is null ? (selectedId is null ? "已连接 · 请选择会话" : "正在加载会话…")
+            : current.Prompts.Count > 0 ? "等待你的审批或回答"
+            : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
+            : "会话已加载 · 等待指令（其他入口运行状态不可见）";
     }
     private void Render(SessionView view)
     {

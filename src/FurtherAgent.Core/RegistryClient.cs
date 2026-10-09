@@ -8,6 +8,14 @@ public sealed class RegistryClient : IDisposable
     private readonly HttpClient http;
     public string ServerIdentity => http.BaseAddress!.AbsoluteUri;
     public event Action<string, int, Exception>? ConnectionRetry;
+    public async Task CheckHealthAsync(CancellationToken ct)
+    {
+        using var response = await http.GetAsync("health", ct).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        var body = await response.Content.ReadFromJsonAsync<System.Text.Json.Nodes.JsonObject>(cancellationToken: ct).ConfigureAwait(false);
+        if (body?["status"]?.ToString() != "ok" || body?["mode"]?.ToString() != "relay")
+            throw new IOException("中继健康检查返回异常。");
+    }
     public RegistryClient(string url)
     {
         var uri = new Uri(url.TrimEnd('/') + '/');

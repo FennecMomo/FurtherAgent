@@ -29,7 +29,15 @@ public sealed class ChatMessageView : Border
                 IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 240,
                 VerticalScrollBarVisibility = ScrollBarVisibility.Auto, FontFamily = new FontFamily("Consolas"),
                 FontSize = 12, Margin = new Thickness(0, 8, 0, 0) };
-            Child = new Expander { Header = label + " · " + summary, IsExpanded = false, Content = details };
+            object content = details;
+            if (kind == "reasoning")
+            {
+                var body = new StackPanel();
+                body.Children.Add(new MarkdownView { Markdown = entry.Text });
+                if (entry.Detail is not null) body.Children.Add(new Expander { Header = "原始字段", Content = details });
+                content = new ScrollViewer { Content = body, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+            }
+            Child = new Expander { Header = label + " · " + summary, IsExpanded = false, Content = content };
             return;
         }
         var panel = new StackPanel();

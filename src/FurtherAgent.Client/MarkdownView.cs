@@ -53,7 +53,14 @@ public sealed class MarkdownView : RichTextBox
             var heading = Regex.Match(line, @"^(#{1,6})\s+(.+)$");
             if (heading.Success) { p.FontSize = 23 - heading.Groups[1].Length * 1.5; p.FontWeight = FontWeights.SemiBold; value = heading.Groups[2].Value; }
             else if (line.StartsWith(">")) { value = line[1..].TrimStart(); p.BorderThickness = new Thickness(3, 0, 0, 0); p.BorderBrush = Brushes.DarkSeaGreen; p.Padding = new Thickness(10, 0, 0, 0); }
-            else if (Regex.IsMatch(line, @"^\s*[-*+]\s+")) value = Regex.Replace(line, @"^\s*[-*+]\s+", "• ");
+            else if (Regex.IsMatch(line, @"^\s*[-*+]\s+\[[ xX]\]\s+"))
+            {
+                bool done = Regex.IsMatch(line, @"\[[xX]\]");
+                value = Regex.Replace(line, @"^\s*[-*+]\s+\[[ xX]\]\s+", done ? "☑ " : "☐ ");
+                p.Margin = new Thickness(12, 2, 0, 6);
+            }
+            else if (Regex.IsMatch(line, @"^\s*[-*+]\s+")) { value = Regex.Replace(line, @"^\s*[-*+]\s+", "• "); p.Margin = new Thickness(12, 2, 0, 6); }
+            else if (Regex.IsMatch(line, @"^\s*\d+[.)]\s+")) { value = line.TrimStart(); p.Margin = new Thickness(12, 2, 0, 6); }
             else if (line.Trim() is "---" or "***") { p.BorderThickness = new Thickness(0, 0, 0, 1); p.BorderBrush = Brushes.LightGray; value = ""; }
             InlineText(p.Inlines, value); doc.Blocks.Add(p);
         }
@@ -65,12 +72,13 @@ public sealed class MarkdownView : RichTextBox
     private static void InlineText(InlineCollection output, string value)
     {
         int offset = 0;
-        foreach (Match m in Regex.Matches(value, @"(`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*|\[[^\]]+\]\(https?://[^\s)]+\))"))
+        foreach (Match m in Regex.Matches(value, @"(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|(?<!\w)_[^_]+_(?!\w)|\[[^\]]+\]\(https?://[^\s)]+\))"))
         {
             output.Add(new Run(value[offset..m.Index])); string token = m.Value;
             if (token.StartsWith('`')) output.Add(new Run(token[1..^1]) { FontFamily = new FontFamily("Consolas"), Background = Brushes.Gainsboro });
-            else if (token.StartsWith("**")) output.Add(new Bold(new Run(token[2..^2])));
-            else if (token.StartsWith('*')) output.Add(new Italic(new Run(token[1..^1])));
+            else if (token.StartsWith("**") || token.StartsWith("__")) output.Add(new Bold(new Run(token[2..^2])));
+            else if (token.StartsWith("~~")) output.Add(new Run(token[2..^2]) { TextDecorations = TextDecorations.Strikethrough });
+            else if (token.StartsWith('*') || token.StartsWith('_')) output.Add(new Italic(new Run(token[1..^1])));
             else
             {
                 int split = token.IndexOf("](", StringComparison.Ordinal);
