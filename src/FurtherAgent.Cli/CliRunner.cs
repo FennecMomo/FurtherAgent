@@ -7,7 +7,7 @@ public static class CliRunner
 {
     private const string Help = """
 FurtherAgent.Cli <command> [options]
-Commands: probe, agents, sessions, read, create, settings, configure, send, watch, stop, respond, files, upload, download, archive, unarchive
+Commands: probe, agents, sessions, read, create, settings, configure, send, interrupt-send, watch, stop, respond, files, upload, download, archive, unarchive
 Connection: --server URL (or FURTHERAGENT_SERVER); --code-file PATH
             Authorization code is read from FURTHERAGENT_CODE or FURTHERAGENT_CODE_FILE if no file option is supplied.
 Session:    --session ID (required for read/settings/configure/send/watch/stop/respond)
@@ -22,12 +22,13 @@ All successful commands emit JSON Lines. No automatic reconnection or mutation r
 Exit codes: 0 success, 1 failure, 130 cancelled. A send success confirms acceptance, not completion.
 This CLI does not read or modify WPF settings and never opens a desktop window.
 """;
-    private static readonly HashSet<string> Commands = ["probe", "agents", "sessions", "read", "create", "settings", "configure", "send", "watch", "stop", "respond", "files", "upload", "download", "archive", "unarchive"];
+    private static readonly HashSet<string> Commands = ["probe", "agents", "sessions", "read", "create", "settings", "configure", "send", "interrupt-send", "watch", "stop", "respond", "files", "upload", "download", "archive", "unarchive"];
     private static readonly HashSet<string> Common = ["server", "code-file"];
     private static readonly Dictionary<string, string[]> CommandOptions = new()
     {
         ["probe"] = ["seconds"], ["agents"] = [], ["sessions"] = [], ["read"] = ["session"],
         ["create"] = ["request-id", "title"], ["settings"] = ["session"],
+        ["interrupt-send"] = ["session", "text", "text-file", "seconds", "file", "file-id"],
         ["configure"] = ["session", "model", "provider", "mode"], ["send"] = ["session", "text", "text-file", "seconds", "file", "file-id"],
         ["files"] = ["session"], ["upload"] = ["session", "path"], ["download"] = ["session", "id", "output"],
         ["watch"] = ["session", "seconds"], ["stop"] = ["session"],
@@ -64,7 +65,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
             if (command == "watch" && seconds == 0) throw new ArgumentException("watch requires at least 1 second.");
             string? text = null, requestId = null;
             JsonNode? response = null;
-            if (command == "send")
+            if (command is "send" or "interrupt-send")
             {
                 if (options.ContainsKey("text") && options.ContainsKey("text-file")) throw new ArgumentException("Specify only one of --text or --text-file.");
                 if (options.ContainsKey("file") && options.ContainsKey("file-id")) throw new ArgumentException("Specify only one of --file or --file-id.");
@@ -109,7 +110,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
             await remote.ConnectAsync(registry, code, ct);
             var peer = remote.Peer;
             Emit("connected", new { device = remote.Device!.Name });
-            if (seconds > 0 && command is "send" or "watch")
+            if (seconds > 0 && command is "send" or "interrupt-send" or "watch")
                 remote.Notification += (method, node) => { if (method == "session" && node?["id"]?.ToString() == session) Emit("session", node); };
             async Task<JsonNode?> Call(string method, object? value) => await peer.CallAsync(method, value, ct);
             if (command is "probe" or "agents")
@@ -136,17 +137,17 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                     if (!agents.Any(a => a.Available && a.CanArchive)) throw new NotSupportedException("Remote adapter does not advertise native archive support.");
                     Emit("accepted", await Call("archive", new { session, archived = command == "archive" }));
                 }
-                if (command is "files" or "upload" or "download" or "send")
+                if (command is "files" or "upload" or "download" or "send" or "interrupt-send")
                 {
                     var agents = Json.Read<AgentInfo[]>(await Call("agents", null));
                     bool supported = agents.Any(a => a.Available && a.CanFiles);
                     var transfer = new FileTransferClient(peer);
-                    if (!supported && (command != "send" || options.ContainsKey("file") || options.ContainsKey("file-id")))
+                    if (!supported && (command is not ("send" or "interrupt-send") || options.ContainsKey("file") || options.ContainsKey("file-id")))
                         throw new NotSupportedException("Remote host needs file transfer support (0.4.0+).");
                     if (command == "files") Emit("files", await transfer.ListAsync(session!, ct));
                     if (command == "upload") Emit("uploaded", await transfer.UploadAsync(session!, Required("path"), ct: ct));
                     if (command == "download") Emit("downloaded", await transfer.DownloadAsync(session!, Required("id"), Required("output"), ct: ct));
-                    if (command == "send")
+                    if (command is "send" or "interrupt-send")
                     {
                         var ids = new List<string>();
                         if (options.TryGetValue("file-id", out var fileId)) ids.Add(fileId);
@@ -155,7 +156,13 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                             var uploaded = await transfer.UploadAsync(session!, path, ct: ct); ids.Add(uploaded.Id);
                             Emit("uploaded", uploaded); // Retain this ID for an explicit retry; do not upload a second copy.
                         }
-                        if (supported) { await transfer.SendAsync(session!, text!, ids, ct); Emit("accepted", new { ok = true }); }
+                        if (command == "interrupt-send")
+                        {
+                            await SessionActions.InterruptAndSendAsync(peer, agents.First(a => a.Available), Json.Read<SessionView>(view), text!, ids,
+                                phase => Emit("phase", new { message = phase }), ct);
+                            Emit("accepted", new { ok = true });
+                        }
+                        else if (supported) { await transfer.SendAsync(session!, text!, ids, ct); Emit("accepted", new { ok = true }); }
                         else Emit("accepted", await Call("send", new { text }));
                     }
                 }

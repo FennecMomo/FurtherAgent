@@ -28,6 +28,7 @@ int FreePort()
 }
 await TlsRetryChecks.Run(Check);
 await RpcSchedulingChecks.Run(Check);
+await InterruptSendChecks.Run(Check);
 using (var stream = new MemoryStream())
 {
     await Frames.WriteAsync(stream, Json.Node(new { text = "你好，Codex 🚀" }), default);

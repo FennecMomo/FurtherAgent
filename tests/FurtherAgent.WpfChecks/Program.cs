@@ -75,7 +75,10 @@ static class Program
         panel.Children.Add((UIElement)XamlReader.Parse(toolbar.ToString()));
         var composer = new XElement(source.Descendants(w + "TextBox").Single(e => (string?)e.Attribute(x + "Name") == "Composer").Ancestors(w + "Border").First());
         composer.SetAttributeValue(XNamespace.Xmlns + "x", x);
-        composer.AddFirst(new XElement(w + "Border.Resources", new XElement(dictionary)));
+        var composerResources = new XElement(dictionary);
+        XNamespace local = "clr-namespace:FurtherAgent.Client;assembly=FurtherAgent.Client";
+        composerResources.Add(new XElement(local + "HalfFontMarginConverter", new XAttribute(x + "Key", "HalfFontMargin")));
+        composer.AddFirst(new XElement(w + "Border.Resources", composerResources));
         foreach (var a in composer.DescendantsAndSelf().Attributes().Where(a => a.Name.LocalName is "Click" or "PreviewKeyDown").ToArray()) a.Remove();
         var composerView = (FrameworkElement)XamlReader.Parse(composer.ToString());
         var input = (TextBox)composerView.FindName("Composer");
@@ -92,6 +95,7 @@ static class Program
         root.Measure(new Size(1000, 650)); root.Arrange(new Rect(0, 0, 1000, 650)); root.UpdateLayout();
         Require(input.GetRectFromCharacterIndex(0).Top < 6 && input.GetRectFromCharacterIndex(0).Left < 6,
             "actual first character is at top-left, not vertically centered");
+        Require(input.Margin == new Thickness(6.5), "composer margin is half of its 13 DIP font size on all sides");
         var bitmap = new RenderTargetBitmap(1000, 650, 96, 96, PixelFormats.Pbgra32); bitmap.Render(root);
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var file = System.IO.File.Create(output); encoder.Save(file);

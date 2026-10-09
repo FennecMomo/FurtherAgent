@@ -296,7 +296,7 @@ public partial class MainWindow : Window
         ActivityStatus.Text = !ConnectButton.IsEnabled ? "正在连接设备…"
             : remote?.IsConnected != true ? "连接未就绪"
             : transferCancellation is not null ? "正在传输文件…"
-            : actionBusy ? "正在提交操作，等待远端确认…"
+            : actionBusy ? operationPhase ?? "正在提交操作，等待远端确认…"
             : current is null ? (selectedId is null ? "已连接 · 请选择会话" : "正在加载会话…")
             : current.Prompts.Count > 0 ? "等待你的审批或回答"
             : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
@@ -324,9 +324,12 @@ public partial class MainWindow : Window
         var signature = string.Join("|", view.Prompts.Select(p => p.Id + p.Kind));
         if (signature != promptSignature) { promptSignature = signature; RenderPrompts(view.Prompts); }
     }
+    private string? operationPhase;
     private void SetSessionEnabled(bool enabled)
     {
-        Composer.IsEnabled = SendButton.IsEnabled = enabled && current is not null && current.CanSend;
+        SendButton.IsEnabled = enabled && current is not null && current.CanSend;
+        InterruptSendButton.IsEnabled = enabled && agent?.Id == "hermes" && current?.CanStop == true && current.TurnId is not null;
+        Composer.IsEnabled = SendButton.IsEnabled || InterruptSendButton.IsEnabled;
         UploadButton.IsEnabled = FilesButton.IsEnabled = enabled && current is not null && agent?.CanFiles == true;
         ModelButton.IsEnabled = enabled && current is not null && agent?.CanConfigure == true;
         ArchiveButton.IsEnabled = enabled && current is not null && agent?.CanArchive == true && current.Status is not ("active" or "running");
@@ -339,7 +342,7 @@ public partial class MainWindow : Window
         actionBusy = true; SessionList.IsEnabled = NewButton.IsEnabled = false; SetSessionEnabled(false);
         try { await action(remote.Peer); StatusBar.Text = "操作已由远端 Agent 接收，结果以会话状态为准。"; }
         catch (Exception ex) { Error(ex); }
-        finally { actionBusy = false; SessionList.IsEnabled = NewButton.IsEnabled = true; SetSessionEnabled(remote is not null && current is not null && remote.Peer.Completion?.IsCompleted == false); }
+        finally { operationPhase = null; actionBusy = false; SessionList.IsEnabled = NewButton.IsEnabled = true; SetSessionEnabled(remote is not null && current is not null && remote.Peer.Completion?.IsCompleted == false); }
     }
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
@@ -357,6 +360,19 @@ public partial class MainWindow : Window
             try { await submission; }
             catch (TimeoutException)
             { throw new IOException("远端确认超时，发送结果未知，不代表发送失败。原请求可能仍在处理；程序没有重发，请先查看会话结果，不要重复提交。"); }
+            if (Composer.Text == text) Composer.Clear(); ClearAttachments();
+        });
+    }
+    private async void InterruptSend_Click(object sender, RoutedEventArgs e)
+    {
+        if (current is null || agent is null) return;
+        var target = current; var selectedAgent = agent; string text = Composer.Text;
+        var ids = attachedFiles.Select(f => f.Id).ToArray();
+        if (string.IsNullOrWhiteSpace(text) && ids.Length == 0) return;
+        await ActionAsync(async peer =>
+        {
+            await SessionActions.InterruptAndSendAsync(peer, selectedAgent, target, text, ids,
+                phase => { operationPhase = phase; StatusBar.Text = phase; RenderConnectionHealth(); });
             if (Composer.Text == text) Composer.Clear(); ClearAttachments();
         });
     }
