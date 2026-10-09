@@ -43,13 +43,17 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     public event Action<string, JsonNode?>? Notification;
     public event Action<string>? Closed;
     public Task? Completion { get; private set; }
+    private long lastReceivedTicks, receivedMessages;
+    public DateTimeOffset? LastReceivedAt => Interlocked.Read(ref lastReceivedTicks) is var ticks && ticks > 0 ? new DateTimeOffset(ticks, TimeSpan.Zero) : null;
+    public long ReceivedMessages => Interlocked.Read(ref receivedMessages);
     public void Start()
     {
         if (Completion is not null) throw new InvalidOperationException("连接读取器已经启动。");
-        handlers = HandleLoopAsync();
-        Completion = ReadLoopAsync();
+        // A WPF caller must never bind the socket read/handler loops to its dispatcher.
+        handlers = Task.Run(HandleLoopAsync);
+        Completion = Task.Run(ReadLoopAsync);
     }
-    public async Task<JsonNode?> CallAsync(string method, object? args, CancellationToken ct = default)
+    public async Task<JsonNode?> CallAsync(string method, object? args, CancellationToken ct = default, TimeSpan? responseTimeout = null)
     {
         string id = Guid.NewGuid().ToString("N");
         var source = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -58,7 +62,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         try
         {
             await WriteAsync(Json.Node(new { id, method, args }), ct);
-            return await source.Task.WaitAsync(TimeSpan.FromSeconds(40), ct);
+            return await source.Task.WaitAsync(responseTimeout ?? TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
         }
         finally { pending.TryRemove(id, out _); }
     }
@@ -77,6 +81,8 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
             while (!lifetime.IsCancellationRequested)
             {
                 var m = await transport.ReadAsync(lifetime.Token);
+                Interlocked.Exchange(ref lastReceivedTicks, DateTimeOffset.UtcNow.Ticks);
+                Interlocked.Increment(ref receivedMessages);
                 string? id = m["id"]?.GetValue<string>();
                 string? method = m["method"]?.GetValue<string>();
                 if (method is null && id is not null)

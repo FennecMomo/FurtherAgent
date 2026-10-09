@@ -38,7 +38,7 @@ async Task<WebSocketTransport?> Accept(HttpContext context)
     { context.Response.StatusCode = 400; return null; }
     return new WebSocketTransport(await context.WebSockets.AcceptWebSocketAsync());
 }
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.6.5", mode = "relay" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.6.6", mode = "relay" }));
 app.MapPost("/devices", (DeviceRegistration input) =>
 {
     if (string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 100) return Results.BadRequest("设备名称无效。");

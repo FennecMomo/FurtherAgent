@@ -185,6 +185,9 @@ public sealed class DeviceHost : IAsyncDisposable
 
 public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
 {
+    public DateTimeOffset? ConnectedAt { get; private set; }
+    public DateTimeOffset? DisconnectedAt { get; private set; }
+    public int ReconnectCount { get; private set; }
     private readonly CancellationTokenSource lifetime = new();
     private WebSocketTransport? socket;
     private Task? supervisor;
@@ -214,6 +217,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             Peer = new RpcPeer(connection);
             Peer.Notification += (method, node) => Notification?.Invoke(method, node);
             Peer.Start();
+            ConnectedAt = DateTimeOffset.UtcNow;
         }
         catch { await connection.DisposeAsync(); throw; }
     }
@@ -223,6 +227,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
         {
             await Peer.Completion!;
             if (lifetime.IsCancellationRequested) return;
+            DisconnectedAt = DateTimeOffset.UtcNow;
             await Peer.DisposeAsync();
             ConnectionChanged?.Invoke(false, autoReconnect ? "中继连接已断开，正在重连…" : "中继连接已断开。");
             if (!autoReconnect) return;
@@ -233,6 +238,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
                 {
                     await Task.Delay(TimeSpan.FromSeconds(Math.Min(15, Math.Pow(2, Math.Min(attempt++, 4)))), lifetime.Token);
                     await OpenAsync(registry, code, lifetime.Token);
+                    ReconnectCount++;
                     ConnectionChanged?.Invoke(true, "中继连接已恢复。");
                     Reconnected?.Invoke();
                     break;

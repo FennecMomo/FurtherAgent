@@ -212,6 +212,6 @@ public sealed class FileTransferClient(RpcPeer peer)
         }
         finally { if (File.Exists(part)) File.Delete(part); }
     }
-    public async Task SendAsync(string session, string text, IEnumerable<string> fileIds, CancellationToken ct = default) =>
-        await peer.CallAsync("send-files", new { session, text, files = fileIds.ToArray() }, ct);
+    public async Task SendAsync(string session, string text, IEnumerable<string> fileIds, CancellationToken ct = default, TimeSpan? responseTimeout = null) =>
+        await peer.CallAsync("send-files", new { session, text, files = fileIds.ToArray() }, ct, responseTimeout);
 }

@@ -25,6 +25,10 @@ public partial class MainWindow : Window
     private bool startSavedConnection;
     private string? connectionFailure;
     private CancellationTokenSource? startupRetry;
+    private readonly object snapshotGate = new();
+    private (RemoteDevice Connection, SessionView View)? pendingSnapshot;
+    private readonly System.Windows.Threading.DispatcherTimer snapshotTimer;
+    private DateTimeOffset? lastRenderedAt;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
     private string transcriptText = "";
@@ -39,6 +43,14 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        snapshotTimer = new(System.Windows.Threading.DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(250) };
+        snapshotTimer.Tick += (_, _) =>
+        {
+            (RemoteDevice Connection, SessionView View)? next;
+            lock (snapshotGate) { next = pendingSnapshot; pendingSnapshot = null; }
+            if (next is { } update && remote == update.Connection && selectedId == update.View.Id) { Render(update.View); lastRenderedAt = DateTimeOffset.UtcNow; }
+        };
+        snapshotTimer.Start();
         using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/FurtherAgent.ico")).Stream)
         using (var icon = new System.Drawing.Icon(stream))
             tray = new System.Windows.Forms.NotifyIcon { Icon = (System.Drawing.Icon)icon.Clone(), Text = "FurtherAgent", Visible = true };
@@ -88,7 +100,7 @@ public partial class MainWindow : Window
             executable = Environment.ProcessPath, version = typeof(App).Assembly.GetName().Version?.ToString(3),
             ready = true, connected = remote?.IsConnected == true, device = remote?.Device?.Name,
             stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection,
-            connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible };
+            connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
         if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t)))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
@@ -140,7 +152,7 @@ public partial class MainWindow : Window
             remote.Notification += (method, node) =>
             {
                 if (method == "session" && node is not null)
-                { var view = Json.Read<SessionView>(node); Dispatcher.BeginInvoke(() => { if (remote == connected) Render(view); }); }
+                { var view = Json.Read<SessionView>(node); lock (snapshotGate) pendingSnapshot = (connected, view); }
             };
             remote.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
             {
@@ -311,8 +323,15 @@ public partial class MainWindow : Window
         var ids = attachedFiles.Select(f => f.Id).ToArray(); string id = current!.Id;
         await ActionAsync(async peer =>
         {
-            if (agent?.CanFiles == true) await new FileTransferClient(peer).SendAsync(id, text, ids);
-            else await peer.CallAsync("send", new { text });
+            StatusBar.Text = "正在提交消息，等待远端确认…";
+            Task submission = agent?.CanFiles == true
+                ? new FileTransferClient(peer).SendAsync(id, text, ids, responseTimeout: TimeSpan.FromMinutes(3))
+                : peer.CallAsync("send", new { text }, responseTimeout: TimeSpan.FromMinutes(3));
+            if (await Task.WhenAny(submission, Task.Delay(TimeSpan.FromSeconds(12))) != submission)
+                StatusBar.Text = "远端确认较慢，仍在等待原请求；请勿重复发送。";
+            try { await submission; }
+            catch (TimeoutException)
+            { throw new IOException("远端确认超时，发送结果未知，不代表发送失败。原请求可能仍在处理；程序没有重发，请先查看会话结果，不要重复提交。"); }
             if (Composer.Text == text) Composer.Clear(); ClearAttachments();
         });
     }
@@ -636,6 +655,6 @@ public partial class MainWindow : Window
             if (host is not null) await host.DisposeAsync();
             hostRegistry?.Dispose();
         }
-        finally { DisposeTray(); closing = true; Application.Current.Shutdown(); }
+        finally { snapshotTimer.Stop(); DisposeTray(); closing = true; Application.Current.Shutdown(); }
     }
 }
