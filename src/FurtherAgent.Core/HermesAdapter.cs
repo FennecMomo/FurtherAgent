@@ -340,7 +340,7 @@ public sealed class HermesAdapter : IAgentAdapter
                         else prompts.Clear();
                     }
                     if (!Busy && pendingKey is null)
-                    { history = await ReadHistoryAsync(session, lifetime.Token); progress.RemoveAll(m => m.Detail is null); }
+                    { history = await ReadHistoryAsync(session, lifetime.Token); progress.RemoveAll(m => m.Detail is null || m.Role.StartsWith("tool.", StringComparison.Ordinal)); }
                     unavailable = false; notice = ""; Publish();
                 }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
@@ -365,7 +365,7 @@ public sealed class HermesAdapter : IAgentAdapter
         if (pendingKey is not null) detail += " 上次提交结果未知，请原样重试找回运行。";
         if (notice.Length != 0) detail += " " + notice;
         return new(session!, title, "Hermes 网关工作目录（由服务器配置）", Busy ? "active" : "unknown", run,
-            history.Concat(progress).TakeLast(500).ToList(), prompts.Values.ToList(), detail,
+            history.Concat(progress).TakeLast(500).Select(ChatPresentation.Display).ToList(), prompts.Values.ToList(), detail,
             !unavailable && (!Busy || status == "running" && Supports("run_steer")),
             !unavailable && Busy && Supports("run_stop") && status != "stopping", modelName, "default");
     }

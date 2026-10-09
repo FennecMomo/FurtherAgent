@@ -89,6 +89,13 @@ static class HermesChecks
         bool unavailableRejected = false;
         try { await adapter.SendAsync("do not replay", ct); } catch (IOException) { unavailableRejected = true; }
         check(unavailableRejected && api.Submits == 2, "adapter rejects mutations while Hermes run status is unknown");
+        api.LoseStatus = false; api.Completed = true;
+        await Task.Delay(2300, ct);
+        view = await adapter.AttachAsync("weixin-session", ct);
+        check(view.Messages.Count(m => ChatPresentation.Kind(m) == "assistant") == 1 &&
+            view.Messages.All(m => !m.Role.StartsWith("tool.")) &&
+            view.Messages.Any(m => ChatPresentation.Kind(m) == "reasoning"),
+            "completed history replaces streamed reply and tools while reasoning stays separately classified");
 
         var liveApi = new HermesFixture { KeepStream = true };
         await using var liveAdapter = new HermesAdapter("http://127.0.0.1:8642", "test-only-secret", liveApi);
@@ -112,6 +119,7 @@ sealed class HermesFixture : HttpMessageHandler
     public JsonNode? ModelLock;
     private string? createdId;
     public bool LoseStatus;
+    public bool Completed;
     public bool Archived;
     public bool KeepStream;
     public HeldStream? LiveStream;
@@ -139,7 +147,9 @@ sealed class HermesFixture : HttpMessageHandler
             if (request.Method == HttpMethod.Patch) Archived = body!["archived"]!.GetValue<bool>();
             return Reply(new { session = new { title = "微信会话", archived = Archived } });
         }
-        if (path.EndsWith("/messages")) return Reply(new { data = new[] { new { role = "user", content = "微信历史" } } });
+        if (path.EndsWith("/messages")) return Reply(new { data = Completed
+            ? new[] { new { role = "user", content = "微信历史" }, new { role = "assistant", content = "你好" } }
+            : new[] { new { role = "user", content = "微信历史" } } });
         if (path == "/v1/runs")
         {
             Submits++; LastBody = body;
@@ -158,7 +168,7 @@ sealed class HermesFixture : HttpMessageHandler
         }
         if (path == "/v1/runs/run-one") return LoseStatus ? new(HttpStatusCode.NotFound) : Reply(new
         {
-            run_id = "run-one", status = Stops > 0 ? "stopping" : Approval is null ? "waiting_for_approval" : "running",
+            run_id = "run-one", status = Completed ? "completed" : Stops > 0 ? "stopping" : Approval is null ? "waiting_for_approval" : "running",
             approval = Approval is null ? new { request_id = "approval-one", command = "echo test", choices = new[] { "once", "deny" } } : null
         });
         if (path.EndsWith("/approval")) { Approval = body; return Reply(new { resolved = 1 }); }

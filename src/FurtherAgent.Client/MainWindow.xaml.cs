@@ -20,6 +20,8 @@ public partial class MainWindow : Window
     private string? selectedId, promptSignature;
     private int selectionVersion;
     private bool closing, actionBusy, loadingSettings;
+    private System.Windows.Forms.NotifyIcon? tray;
+    private bool exitRequested;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
     private string transcriptText = "";
@@ -33,6 +35,15 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/FurtherAgent.ico")).Stream)
+        using (var icon = new System.Drawing.Icon(stream))
+            tray = new System.Windows.Forms.NotifyIcon { Icon = (System.Drawing.Icon)icon.Clone(), Text = "FurtherAgent", Visible = true };
+        var menu = new System.Windows.Forms.ContextMenuStrip();
+        menu.Items.Add("打开 FurtherAgent", null, (_, _) => Dispatcher.Invoke(RestoreFromTray));
+        menu.Items.Add("退出", null, (_, _) => Dispatcher.Invoke(() => { exitRequested = true; Close(); }));
+        tray.ContextMenuStrip = menu;
+        tray.DoubleClick += (_, _) => Dispatcher.Invoke(RestoreFromTray);
+        Application.Current.SessionEnding += (_, _) => { closing = true; DisposeTray(); };
         try
         {
             if (File.Exists(SettingsFile)) ServerUrl.Text = JsonNode.Parse(File.ReadAllText(SettingsFile))?["serverUrl"]?.ToString() ?? ServerUrl.Text;
@@ -187,7 +198,7 @@ public partial class MainWindow : Window
         ModelButton.ToolTip = "模型与模式 · " + (view.Model ?? "打开会话后设置，远端需支持此功能"); SessionTitle.Text = string.IsNullOrWhiteSpace(view.Title) ? SessionTitle.Text : view.Title;
         SessionMeta.Text = $"{view.Cwd}\n" + (view.StatusDetail ?? $"{(view.Status == "active" ? "执行中" : "等待指令")} · 桌面实时同步");
         var builder = new StringBuilder();
-        foreach (var message in view.Messages) builder.AppendLine($"{message.Role}\n{message.Text}\n{message.Detail}\n");
+        foreach (var message in view.Messages.Select(ChatPresentation.Display)) builder.AppendLine($"{message.Role}\n{message.Text}\n{message.Detail}\n");
         var content = builder.ToString();
         if (content != transcriptText)
         {
@@ -522,12 +533,30 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Error(ex); }
     }
+    public void RestoreFromTray()
+    {
+        Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+        Activate();
+    }
+    private void DisposeTray()
+    {
+        if (tray is null) return;
+        tray.Visible = false; tray.ContextMenuStrip?.Dispose(); tray.Icon?.Dispose(); tray.Dispose(); tray = null;
+    }
     private async void Window_Closing(object? sender, CancelEventArgs e)
     {
         if (closing) return;
-        e.Cancel = true; IsEnabled = false;
-        await DisconnectAsync();
-        if (host is not null) await host.DisposeAsync();
-        hostRegistry?.Dispose(); closing = true; Close();
+        e.Cancel = true;
+        if (!exitRequested) { Hide(); return; }
+        if (!IsEnabled) return;
+        IsEnabled = false;
+        try
+        {
+            transferCancellation?.Cancel();
+            await DisconnectAsync();
+            if (host is not null) await host.DisposeAsync();
+            hostRegistry?.Dispose();
+        }
+        finally { DisposeTray(); closing = true; Application.Current.Shutdown(); }
     }
 }

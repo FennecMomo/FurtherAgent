@@ -3,8 +3,10 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Assets/FurtherAgent.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../FurtherAgent.Core/FurtherAgent.Core.csproj" /></ItemGroup>
+  <ItemGroup><Using Remove="System.Windows.Forms"/><Using Remove="System.Drawing"/></ItemGroup>
   <ItemGroup><Resource Include="Assets/FurtherAgent.ico" /><Resource Include="Assets/FurtherAgent.png" /></ItemGroup>
 </Project>

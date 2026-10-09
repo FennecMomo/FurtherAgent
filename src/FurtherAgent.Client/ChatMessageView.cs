@@ -1,0 +1,44 @@
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Media;
+using FurtherAgent.Core;
+
+namespace FurtherAgent.Client;
+
+public sealed class ChatMessageView : Border
+{
+    public ChatMessageView() => DataContextChanged += (_, _) => Render();
+    private void Render()
+    {
+        if (DataContext is not ChatEntry raw) return;
+        var entry = ChatPresentation.Display(raw);
+        string kind = ChatPresentation.Kind(entry);
+        Margin = new Thickness(kind == "user" ? 60 : 0, 0, kind == "user" ? 10 : 30, 12);
+        Padding = new Thickness(12, 9, 12, 9);
+        CornerRadius = new CornerRadius(9);
+        Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(kind switch
+        { "user" => "#E2EFE8", "assistant" => "#FFFFFF", "reasoning" => "#F0EDF7", _ => "#F0F2F4" }));
+        HorizontalAlignment = kind == "user" ? HorizontalAlignment.Right : HorizontalAlignment.Stretch;
+        if (kind is "tool" or "reasoning" or "system")
+        {
+            string label = kind == "tool" ? "工具调用" : kind == "reasoning" ? "思考记录（非正式回复）" : "运行记录";
+            string summary = entry.Text.Replace('\n', ' ').Replace('\r', ' ').Trim();
+            if (summary.Length > 72) summary = summary[..72] + "…";
+            if (kind == "tool" && (entry.Role is "tool" or "assistant")) summary = entry.Role == "tool" ? "返回结果" : "调用参数";
+            var details = new TextBox { Text = entry.Text + (entry.Detail is null ? "" : "\n\n原始字段\n" + entry.Detail),
+                IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 240,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Auto, FontFamily = new FontFamily("Consolas"),
+                FontSize = 12, Margin = new Thickness(0, 8, 0, 0) };
+            Child = new Expander { Header = label + " · " + summary, IsExpanded = false, Content = details };
+            return;
+        }
+        var panel = new StackPanel();
+        panel.Children.Add(new TextBlock { Text = kind == "user" ? "你" : "AI", FontSize = 11,
+            Foreground = Brushes.SeaGreen, Margin = new Thickness(0, 0, 0, 4) });
+        panel.Children.Add(new MarkdownView { Markdown = entry.Text });
+        if (entry.Detail is not null) panel.Children.Add(new Expander { Header = "调用详情", Content = new TextBox {
+            Text = entry.Detail, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 240,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
+        Child = panel;
+    }
+}
