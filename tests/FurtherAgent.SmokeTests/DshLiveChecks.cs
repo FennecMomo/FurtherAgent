@@ -8,7 +8,7 @@ using FurtherAgent.Core;
 // Explicit opt-in: creates one dedicated session and submits one tool-free test prompt.
 internal static class DshLiveChecks
 {
-    public static async Task Run(Action<bool, string> check)
+    public static async Task Run(Action<bool, string> check, bool controls = false)
     {
         using var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(3));
         var ct = deadline.Token;
@@ -24,6 +24,7 @@ internal static class DshLiveChecks
         await observer.ProbeAsync(ct);
         var second = await observer.AttachAsync(id, ct);
         check(first.Messages.Count == 0 && second.Messages.Count == 0, "two independent readers attach to a Host-owned session without writer-held");
+        check(first.Title == "FurtherAgent DSH 端到端验收" && (await adapter.ListAsync(ct)).Any(s => s.Id == id && s.Title == first.Title), "native title projection is consistent in history and roster");
 
         var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
         int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
@@ -82,6 +83,52 @@ internal static class DshLiveChecks
             check(!(await adapter.ListAsync(ct)).Any(s => s.Id == id), "native archive removes session from visible roster");
             await Cli("unarchive", "--session", id);
             check((await adapter.ListAsync(ct)).Any(s => s.Id == id), "native unarchive restores same session without deleting history");
+            if (controls)
+            {
+                async Task<SessionView> Until(Func<SessionView, bool> condition)
+                {
+                    using var wait = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    wait.CancelAfter(TimeSpan.FromSeconds(45));
+                    while (true) { var view = await adapter.AttachAsync(id, wait.Token); if (condition(view)) return view; await Task.Delay(100, wait.Token); }
+                }
+                await adapter.SendAsync("专用联调：不调用工具、不读写文件。从 1 开始连续输出到 10000，每行一个数。", "queue", ct);
+                var active = await Until(v => v.Status == "active" && v.TurnId != null && v.PendingMessages == 0);
+                // This calls the same helper used by WPF and CLI, over the live relay.
+                await using (var remote = new RemoteDevice(false))
+                {
+                    await remote.ConnectAsync(registry, host.Lease.Code, ct);
+                    await remote.Peer.CallAsync("attach", new { id }, ct);
+                    await SessionActions.InterruptAndSendAsync(remote.Peer, adapter.Info, active,
+                        "前一条长输出已打断。不要调用工具，不要读写文件，只回复 FA_DSH_INTERRUPT_OK。", [], ct: ct);
+                }
+                var interrupted = await Until(v => v.Status == "idle" && v.Messages.Any(m => m.Role == "assistant" && m.Text.Contains("FA_DSH_INTERRUPT_OK")));
+                check(interrupted.Messages.Count(m => m.Role == "user" && m.Text.Contains("FA_DSH_INTERRUPT_OK")) == 1, "real stop-and-send submits exactly one replacement through relay");
+                await adapter.SendAsync("专用队列联调：不调用工具。从 1 开始连续输出到 10000，每行一个数。", "queue", ct);
+                active = await Until(v => v.Status == "active" && v.PendingMessages == 0);
+                await adapter.SendAsync("专用排队消息：不调用工具，只回复 FA_DSH_QUEUE_OK。", "queue", ct);
+                var queued = await Until(v => v.PendingMessages > 0 || v.TurnId != active.TurnId);
+                check(queued.TurnId == active.TurnId && queued.PendingMessages > 0, "queue mode leaves prompt pending during existing run");
+                bool refused = false;
+                try { await adapter.InterruptAndSendAsync(active.TurnId!, "MUST_NOT_SEND", ct); } catch (IOException) { refused = true; }
+                check(refused && (await adapter.AttachAsync(id, ct)).PendingMessages > 0, "real interrupt-send refuses nonempty queue without deleting it");
+                await adapter.InterruptAsync(ct);
+                await adapter.SendAsync("专用联调收尾：保留并处理已有排队消息，不调用工具，只回复 FA_DSH_QUEUE_DONE。", "queue", ct);
+                var drained = await Until(v => v.Status == "idle" && v.PendingMessages == 0);
+                check(!drained.Messages.Any(m => m.Text.Contains("MUST_NOT_SEND")), "rejected interrupt replacement never entered history");
+            }
+
+            await using (var background = await DshBackgroundRuntime.StartAsync(Environment.GetEnvironmentVariable("FURTHERAGENT_DSH_EXE") ?? @"D:\Software\DeepseekHarness\DeepSeek Harness.exe", ct))
+            {
+                await using var isolated = new DshAdapter(background.DescriptorPath);
+                var isolatedInfo = await isolated.ProbeAsync(ct);
+                check(isolatedInfo?["mode"]?.ToString() == "background" && isolatedInfo["pid"]?.ToString() != info?["pid"]?.ToString(), "desktop and background run in separate identified processes");
+                check(!(await isolated.ListAsync(ct)).Any(s => s.Id == id), "background cannot list desktop test session");
+                string backgroundId = Guid.NewGuid().ToString("N");
+                await isolated.CreateAsync(backgroundId, "FurtherAgent 后台隔离验收", ct);
+                check(!(await adapter.ListAsync(ct)).Any(s => s.Id == backgroundId), "desktop cannot list background test session");
+                check((await isolated.AttachAsync(backgroundId, ct)).Messages.Count == 0, "background creates isolated empty session without desktop credentials");
+            }
+            check((await adapter.ProbeAsync(ct))?["pid"]?.ToString() == info?["pid"]?.ToString(), "graceful background shutdown leaves desktop Host unchanged");
             Console.WriteLine("Dedicated DSH test session: " + id);
         }
         finally

@@ -20,6 +20,8 @@ public sealed class BorrowedAgentAdapter : IAgentAdapter
     public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => inner.ConfigureAsync(model, provider, mode, ct);
     public Task ArchiveAsync(string id, bool archived, CancellationToken ct) => inner.ArchiveAsync(id, archived, ct);
     public Task SendAsync(string text, CancellationToken ct) => inner.SendAsync(text, ct);
+    public Task SendAsync(string text, string delivery, CancellationToken ct) => inner.SendAsync(text, delivery, ct);
+    public Task InterruptAndSendAsync(string turnId, string text, CancellationToken ct) => inner.InterruptAndSendAsync(turnId, text, ct);
     public Task InterruptAsync(CancellationToken ct) => inner.InterruptAsync(ct);
     public Task RespondAsync(string id, string decision, JsonNode? response, CancellationToken ct) => inner.RespondAsync(id, decision, response, ct);
     public ValueTask DisposeAsync()

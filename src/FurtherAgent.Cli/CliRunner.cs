@@ -12,7 +12,7 @@ Connection: --server URL (or FURTHERAGENT_SERVER); --code-file PATH
             Authorization code is read from FURTHERAGENT_CODE or FURTHERAGENT_CODE_FILE if no file option is supplied.
 Session:    --session ID (required for read/settings/configure/send/watch/stop/respond)
 Create:     --request-id 32_HEX_GUID --title TITLE (both optional; generated ID printed before submission)
-Send:       --text TEXT or --text-file PATH; optional --file PATH or --file-id ID; --seconds N
+Send:       --text TEXT or --text-file PATH; optional --file PATH or --file-id ID; --seconds N; --delivery auto|queue|steer (DSH)
 Files:      files --session ID; upload --session ID --path PATH; download --session ID --id FILE_ID --output PATH
 Watch:      --seconds N (1..600, default 15)
 Archive:    archive/unarchive --session ID (native backend support required; no delete)
@@ -29,7 +29,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
         ["probe"] = ["seconds"], ["agents"] = [], ["sessions"] = [], ["read"] = ["session"],
         ["create"] = ["request-id", "title"], ["settings"] = ["session"],
         ["interrupt-send"] = ["session", "text", "text-file", "seconds", "file", "file-id"],
-        ["configure"] = ["session", "model", "provider", "mode"], ["send"] = ["session", "text", "text-file", "seconds", "file", "file-id"],
+        ["configure"] = ["session", "model", "provider", "mode"], ["send"] = ["session", "text", "text-file", "seconds", "file", "file-id", "delivery"],
         ["files"] = ["session"], ["upload"] = ["session", "path"], ["download"] = ["session", "id", "output"],
         ["watch"] = ["session", "seconds"], ["stop"] = ["session"],
         ["archive"] = ["session"], ["unarchive"] = ["session"],
@@ -84,6 +84,8 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                 _ = Required("model");
                 if (options.GetValueOrDefault("mode", "default") is not ("default" or "plan")) throw new ArgumentException("Mode must be default or plan.");
             }
+            if (options.TryGetValue("delivery", out var delivery) && delivery is not ("auto" or "queue" or "steer")) throw new ArgumentException("Delivery must be auto, queue or steer.");
+            if (options.GetValueOrDefault("delivery", "auto") != "auto" && (options.ContainsKey("file") || options.ContainsKey("file-id"))) throw new ArgumentException("Explicit delivery mode currently supports text only.");
             if (command == "respond")
             {
                 requestId = Required("request-id");
@@ -141,6 +143,8 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                 {
                     var agents = Json.Read<AgentInfo[]>(await Call("agents", null));
                     bool supported = agents.Any(a => a.Available && a.CanFiles);
+                    if (options.GetValueOrDefault("delivery", "auto") != "auto" && !agents.Any(a => a.Available && a.CanChooseDelivery))
+                        throw new NotSupportedException("Remote adapter does not support explicit delivery modes.");
                     var transfer = new FileTransferClient(peer);
                     if (!supported && (command is not ("send" or "interrupt-send") || options.ContainsKey("file") || options.ContainsKey("file-id")))
                         throw new NotSupportedException("Remote host needs file transfer support (0.4.0+).");
@@ -163,7 +167,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                             Emit("accepted", new { ok = true });
                         }
                         else if (supported) { await transfer.SendAsync(session!, text!, ids, ct); Emit("accepted", new { ok = true }); }
-                        else Emit("accepted", await Call("send", new { text }));
+                        else Emit("accepted", await Call("send", new { text, delivery = options.GetValueOrDefault("delivery", "auto") }));
                     }
                 }
                 if (command == "stop") Emit("accepted", await Call("interrupt", null));

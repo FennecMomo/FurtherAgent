@@ -352,15 +352,20 @@ public partial class MainWindow : Window
         if (signature != promptSignature) { promptSignature = signature; RenderPrompts(view.Prompts); }
     }
     private string? operationPhase;
+    private string DeliveryMode => agent?.CanChooseDelivery != true ? "auto" : DeliveryPicker.SelectedIndex switch { 1 => "queue", 2 => "steer", _ => "auto" };
+    private void Delivery_Changed(object sender, SelectionChangedEventArgs e)
+    { if (IsLoaded) SetSessionEnabled(!actionBusy && remote?.IsConnected == true); }
     private void SetSessionEnabled(bool enabled)
     {
         SendButton.IsEnabled = enabled && current is not null && current.CanSend;
-        InterruptSendButton.IsEnabled = enabled && agent?.Id == "hermes" && current?.CanStop == true && current.TurnId is not null;
+        InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
         Composer.IsEnabled = SendButton.IsEnabled || InterruptSendButton.IsEnabled;
         UploadButton.IsEnabled = FilesButton.IsEnabled = enabled && current is not null && agent?.CanFiles == true;
         ModelButton.IsEnabled = enabled && current is not null && agent?.CanConfigure == true;
         ArchiveButton.IsEnabled = enabled && current is not null && agent?.CanArchive == true && current.Status is not ("active" or "running");
-        SendButton.Content = current?.Status is "active" or "running" ? "追加指令" : "发送";
+        DeliveryPicker.Visibility = agent?.CanChooseDelivery == true ? Visibility.Visible : Visibility.Collapsed;
+        DeliveryPicker.IsEnabled = enabled;
+        SendButton.Content = DeliveryMode == "queue" ? "排队发送" : DeliveryMode == "steer" || current?.Status is "active" or "running" ? "追加指令" : "发送";
         StopButton.IsEnabled = enabled && (current?.CanStop ?? current?.Status == "active");
     }
     private async Task ActionAsync(Func<RpcPeer, Task> action)
@@ -376,12 +381,13 @@ public partial class MainWindow : Window
         string text = Composer.Text;
         if (string.IsNullOrWhiteSpace(text) && attachedFiles.Count == 0) return;
         var ids = attachedFiles.Select(f => f.Id).ToArray(); string id = current!.Id;
+        string delivery = DeliveryMode;
         await ActionAsync(async peer =>
         {
             StatusBar.Text = "正在提交消息，等待远端确认…";
             Task submission = agent?.CanFiles == true
                 ? new FileTransferClient(peer).SendAsync(id, text, ids, responseTimeout: TimeSpan.FromMinutes(3))
-                : peer.CallAsync("send", new { text }, responseTimeout: TimeSpan.FromMinutes(3));
+                : peer.CallAsync("send", new { text, delivery }, responseTimeout: TimeSpan.FromMinutes(3));
             if (await Task.WhenAny(submission, Task.Delay(TimeSpan.FromSeconds(12))) != submission)
                 StatusBar.Text = "远端确认较慢，仍在等待原请求；请勿重复发送。";
             try { await submission; }

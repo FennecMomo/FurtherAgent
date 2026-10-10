@@ -7,6 +7,7 @@ namespace FurtherAgent.Core;
 /// <summary>Connects to a plugin inside the selected DSH Host; never launches or resumes sessions to read them.</summary>
 public sealed class DshAdapter : IAgentAdapter
 {
+    private sealed class BridgeException(string message, string code) : IOException(message) { public string Code { get; } = code; }
     private readonly string descriptorPath;
     private readonly HttpClient http = new(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
     private readonly CancellationTokenSource lifetime = new();
@@ -19,8 +20,10 @@ public sealed class DshAdapter : IAgentAdapter
     private SessionView? current;
     private string? fingerprint;
     private string? pendingText, pendingId;
+    private string? pendingDelivery, pendingMethod;
     public AgentInfo Info => new("dsh", instanceMode == "background" ? "DSH · 独立后台" : "DSH · 桌面", true,
-        $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。", CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"));
+        $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。", CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"),
+        CanChooseDelivery: capabilities.Contains("delivery"), CanInterruptSend: capabilities.Contains("interrupt-send"));
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
     public DshAdapter(string descriptorPath) { this.descriptorPath = Path.GetFullPath(descriptorPath); monitor = MonitorAsync(); }
@@ -46,7 +49,7 @@ public sealed class DshAdapter : IAgentAdapter
         using var response = await http.SendAsync(request, ct);
         var result = JsonNode.Parse(await response.Content.ReadAsStringAsync(ct));
         if (!response.IsSuccessStatusCode || result?["error"] is not null)
-            throw new IOException(result?["error"]?["message"]?.ToString() ?? $"DSH HTTP {(int)response.StatusCode}");
+            throw new BridgeException(result?["error"]?["message"]?.ToString() ?? $"DSH HTTP {(int)response.StatusCode}", result?["error"]?["code"]?.ToString() ?? "");
         return result?["result"]?.DeepClone();
     }
     public async Task<JsonNode?> ProbeAsync(CancellationToken ct = default)
@@ -63,7 +66,7 @@ public sealed class DshAdapter : IAgentAdapter
     {
         var data = await Call("list", null, ct);
         return (data?["items"]?.AsArray() ?? []).Where(x => x?["origin"]?.ToString() != "subagent")
-            .Select(x => new SessionInfo(x!["sessionId"]!.ToString(), x["title"]?.ToString() ?? x["sessionId"]!.ToString(),
+            .Select(x => new SessionInfo(x!["sessionId"]!.ToString(), x["projections"]?["values"]?["title"]?.ToString() ?? x["title"]?.ToString() ?? x["sessionId"]!.ToString(),
                 DateTimeOffset.FromUnixTimeMilliseconds(x["updatedAt"]?.GetValue<long>() ?? 0).ToString("O"))).ToArray();
     }
     public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
@@ -72,7 +75,7 @@ public sealed class DshAdapter : IAgentAdapter
         try
         {
             if (pendingId is not null && selected != id) throw new IOException("上次发送结果未知，请先核对原会话。");
-            var view = Json.Read<SessionView>(await Call("snapshot", new { id }, ct));
+            var view = await ReadSnapshot(id, ct);
             selected = id; current = view; fingerprint = Json.Node(view).ToJsonString(); return view;
         }
         finally { gate.Release(); }
@@ -82,16 +85,32 @@ public sealed class DshAdapter : IAgentAdapter
         var result = await Call("create", new { id, title }, ct);
         return new(result!["sessionId"]!.ToString(), title, DateTimeOffset.UtcNow.ToString("O"));
     }
-    public async Task SendAsync(string text, CancellationToken ct)
+    private async Task<SessionView> ReadSnapshot(string id, CancellationToken ct)
     {
+        var node = await Call("snapshot", new { id }, ct);
+        if (pendingId is not null && id == selected && (node?["acceptedRequestIds"]?.AsArray() ?? []).Any(x => x?.ToString() == pendingId))
+            pendingId = pendingText = pendingDelivery = pendingMethod = null;
+        return Json.Read<SessionView>(node);
+    }
+    public Task SendAsync(string text, CancellationToken ct) => SendAsync(text, "auto", ct);
+    public Task SendAsync(string text, string delivery, CancellationToken ct) => SendMutation("send", text, delivery, null, ct);
+    public Task InterruptAndSendAsync(string turnId, string text, CancellationToken ct) => SendMutation("interruptSend", text, "queue", turnId, ct);
+    private async Task SendMutation(string method, string text, string delivery, string? turnId, CancellationToken ct)
+    {
+        if (delivery is not ("auto" or "queue" or "steer")) throw new ArgumentException("发送方式必须是 auto、queue 或 steer。");
         await gate.WaitAsync(ct);
         try
         {
             if (selected is null) throw new IOException("请先选择会话。");
-            if (pendingId is not null && pendingText != text) throw new IOException("上次发送结果未知，请先核对原消息，不能提交另一条。");
+            if (pendingId is not null && (pendingText != text || pendingMethod != method)) throw new IOException("上次发送结果未知，请先核对原消息，不能提交另一条。");
+            if (pendingId is null) current = await ReadSnapshot(selected, ct);
+            pendingDelivery ??= delivery == "auto" ? current?.Status == "active" ? "steer" : "queue" : delivery;
             pendingId ??= Guid.NewGuid().ToString("N"); pendingText = text;
-            await Call("send", new { id = selected, text, requestId = pendingId, mode = current?.Status == "active" ? "steer" : "queue" }, ct);
-            pendingId = pendingText = null;
+            pendingMethod = method;
+            try { await Call(method, new { id = selected, text, requestId = pendingId, mode = pendingDelivery, turnId }, ct); }
+            catch (BridgeException ex) when (ex.Code == "bridge/not-submitted")
+            { pendingId = pendingText = pendingDelivery = pendingMethod = null; throw; }
+            pendingId = pendingText = pendingDelivery = pendingMethod = null;
         }
         finally { gate.Release(); }
     }
@@ -136,7 +155,7 @@ public sealed class DshAdapter : IAgentAdapter
                 try
                 {
                     if (selected is null) continue;
-                    current = Json.Read<SessionView>(await Call("snapshot", new { id = selected }, lifetime.Token));
+                    current = await ReadSnapshot(selected, lifetime.Token);
                     string next = Json.Node(current).ToJsonString();
                     if (next != fingerprint) { fingerprint = next; Changed?.Invoke(current); }
                 }

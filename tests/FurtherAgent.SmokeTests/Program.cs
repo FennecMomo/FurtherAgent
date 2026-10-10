@@ -28,7 +28,7 @@ int FreePort()
 }
 if (args.Contains("--dsh-live"))
 {
-    await DshLiveChecks.Run(Check);
+    await DshLiveChecks.Run(Check, args.Contains("--controls"));
     Console.WriteLine($"ALL {passed} LIVE DSH CHECKS PASSED");
     return;
 }

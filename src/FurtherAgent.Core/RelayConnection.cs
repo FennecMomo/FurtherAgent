@@ -152,7 +152,8 @@ public sealed class DeviceHost : IAsyncDisposable
                 "settings" => Json.Node(await adapter.SettingsAsync(token)),
                 "archive" => await Execute(() => adapter.ArchiveAsync(FileSession(args), args!["archived"]!.GetValue<bool>(), token)),
                 "configure" => await Execute(() => adapter.ConfigureAsync(args!["model"]?.ToString() ?? "", args["provider"]?.ToString() ?? "", args["mode"]?.ToString() ?? "default", token)),
-                "send" => await Execute(() => adapter.SendAsync(args!["text"]!.GetValue<string>(), token)),
+                "send" => await Execute(() => adapter.SendAsync(args!["text"]!.GetValue<string>(), args["delivery"]?.ToString() ?? "auto", token)),
+                "interrupt-send" => await Execute(() => adapter.InterruptAndSendAsync(args!["turnId"]!.GetValue<string>(), args["text"]!.GetValue<string>(), token)),
                 "interrupt" => await Execute(() => adapter.InterruptAsync(token)),
                 "respond" => await Execute(() => adapter.RespondAsync(args!["id"]!.GetValue<string>(), args["decision"]?.GetValue<string>() ?? "", args["response"], token)),
                 _ => throw new IOException("未知操作。")

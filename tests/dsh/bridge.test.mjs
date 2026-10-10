@@ -47,6 +47,40 @@ test('stream revisions accumulate, duplicated frames do not duplicate text, comm
  view=await api.snapshot('s');assert.equal(view.messages.length,2);
  api.close();assert.equal(handlers.size,0);
 });
+
+for (const scenario of ['existing-queue','queue-after-cancel','different-turn','success']) test(`interrupt-send ${scenario} preserves native queue semantics`,async()=>{
+ const f=fixture();const agent={status:'running',inbox:{nextTurn:[],nextStep:[]},session:{snapshotEvents:()=>f.events}};
+ f.ctx.agents.get=()=>agent;let stops=0;
+ f.ctx.sessionController.cancel=async()=>{
+  stops++;agent.status='idle';
+  if(scenario==='queue-after-cancel')agent.inbox.nextTurn.push({source:{kind:'user',rpcId:'other'}});
+  if(scenario==='different-turn')f.events.push({seq:3,type:'turn/start',data:{}});
+ };
+ if(scenario==='existing-queue')agent.inbox.nextTurn.push({source:{kind:'user',rpcId:'other'}});
+ const api=service(f.ctx);const args={id:'s',turnId:'0',text:'replacement',requestId:'replacement-id'};
+ if(scenario==='success') {
+  await api.call('interruptSend',args,new AbortController().signal);
+  assert.equal(f.calls.length,1);assert.equal(f.calls[0].mode,'followup');assert.equal(stops,1);
+  f.events.push({seq:3,type:'user/message',data:{source:{kind:'user',rpcId:args.requestId}}});
+  await api.call('interruptSend',args,new AbortController().signal);
+  assert.equal(f.calls.length,1);assert.equal(stops,1);
+ } else {
+  await assert.rejects(api.call('interruptSend',args,new AbortController().signal),e=>e.code==='bridge/not-submitted');
+  assert.equal(f.calls.length,0);
+  if(scenario!=='different-turn')assert.equal(agent.inbox.nextTurn.length,1);
+  assert.equal(stops,scenario==='existing-queue'?0:1);
+ }
+});
+
+test('native Plan wire pending flag is not the selected boolean',async()=>{
+ const f=fixture();
+ for(const [active,pending,expected] of [[true,false,'plan'],[false,false,'default'],[false,true,'plan'],[true,true,'default']]) {
+  const original=f.ctx.sessionQuery.observeSession;
+  f.ctx.sessionQuery.observeSession=async id=>{const o=await original(id);o.projections.values.plan={active,pending};return o};
+  assert.equal((await service(f.ctx).snapshot('s')).mode,expected);
+  f.ctx.sessionQuery.observeSession=original;
+ }
+});
 test('local bridge requires authentication, rejects browser origins, disposes descriptor',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'fa-dsh-test-'));
  const bridge=await startBridge(fixture().ctx,{directory:dir});

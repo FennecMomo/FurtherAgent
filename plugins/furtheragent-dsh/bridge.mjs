@@ -4,12 +4,14 @@ import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const textOf = content => typeof content === 'string' ? content : (content ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('\n');
 const cleanId = value => {
   if (typeof value !== 'string' || !value || value.length > 512) throw new Error('Invalid session identity');
   return value;
 };
+const rejectSubmission = message => { throw Object.assign(new Error(message), { code: 'bridge/not-submitted' }); };
 
 // Borrow Host services; never construct a Context, Session or Agent for a read.
 export function service(ctx, config = {}) {
@@ -41,11 +43,12 @@ export function service(ctx, config = {}) {
     cleanId(id);
     const observation = await ctx.sessionQuery.observeSession(id, { signal, projectionMode: 'all' });
     try {
-      const messages = []; const byId = new Map(); let turnId = null; let lastModel;
+      const messages = []; const byId = new Map(); const acceptedRequestIds = []; let turnId = null; let lastModel;
       for (const event of observation.events) {
         if (event.type === 'turn/start') turnId = String(event.seq);
         if (event.type === 'model/selection') lastModel = event.data;
         if (event.type === 'request/header') lastModel = event.data?.header?.config ?? lastModel;
+        if (event.type === 'user/message' && event.data?.source?.kind === 'user' && event.data.source.rpcId) acceptedRequestIds.push(event.data.source.rpcId);
         // Replacement copies belong to model context, not the human transcript.
         if (event.surfaceOp !== undefined && event.surfaceOp !== 'append') continue;
         if (event.type === 'user/message' && event.data?.source && event.data.source.kind !== 'user') continue;
@@ -66,6 +69,8 @@ export function service(ctx, config = {}) {
       }
       const agent = ctx.agents.get(id); const running = agent?.status === 'running';
       const pending = (agent?.inbox?.nextTurn?.length ?? 0) + (agent?.inbox?.nextStep?.length ?? 0);
+      for (const message of [...(agent?.inbox?.nextTurn ?? []), ...(agent?.inbox?.nextStep ?? [])])
+        if (message.source?.kind === 'user' && message.source.rpcId) acceptedRequestIds.push(message.source.rpcId);
       const stream = streams.get(id);
       if (running && stream?.reasoning) messages.push({ role: 'reasoning.available', text: stream.reasoning });
       if (running && stream?.text) messages.push({ role: 'assistant', text: stream.text });
@@ -73,18 +78,18 @@ export function service(ctx, config = {}) {
       const model = values.modelSelection?.pending ?? lastModel;
       // Wire pending is a transition flag, not the requested boolean state.
       const plan = values.plan;
-      return { id, title: values.title?.title || observation.header.title || id, cwd: observation.header.cwd ?? '', status: running ? 'active' : 'idle',
+      return { id, title: (typeof values.title === 'string' ? values.title : values.title?.title) || observation.header.title || id, cwd: observation.header.cwd ?? '', status: running ? 'active' : 'idle',
         turnId, messages: messages.slice(-500), prompts: [], canSend: true, canStop: running,
         model: model?.model ?? null, provider: model?.provider ?? null, reasoningEffort: model?.reasoningEffort ?? null,
         canChangeMode: agent ? !!ctx.get?.('commands')?.find(agent, 'plan') : !!values.plan,
-        mode: (plan?.pending ? !plan.active : plan?.active) ? 'plan' : 'default', pendingMessages: pending,
+        mode: (plan?.pending ? !plan.active : plan?.active) ? 'plan' : 'default', pendingMessages: pending, acceptedRequestIds,
         statusDetail: `DSH ${mode} · ${running ? '执行中' : '空闲'} · 待处理 ${pending} 条${plan?.pending ? ' · 模式等待下一步骤生效' : ''} · 同一 Host，会话只读订阅`, cursor: observation.cursor };
     } finally { observation[Symbol.dispose](); }
   }
   const methods = {
     info: async () => ({ protocol: 1, mode, pid: process.pid, hostVersion: config.hostVersion ?? 'unknown',
       activeTasks: (ctx.agents.list?.() ?? []).some(a => a.status === 'running' || a.inbox?.nextTurn?.length || a.inbox?.nextStep?.length),
-      capabilities: ['list', 'snapshot', 'create', 'send', 'steer', 'stop', 'model', 'plan', ...(ctx.get?.('workspaceController') ? ['archive'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
+      capabilities: ['list', 'snapshot', 'create', 'send', 'steer', 'stop', 'model', 'plan', 'delivery', 'interrupt-send', ...(ctx.get?.('workspaceController') ? ['archive'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
     list: async (_, signal) => {
       const result = await ctx.sessionController.list({}, signal);
       const archived = new Set(ctx.get?.('workspaceRegistry')?.archivedSessionIds ?? []);
@@ -101,6 +106,32 @@ export function service(ctx, config = {}) {
       if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) throw new Error('Invalid prompt');
       return ctx.sessionController.prompt({ sessionId: cleanId(args.id), requestId: cleanId(args.requestId),
         mode: args.mode === 'steer' ? 'steer' : 'followup', content: [{ type: 'text', text: args.text }] }, signal);
+    },
+    interruptSend: async (args, signal) => {
+      const id = cleanId(args.id);
+      cleanId(args.requestId);
+      if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) throw new Error('Invalid prompt');
+      const agent = ctx.agents.get(id);
+      if (!agent) rejectSubmission('Session is not active in this Host');
+      const messages = [...(agent.inbox?.nextTurn ?? []), ...(agent.inbox?.nextStep ?? [])];
+      const accepted = message => message?.source?.kind === 'user' && message.source.rpcId === args.requestId;
+      if (messages.some(accepted) || agent.session.snapshotEvents().some(e => e.type === 'user/message' && accepted(e.data))) return { accepted: true };
+      const validate = () => {
+        const turn = agent.session.snapshotEvents().findLast(e => e.type === 'turn/start');
+        if (String(turn?.seq) !== args.turnId) rejectSubmission('运行已变化，未发送新消息');
+        if (agent.inbox.nextTurn.length || agent.inbox.nextStep.length) rejectSubmission('DSH 尚有待处理队列，未清空队列，也未提交新消息；请先处理队列。');
+      };
+      validate();
+      if (agent.status === 'running') await ctx.sessionController.cancel({ sessionId: id });
+      const until = Date.now() + 25000;
+      while (agent.status === 'running') {
+        if (Date.now() >= until) rejectSubmission('停止确认超时，新消息未发送');
+        await delay(100, undefined, { signal });
+        validate();
+      }
+      validate();
+      signal?.throwIfAborted();
+      return methods.send({ ...args, mode: 'queue' }, signal);
     },
     stop: args => ctx.sessionController.cancel({ sessionId: cleanId(args.id) }),
     models: () => ctx.sessionController.modelCatalog(),

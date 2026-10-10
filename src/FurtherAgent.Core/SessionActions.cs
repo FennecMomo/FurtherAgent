@@ -8,6 +8,16 @@ public static class SessionActions
         CancellationToken ct = default, TimeSpan? stopTimeout = null)
     {
         var ids = fileIds.ToArray();
+        if (agent.Id == "dsh" && agent.CanInterruptSend)
+        {
+            if (ids.Length > 0) throw new NotSupportedException("DSH 打断后发送尚未开放附件。");
+            if (expected.CanStop != true || string.IsNullOrEmpty(expected.TurnId)) throw new IOException("DSH 当前没有可打断的运行。");
+            if (expected.PendingMessages != 0) throw new IOException("DSH 队列非空或状态未知；不会清空队列，请先处理待发送消息。");
+            progress?.Invoke("正在检查 DSH 队列并停止运行；未提交新消息…");
+            await peer.CallAsync("interrupt-send", new { turnId = expected.TurnId, text }, ct, TimeSpan.FromMinutes(1));
+            progress?.Invoke("新消息已提交；其他入口同时提交的消息仍按 DSH 原生队列处理。");
+            return;
+        }
         if (agent.Id != "hermes" || expected.CanStop != true || string.IsNullOrEmpty(expected.TurnId))
             throw new InvalidOperationException("只能打断本接入端拥有且可停止的 Hermes 运行；其他入口的运行无法接管。");
         if (string.IsNullOrWhiteSpace(text) && ids.Length == 0) throw new ArgumentException("请输入新消息。");
