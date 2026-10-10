@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using FurtherAgent.Core;
 
 if (args.Contains("--mobile-ui-fixture")) { await MobileUiFixture.RunAsync(); return; }
+if (args.Contains("--speech-checks")) { await SpeechChecks.Run(); return; }
 
 int passed = 0;
 void Check(bool condition, string name)

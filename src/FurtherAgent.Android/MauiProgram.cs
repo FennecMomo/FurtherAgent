@@ -17,7 +17,7 @@ public sealed class App : Application
         NavigationPage.SetHasNavigationBar(page, false);
         var window = new Window(navigation);
         window.Resumed += async (_, _) => await page.ResumeAsync();
-        window.Stopped += (_, _) => page.SaveDraft();
+        window.Stopped += (_, _) => page.Suspend();
         window.Destroying += async (_, _) => await page.CloseAsync();
         return window;
     }

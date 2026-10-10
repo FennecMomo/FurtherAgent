@@ -33,6 +33,7 @@ internal sealed class ConnectionPage : ContentPage
         var stack = new VerticalStackLayout { Padding = 24, Spacing = 18,
             Children = { intro, detail, Ui.Text("中继服务", 12, true), server, Ui.Text("设备授权码", 12, true), code,
                 connect, message, hint,
+                Ui.Button("语音设置", () => Navigation.PushAsync(new SpeechSettingsPage())),
                 Ui.Button("查看离线界面预览", async () => { await home.PreviewAsync(); await Navigation.PopAsync(); }),
                 Ui.Button("断开当前连接", async () => { await session.DisconnectAsync(); message.Text = "已断开，远端任务继续执行"; }),
                 Ui.Button("忘记保存的连接", async () =>

@@ -22,6 +22,8 @@ public sealed class MainPage : ContentPage
     private string scope = "", draftKey = "", lastSession = "", lastHtml = "";
     private bool loadingDraft, webReady, pendingRender, preview = true, interactionBusy, recognizingSpeech, closed;
     private readonly IDispatcherTimer timer;
+    private CancellationTokenSource? speechCancel, speechStop;
+    private bool recordingSpeech, suspended;
 
     public MainPage()
     {
@@ -33,7 +35,7 @@ public sealed class MainPage : ContentPage
         var logo = Ui.Text("F", 24, true); logo.TextColor = Colors.White; logo.HorizontalTextAlignment = TextAlignment.Center; logo.VerticalTextAlignment = TextAlignment.Center;
         var badge = new Border { Content = logo, BackgroundColor = Ui.Green, WidthRequest = 42, HeightRequest = 42,
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 }, StrokeThickness = 0 };
-        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.2", 9) } };
+        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.3", 9) } };
         foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
         var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
             ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
@@ -51,7 +53,7 @@ public sealed class MainPage : ContentPage
         toolbar.Add(files); toolbar.Add(models, 1); toolbar.Add(stop, 2); toolbar.Add(prompts, 3);
         voice = Ui.Button("语音", VoiceInputAsync);
         voice.AutomationId = "voice-input";
-        SemanticProperties.SetDescription(voice, "系统语音输入，识别后可编辑，不会自动发送");
+        SemanticProperties.SetDescription(voice, "实时语音输入，点击结束后可编辑，不会自动发送");
         var input = new Grid { ColumnSpacing = 6, ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
         input.Add(composer); voice.VerticalOptions = LayoutOptions.End; input.Add(voice, 1);
         send.VerticalOptions = LayoutOptions.End; input.Add(send, 2);
@@ -109,8 +111,8 @@ public sealed class MainPage : ContentPage
     {
         bool ready = session.Connected && !session.Busy && !interactionBusy && session.View is not null && !preview;
         composer.IsEnabled = !session.Busy && !interactionBusy && session.View is not null && !preview;
-        voice.IsEnabled = composer.IsEnabled;
-        voice.Text = recognizingSpeech ? "识别中…" : "语音";
+        voice.IsEnabled = recognizingSpeech || composer.IsEnabled;
+        voice.Text = recognizingSpeech ? (recordingSpeech ? "结束" : "取消") : "语音";
         composer.Placeholder = session.View is not null && !preview ? "继续这个会话…" : "连接设备后，在这里发送消息…";
         send.IsEnabled = ready && session.View!.CanSend && (!string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0);
         send.Text = session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑";
@@ -144,6 +146,7 @@ public sealed class MainPage : ContentPage
     public async Task CloseAsync()
     {
         closed = true;
+        speechCancel?.Cancel();
         SaveDraft(); timer.Stop(); session.Changed -= OnChanged;
         try { await session.DisposeAsync(); } catch { /* Window is already closing. */ }
     }
@@ -181,6 +184,7 @@ public sealed class MainPage : ContentPage
     }
     public async Task ResumeAsync()
     {
+        suspended = false;
         SaveDraft();
         if (session.Connected && !session.Busy && !interactionBusy)
         { try { await session.RefreshAsync(); } catch { status.Text = "恢复读取中，请稍后刷新"; } }
@@ -201,29 +205,69 @@ public sealed class MainPage : ContentPage
             Preferences.Remove(key); uploads.Remove(key);
         });
     }
+    public void Suspend()
+    {
+        suspended = true;
+        SaveDraft();
+        // Do not keep recording after Home, screen lock, or switching applications.
+        if (recordingSpeech) speechStop?.Cancel(); else speechCancel?.Cancel();
+    }
     private async Task VoiceInputAsync()
     {
+        if (recognizingSpeech)
+        {
+            if (recordingSpeech) { speechStop?.Cancel(); status.Text = "正在收尾，保留已识别文字…"; }
+            else speechCancel?.Cancel();
+            return;
+        }
         if (interactionBusy || session.Busy || preview || draftKey.Length == 0 || closed) return;
-        string key = draftKey;
-        SaveDraft();
-        recognizingSpeech = true;
         await Act(async () =>
         {
+            string key = draftKey, original = composer.Text ?? "";
+            SaveDraft();
+            string apiKey = await SecureStorage.GetAsync(SpeechSettingsPage.KeyName) ?? "";
+            if (string.IsNullOrWhiteSpace(apiKey))
+            { await Navigation.PushAsync(new SpeechSettingsPage()); return; }
+            if (await Permissions.RequestAsync<Permissions.Microphone>() != PermissionStatus.Granted)
+                throw new InvalidOperationException("需要麦克风权限才能语音输入。可在系统应用设置中允许；原草稿已保留。");
+            if (closed || suspended) return;
+            using var cancel = new CancellationTokenSource();
+            using var stopCapture = new CancellationTokenSource();
+            speechCancel = cancel; speechStop = stopCapture; recognizingSpeech = true;
+            RefreshButtons(); status.Text = "正在连接语音服务…";
+            int generation = 0;
+            bool hasText = false;
             try
             {
-                if (Platform.CurrentActivity is not MainActivity activity)
-                    throw new InvalidOperationException("请回到应用前台后重试语音输入。");
-                string? text = await activity.RecognizeSpeechAsync();
-                if (closed || text is null) return;
-                // Connection loss can change the active draft while the system activity is open.
-                // Always return dictation to the original session, never the newly selected one.
-                string original = key == draftKey ? composer.Text ?? "" : Preferences.Get(key, "");
-                string merged = original + (original.Length > 0 && !char.IsWhiteSpace(original[^1]) ? "\n" : "") + text;
-                Preferences.Set(key, merged);
-                if (key == draftKey) composer.Text = merged;
-                status.Text = key == draftKey ? "语音已转为文字，检查后点击发送" : "语音已保存到原会话草稿，重新打开该会话可查看";
+                var endpoint = FunAsrClient.Endpoint(Preferences.Get(SpeechSettingsPage.WorkspaceName, ""));
+                await Task.Run(() => new FunAsrClient().RunAsync(apiKey, endpoint,
+                    ct => MicrophoneAudio.Capture(() => MainThread.BeginInvokeOnMainThread(() =>
+                    {
+                        if (!recognizingSpeech || closed) return;
+                        recordingSpeech = true; RefreshButtons(); status.Text = "正在听，点击结束 · 最长 3 分钟";
+                    }), stopCapture.Token, ct),
+                    text => MainThread.InvokeOnMainThreadAsync(() =>
+                    {
+                        if (closed || generation != 0) return;
+                        hasText = !string.IsNullOrWhiteSpace(text);
+                        string merged = SpeechTranscript.Append(original, text);
+                        Preferences.Set(key, merged);
+                        if (draftKey == key) composer.Text = merged;
+                    }).GetAwaiter().GetResult(), cancel.Token));
+                status.Text = hasText ? "语音输入已结束，检查文字后点击发送" : "没有识别到文字，原草稿已保留";
             }
-            finally { recognizingSpeech = false; }
+            catch (OperationCanceledException) { status.Text = "语音输入已停止，已识别的文字已保留"; }
+            catch (TimeoutException)
+            {
+                status.Text = "语音识别超时，草稿已保留";
+                throw new InvalidOperationException("语音服务响应超时，已识别的文字已保留，请检查网络后重试。");
+            }
+            catch { status.Text = "语音识别未完成，草稿已保留"; throw; }
+            finally
+            {
+                generation++;
+                speechCancel = null; speechStop = null; recognizingSpeech = recordingSpeech = false;
+            }
         });
     }
     private async Task FileMenuAsync()
