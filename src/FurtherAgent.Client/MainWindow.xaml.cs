@@ -67,7 +67,13 @@ public partial class MainWindow : Window
         Application.Current.SessionEnding += (_, _) => { closing = true; DisposeTray(); };
         try
         {
-            if (File.Exists(SettingsFile)) ServerUrl.Text = JsonNode.Parse(File.ReadAllText(SettingsFile))?["serverUrl"]?.ToString() ?? ServerUrl.Text;
+            if (File.Exists(SettingsFile))
+            {
+                var saved = JsonNode.Parse(File.ReadAllText(SettingsFile));
+                ServerUrl.Text = saved?["serverUrl"]?.ToString() ?? ServerUrl.Text;
+                LocalBackend.SelectedIndex = Math.Clamp(saved?["localBackend"]?.GetValue<int>() ?? 0, 0, 2);
+                DshExecutable.Text = saved?["dshExecutable"]?.ToString() ?? DshExecutable.Text;
+            }
         }
         catch { StatusBar.Text = "保存的地址无法读取，请在设置中重新保存。"; }
         ServerUrl.Text = Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER") ?? ServerUrl.Text;
@@ -119,17 +125,18 @@ public partial class MainWindow : Window
         ShareButton.IsEnabled = false;
         try
         {
-            if (host is not null) { await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true; LocalCode.Text = "尚未开启共享"; CopyCodeButton.IsEnabled = false; HostStatus.Text = "共享已停止"; ShareButton.Content = "开启共享"; }
+            if (host is not null) { if (dshBackground is not null) { await dshBackground.DisposeAsync(); dshBackground = null; } await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true; LocalCode.Text = "尚未开启共享"; CopyCodeButton.IsEnabled = false; HostStatus.Text = "共享已停止"; ShareButton.Content = "开启共享"; }
             else
             {
                 hostRegistry = new RegistryClient(ServerUrl.Text);
+                SaveServerAddress(ServerUrl.Text.Trim());
                 localHostName = Environment.MachineName;
                 if (LocalBackend.SelectedIndex > 0)
                 {
                     string descriptor;
                     if (LocalBackend.SelectedIndex == 2)
                     {
-                        dshBackground = await DshBackgroundRuntime.StartAsync(DshExecutable.Text);
+                        dshBackground ??= await DshBackgroundRuntime.StartAsync(DshExecutable.Text);
                         descriptor = dshBackground.DescriptorPath;
                     }
                     else descriptor = DshAdapter.FindDescriptor("desktop");
@@ -141,7 +148,7 @@ public partial class MainWindow : Window
                 host.Status += message => Dispatcher.BeginInvoke(() => HostStatus.Text = message);
                 host.CodeChanged += code => Dispatcher.BeginInvoke(() => { LocalCode.Text = code; CopyCodeButton.IsEnabled = true; });
                 try { await host.StartAsync(localHostName); LocalBackend.IsEnabled = false; }
-                catch { await host.DisposeAsync(); host = null; hostRegistry.Dispose(); await DisposeLocalAdapterAsync(); throw; }
+                catch { await host.DisposeAsync(); host = null; throw; }
                 LocalCode.Text = host.Lease!.Code;
                 CopyCodeButton.IsEnabled = true;
                 HostStatus.Text = "等待连接。请将上方授权码发送给 A。";
@@ -150,7 +157,13 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            if (host is null) { hostRegistry?.Dispose(); hostRegistry = null; await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true; }
+            if (host is null)
+            {
+                hostRegistry?.Dispose(); hostRegistry = null;
+                try { await DisposeLocalAdapterAsync(); }
+                catch (Exception cleanup) { Error(new IOException(ex.Message + "；清理状态：" + cleanup.Message)); return; }
+                LocalBackend.IsEnabled = true;
+            }
             Error(ex);
         }
         finally { ShareButton.IsEnabled = true; }
@@ -360,7 +373,7 @@ public partial class MainWindow : Window
         SendButton.IsEnabled = enabled && current is not null && current.CanSend;
         InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
         Composer.IsEnabled = SendButton.IsEnabled || InterruptSendButton.IsEnabled;
-        UploadButton.IsEnabled = FilesButton.IsEnabled = enabled && current is not null && agent?.CanFiles == true;
+        PasteImageButton.IsEnabled = UploadButton.IsEnabled = FilesButton.IsEnabled = enabled && current is not null && agent?.CanFiles == true;
         ModelButton.IsEnabled = enabled && current is not null && agent?.CanConfigure == true;
         ArchiveButton.IsEnabled = enabled && current is not null && agent?.CanArchive == true && current.Status is not ("active" or "running");
         DeliveryPicker.Visibility = agent?.CanChooseDelivery == true ? Visibility.Visible : Visibility.Collapsed;
@@ -590,11 +603,11 @@ public partial class MainWindow : Window
         string id = filesSession!; CloseOverlays();
         await TransferAsync(async (client, progress, ct) => { await client.DownloadAsync(id, file.Id, dialog.FileName, progress, ct); });
     }
-    private static void SaveServerAddress(string server)
+    private void SaveServerAddress(string server)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile)!);
         string temporary = SettingsFile + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(new { serverUrl = server }));
+        File.WriteAllText(temporary, JsonSerializer.Serialize(new { serverUrl = server, localBackend = LocalBackend.SelectedIndex, dshExecutable = DshExecutable.Text.Trim() }));
         File.Move(temporary, SettingsFile, true);
     }
     private async void PasteImage_Click(object sender, RoutedEventArgs e)

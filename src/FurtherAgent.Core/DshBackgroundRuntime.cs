@@ -19,6 +19,12 @@ public sealed class DshBackgroundRuntime : IAsyncDisposable
         string cli = Path.Combine(Path.GetDirectoryName(exe)!, "resources", "app.asar", "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js");
         if (!File.Exists(exe) || !File.Exists(Path.Combine(Path.GetDirectoryName(exe)!, "resources", "app.asar"))) throw new IOException("请选择已安装的 DSH 桌面版程序，以使用其匹配运行时。");
         var start = new ProcessStartInfo(exe) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, RedirectStandardInput = true, WorkingDirectory = root };
+        // Inherit OS plumbing only. Global model keys or DSH overrides must not
+        // silently turn an isolated profile into another authenticated desktop.
+        var operatingSystemVariables = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "SystemRoot", "WINDIR", "TEMP", "TMP", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATH", "PATHEXT", "COMSPEC", "USERNAME", "USERDOMAIN", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "HOMEDRIVE", "HOMEPATH" };
+        foreach (string key in start.Environment.Keys.ToArray())
+            if (!operatingSystemVariables.Contains(key)) start.Environment.Remove(key);
         start.Environment["ELECTRON_RUN_AS_NODE"] = "1";
         start.Environment["DSH_HOME"] = Path.Combine(root, "background-home");
         // Independent settings/authentication: never copy ~/.dsh into this home.

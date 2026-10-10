@@ -1,8 +1,8 @@
-# DSH 双模式接入（开发中）
+# DSH 双模式接入（0.8.0）
 
 此适配从 FurtherAgent 0.6.8 开始实现，不依赖尚未推送的 0.7.0。
 桌面与独立后台使用同一插件、同一个 Core 适配器，WPF 和 CLI 通过既有中继协议访问。
-尚未完成整套验收，不能将下面的阶段结果等同于正式发布。
+0.8.0 交付首批会话控制能力；扩展能力仍按下述边界关闭，不能把基础联调通过当成全功能验收。
 
 ## 生命周期与安装
 
@@ -57,7 +57,33 @@
 后台退出不改变桌面 Host。停止很早时 DSH 可能尚未将原始输入提交到历史，验收应检查替换消息唯一性，不能假设被取消输入一定已落盘。
 这不等同于鼠标操作或 WPF 视觉验收，也尚未覆盖两个入口同时执行写入的竞争。
 
-尚待完整端到端验收：WPF/CLI 经中继共用桌面最新会话、双入口并发、停止与排队竞争、
-断线续接、全部扩展能力，以及两个模式同时工作时的隔离与更新流程。
+尚待验收：WPF 桌面视觉同步、双入口近同时发送及审批竞争、图片/文件原生附件与远程审批/提问。首批测试已验证 CLI 经中继控制同一桌面 Host、停止与队列边界、重读不重发及双模式进程隔离。桌面页面停留与交互效果没有通过模拟点击宣称已验收。
 
 实际生命周期联调通过：空闲桌面完整退出并重新启动后，原适配器按同一 profile 身份重新发现插件；独立后台 PID 和会话保持不变，重开的桌面仍看不到后台会话。默认桌面发现支持该恢复，显式指定描述文件则固定目标。常规回归 141 项、无窗口 WPF 与持久化检查 17 项通过。
+
+## 客户端入口与后台配置
+
+在「设置 → 共享本机 Agent」选择 Codex 桌面、DSH 桌面或 DSH 独立后台，然后开启共享。
+选项和 DSH 安装路径随地址保存在当前用户目录，更新程序目录不丢失。
+插件安装脚本使用 PowerShell 7：`pwsh -File scripts/Install-DshBridge.ps1 -Mode desktop`；后台改为 `background`。
+本次已在本机安装两种插件配置并验证桌面加载，不需要你再重启一次。
+
+独立后台只继承 Windows 必需环境变量，不继承模型 API key 或外部 DSH 环境覆盖。
+它可能在未登录时就展示内置模型目录，因此设置页明确提示「能列出模型不代表已配置凭据」。
+目前未复制桌面账号，也未验证后台真实模型生成；后台的进程、列表、新建和隔离已验证。
+需要配置后台时，先停止 FurtherAgent 的后台共享，再使用独立 home 启动 DSH 自身网页入口：
+
+```powershell
+$env:DSH_HOME = Join-Path $env:LOCALAPPDATA 'FurtherAgent/dsh/background-home'
+$env:ELECTRON_RUN_AS_NODE = '1'
+$exe = 'D:/Software/DeepseekHarness/DeepSeek Harness.exe'
+$cli = Join-Path (Split-Path $exe) 'resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js'
+& $exe --expose-internals $cli --profile web --port 0
+```
+
+该命令请在专用 PowerShell 窗口运行，按 DSH 提供的本地入口配置该实例，完成后退出该进程再开启 FurtherAgent 后台共享。
+不要把后台 home 改成桌面的 `.dsh`，不要让两个后台运行时同时使用同一 home。
+模型切换是 DSH 原生行为，会同步修改该实例的默认模型。Plan 切换已验证，Plan 完成时若触发原生审批或提问，仍须由所属 DSH 入口处理；FurtherAgent 0.8.0 不提供远程回应。
+图片、文件按钮按 DSH 能力禁用，Hermes/Codex 原有能力不受此限制。
+
+发布包同时包含 Client、Server、Host、Cli、插件和安装脚本。当前中继透明转发，不需要为本机 DSH 接入升级或重启线上 Hermes 服务。

@@ -28,7 +28,7 @@ public sealed class DshAdapter : IAgentAdapter
     private string? pendingText, pendingId, pendingSession;
     private string? pendingDelivery, pendingMethod;
     public AgentInfo Info => new("dsh", instanceMode == "background" ? "DSH · 独立后台" : "DSH · 桌面", IsAvailable,
-        $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。", CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"),
+        $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。" + (instanceMode == "background" ? "独立后台需单独配置模型账号，模型目录不代表凭据已配置。" : ""), CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"),
         CanChooseDelivery: capabilities.Contains("delivery"), CanInterruptSend: capabilities.Contains("interrupt-send"));
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
@@ -176,7 +176,8 @@ public sealed class DshAdapter : IAgentAdapter
         return new(view?["model"]?.ToString() ?? catalog?["default"]?["model"]?.ToString() ?? "",
             view?["provider"]?.ToString() ?? catalog?["default"]?["provider"]?.ToString() ?? "",
             view?["mode"]?.ToString() ?? "default", models, models.Count > 0, capabilities.Contains("plan") && view?["canChangeMode"]?.GetValue<bool>() == true,
-            "DSH 原生设置：修改模型也会更新 DSH 的默认模型；执行中的 Plan 变更在下一执行步骤生效。");
+            models.Count == 0 ? "当前 DSH 实例尚无可用模型，请为该实例单独配置模型账号；独立后台不复用桌面账号。"
+                : "DSH 原生设置：修改模型也会更新 DSH 的默认模型；执行中的 Plan 变更在下一执行步骤生效。审批和提问需在所属 DSH 入口处理。" + (instanceMode == "background" ? "独立后台需单独配置账号；能列出模型不代表已配置凭据。" : ""));
     }
     public async Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct)
     {
