@@ -7,9 +7,9 @@
     <SingleProject>true</SingleProject>
     <ApplicationTitle>FurtherAgent</ApplicationTitle>
     <ApplicationId>top.fennecmomo.furtheragent</ApplicationId>
-    <ApplicationDisplayVersion>0.9.3</ApplicationDisplayVersion>
-    <Version>0.9.3</Version>
-    <ApplicationVersion>903</ApplicationVersion>
+    <ApplicationDisplayVersion>0.9.4</ApplicationDisplayVersion>
+    <Version>0.9.4</Version>
+    <ApplicationVersion>904</ApplicationVersion>
     <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
     <PublishTrimmed>false</PublishTrimmed>
@@ -23,5 +23,9 @@
     <ProjectReference Include="../FurtherAgent.Mobile/FurtherAgent.Mobile.csproj" />
     <MauiIcon Include="Resources/AppIcon/appicon.svg" Color="#183F34" />
     <MauiSplashScreen Include="Resources/AppIcon/appicon.svg" Color="#F6F8F5" BaseSize="100,100" />
+  </ItemGroup>
+  <!-- Personal builds opt in with a local, ignored file; never place credentials in this project. -->
+  <ItemGroup Condition="'$(PersonalSpeechKeyFile)' != ''">
+    <EmbeddedResource Include="$(PersonalSpeechKeyFile)" LogicalName="FurtherAgent.PersonalSpeechKey" />
   </ItemGroup>
 </Project>

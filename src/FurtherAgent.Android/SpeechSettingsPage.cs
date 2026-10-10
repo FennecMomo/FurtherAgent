@@ -15,14 +15,16 @@ internal sealed class SpeechSettingsPage : ContentPage
         var stack = new VerticalStackLayout { Padding = 24, Spacing = 18, Children = {
             Ui.Text("实时语音输入", 25, true),
             Ui.Text("使用阿里云百炼 · Fun-ASR（北京）。说话时逐步出字，点击结束后可编辑再发送。单次最长 3 分钟。"),
-            Ui.Text("录音会直接发送到阿里云识别，按录音时长计费。手机不保存录音，密钥仅保存于本机安全存储。"),
+            Ui.Text(SpeechCredentials.HasBundledKey
+                ? "本自用版已内置语音密钥，可以直接使用。录音发送到阿里云识别，按时长计费；手机不保存录音。可在下方填写其他密钥替换。"
+                : "录音会直接发送到阿里云识别，按录音时长计费。手机不保存录音，填写的密钥保存于本机安全存储。"),
             Ui.Text("API Key", 12, true), key, Ui.Text("业务空间", 12, true), workspace,
             Ui.Text("默认使用北京公共接入地址；填写业务空间 ID 可使用专属接入地址。密钥须属于北京地域并有 Fun-ASR 调用权限。", 12),
             Ui.Button("保存", async () => {
                 try {
                     _ = FunAsrClient.Endpoint(workspace.Text ?? "");
                     string value = key.Text?.Trim() ?? "";
-                    if (value.Length == 0 && string.IsNullOrWhiteSpace(await SecureStorage.GetAsync(KeyName)))
+                    if (value.Length == 0 && string.IsNullOrWhiteSpace(await SpeechCredentials.GetAsync()))
                         throw new InvalidOperationException("请先填写 API Key。");
                     if (value.Any(char.IsWhiteSpace)) throw new InvalidOperationException("API Key 不能包含空白字符。");
                     if (value.Length > 0) await SecureStorage.SetAsync(KeyName, value);
@@ -31,13 +33,17 @@ internal sealed class SpeechSettingsPage : ContentPage
                 } catch { status.Text = "保存失败，请检查密钥和业务空间 ID 后重试。"; }
             }, true),
             Ui.Button("删除语音密钥", async () => {
-                if (!await DisplayAlertAsync("删除密钥", "删除本机语音识别密钥？", "删除", "取消")) return;
-                SecureStorage.Remove(KeyName); key.Text = ""; status.Text = "已删除，需要重新配置后才能识别。";
+                if (!await DisplayAlertAsync("删除密钥", "删除已保存的语音密钥，并停用本机内置密钥？", "删除", "取消")) return;
+                SpeechCredentials.Delete(); key.Text = ""; status.Text = "已删除并停用，需要重新配置后才能识别。";
             }), status } };
+        if (SpeechCredentials.HasBundledKey) stack.Children.Add(Ui.Button("使用内置密钥", () => {
+            SpeechCredentials.UseBundled(); Preferences.Remove(WorkspaceName); workspace.Text = ""; key.Text = "";
+            status.Text = "已启用内置密钥，可以直接使用语音。"; return Task.CompletedTask;
+        }));
         foreach (var label in stack.Children.OfType<Label>()) Ui.TextTheme(label);
         Content = new ScrollView { Content = stack };
         Loaded += async (_, _) => {
-            try { status.Text = string.IsNullOrWhiteSpace(await SecureStorage.GetAsync(KeyName)) ? "尚未配置语音密钥" : "已有密钥；留空表示保留。"; }
+            try { status.Text = string.IsNullOrWhiteSpace(await SpeechCredentials.GetAsync()) ? "尚未配置语音密钥" : "语音密钥已就绪；留空表示保留。"; }
             catch { status.Text = "无法读取已存密钥，请重新保存。"; }
         };
     }
