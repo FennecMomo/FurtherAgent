@@ -35,7 +35,7 @@ public sealed class MainPage : ContentPage
         var logo = Ui.Text("F", 24, true); logo.TextColor = Colors.White; logo.HorizontalTextAlignment = TextAlignment.Center; logo.VerticalTextAlignment = TextAlignment.Center;
         var badge = new Border { Content = logo, BackgroundColor = Ui.Green, WidthRequest = 42, HeightRequest = 42,
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 }, StrokeThickness = 0 };
-        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.4", 9) } };
+        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.5", 9) } };
         foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
         var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
             ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
@@ -225,7 +225,7 @@ public sealed class MainPage : ContentPage
         {
             string key = draftKey, original = composer.Text ?? "";
             SaveDraft();
-            string apiKey = await SpeechCredentials.GetAsync();
+            string apiKey = await SecureStorage.GetAsync(SpeechSettingsPage.KeyName) ?? "";
             if (string.IsNullOrWhiteSpace(apiKey))
             { await Navigation.PushAsync(new SpeechSettingsPage()); return; }
             if (await Permissions.RequestAsync<Permissions.Microphone>() != PermissionStatus.Granted)

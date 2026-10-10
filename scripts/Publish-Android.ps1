@@ -1,7 +1,6 @@
 param(
     [string]$AndroidSdkDirectory = $env:ANDROID_HOME,
-    [string]$JavaSdkDirectory = $env:JAVA_HOME,
-    [string]$PersonalSpeechKeyFile = ''
+    [string]$JavaSdkDirectory = $env:JAVA_HOME
 )
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path $PSScriptRoot
@@ -13,15 +12,7 @@ $version = $project.Project.PropertyGroup.ApplicationDisplayVersion | Select-Obj
 $outputDirectory = Join-Path $projectRoot "artifacts/release/android/$version"
 New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
 # Release code with the local Android development signing identity: an internal preview APK, not a store release.
-$keyArgument = '-p:PersonalSpeechKeyFile='
-if ($PersonalSpeechKeyFile) {
-    $keyPath = (Resolve-Path -LiteralPath $PersonalSpeechKeyFile).Path
-    $keyValue = [IO.File]::ReadAllText($keyPath).Trim()
-    if (-not $keyValue -or $keyValue -match '\s') { throw 'The personal speech key file must contain one non-empty key.' }
-    $keyValue = $null
-    $keyArgument = "-p:PersonalSpeechKeyFile=$keyPath"
-}
-& dotnet publish $projectFile -c Release "-p:AndroidSdkDirectory=$AndroidSdkDirectory" "-p:JavaSdkDirectory=$JavaSdkDirectory" $keyArgument -o $outputDirectory
+& dotnet publish $projectFile -c Release "-p:AndroidSdkDirectory=$AndroidSdkDirectory" "-p:JavaSdkDirectory=$JavaSdkDirectory" -o $outputDirectory
 if ($LASTEXITCODE -ne 0) { throw 'Android publish failed; no delivery APK was updated.' }
 $signedApk = Get-ChildItem -LiteralPath $outputDirectory -Filter '*-Signed.apk' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $signedApk) { throw 'No signed APK was produced.' }
