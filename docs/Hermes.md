@@ -99,3 +99,25 @@ HERMES_API_KEY_FILE=/home/ubuntu/.config/furtheragent/hermes-api.key
 
 
 双向文件传输使用 Host 自身的会话文件目录，不需要启用 Hermes browser_control/artifact API。配置 FURTHERAGENT_FILES_ROOT 可隔离联调文件，详见 File-Transfer.md。
+
+## 2026-10-10：第二个 profile（mom）已接入 0.9.1
+
+用户授权主 profile 配置第二个 profile 的独立接入。服务器主 profile 完成配置并提供脱敏报告，本地 Windows CLI 随后完成公网只读验收。本节为当前部署记录，前文 0.4.0 候选状态和“mom 保持原状”属于历史记录。
+
+| 项目 | default | mom |
+| --- | --- | --- |
+| API | `http://127.0.0.1:8642` | `http://127.0.0.1:8643` |
+| 接入端名称 | Hermes-default | Hermes-mom |
+| 身份文件 | `~/.config/furtheragent/hermes-default.identity` | `~/.config/furtheragent/hermes-mom.identity` |
+| 文件根目录 | `/home/ubuntu/furtheragent-files` | `/home/ubuntu/furtheragent-mom-files` |
+
+- mom 使用独立网关 `hermes-gateway-mom.service`，HERMES_HOME 为 `/home/ubuntu/.hermes/profiles/mom`。服务器在其环境中启用 API 并配置独立端口及凭据，仅监听 loopback；未启用主网关 multiplex 路由、未新增公网端口。
+- 本次重启 mom 网关使 API 配置生效，报告的网关 PID 为 3751064；主网关 PID 15657 保持不变，现有中继和两个原接入端保持在线，主身份文件未变。
+- 新接入端复用 `/home/ubuntu/furtheragent-0.9.1/host/FurtherAgent.Host`，注册到原中继 `http://127.0.0.1:47320`。独立 systemd 用户服务为 `hermes-furtheragent-mom.service`，已 enabled/active，当次 Host PID 为 3751510。环境文件 `/home/ubuntu/furtheragent-second-profile/hermes-mom.env` 受限保存，不入 Git。
+- 服务器用目标 API 的 `/v1/models` 返回 model id `mom`、对应进程环境和接入配置确认 profile；`--probe` 通过并读取到 96 个会话。新固定码独立于主 profile，未复用身份。
+- 北京时间 15:53:59–15:54:20，本地 CLI 使用新码实际连到 Hermes-mom，Agent 可用，读取 96 个会话，持续观察 20 秒心跳正常、退出码 0；另行连接 Hermes-default 成功。首次连接遇到 TLS 握手超时，重试只读探测后成功，未重放任何业务写入。
+- 本轮没有向业务会话发送任务，也没有实体手机验收。客户端仍按不同固定码选择 profile，没有新增应用内 profile 切换界面。
+
+运维时可先用 `systemctl --user status hermes-furtheragent-mom.service` 查看新 Host。撤销新 Host 可使用 `systemctl --user disable --now hermes-furtheragent-mom.service`，保留身份和文件目录以便恢复原码。若需撤销 mom API 配置，先确认没有活动任务，再恢复 `/home/ubuntu/furtheragent-second-profile/` 下的本次环境备份并重启 mom 网关；不要重启主网关或删除身份来完成普通回退。
+
+脱敏报告和原始公网验证日志保存于本地忽略目录 `artifacts/integration/second-profile`；短码仅保存于该目录的私有连接文件并交付用户，不写入 Git。
