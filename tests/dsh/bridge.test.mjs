@@ -81,6 +81,23 @@ test('native Plan wire pending flag is not the selected boolean',async()=>{
   f.ctx.sessionQuery.observeSession=original;
  }
 });
+
+test('cursor watch wakes on native events, stays read-only and releases listeners on cancellation',async()=>{
+ const f=fixture();const listeners=new Map();
+ f.ctx.on=(name,handler)=>{if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(handler);return()=>listeners.get(name).delete(handler)};
+ const emit=(name,...args)=>{for(const fn of listeners.get(name)??[])fn(...args)};
+ const api=service(f.ctx);const abort=new AbortController();
+ const initial=await api.snapshot('s');
+ const waiting=api.call('watch',{id:'s',cursor:initial.cursor,streamRevision:initial.streamRevision,status:initial.status,pendingMessages:initial.pendingMessages},abort.signal);
+ await new Promise(resolve=>setTimeout(resolve,5));
+ f.events.push({seq:3,type:'assistant/message',surfaceOp:'append',data:{message:{id:'new',content:[{type:'text',text:'native update'}]}}});
+ emit('session/event',{id:'s'},f.events.at(-1));
+ assert.equal((await waiting).messages.at(-1).text,'native update');
+ const cancelled=api.call('watch',{id:'s',cursor:initial.cursor,streamRevision:0,status:initial.status,pendingMessages:0},abort.signal);
+ abort.abort();await assert.rejects(cancelled);
+ api.close();assert.equal([...listeners.values()].reduce((n,set)=>n+set.size,0),0);
+ assert.ok(f.calls.every(call=>call==='observe'||call==='dispose'));
+});
 test('local bridge requires authentication, rejects browser origins, disposes descriptor',async()=>{
  const dir=await mkdtemp(join(tmpdir(),'fa-dsh-test-'));
  const bridge=await startBridge(fixture().ctx,{directory:dir});

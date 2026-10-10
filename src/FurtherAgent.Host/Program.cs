@@ -23,13 +23,14 @@ try
         return;
     }
     string descriptor = Environment.GetEnvironmentVariable("FURTHERAGENT_DSH_DESCRIPTOR") ?? "";
+    bool followDesktopRestarts = backend == "dsh-desktop" && descriptor.Length == 0;
     await using var background = backend == "dsh-background" && descriptor.Length == 0
         ? await DshBackgroundRuntime.StartAsync(Environment.GetEnvironmentVariable("FURTHERAGENT_DSH_EXE") ?? @"D:\Software\DeepseekHarness\DeepSeek Harness.exe", lifetime.Token) : null;
     if (background is not null) descriptor = background.DescriptorPath;
     if (backend.StartsWith("dsh") && descriptor.Length == 0) descriptor = DshAdapter.FindDescriptor("desktop");
     string? keyFile = backend == "hermes" ? Environment.GetEnvironmentVariable("HERMES_API_KEY_FILE") : null;
     string key = backend != "hermes" ? "" : keyFile is null ? Environment.GetEnvironmentVariable("HERMES_API_KEY") ?? "" : (await File.ReadAllTextAsync(keyFile)).Trim();
-    await using IAgentAdapter adapter = backend.StartsWith("dsh") ? new DshAdapter(descriptor)
+    await using IAgentAdapter adapter = backend.StartsWith("dsh") ? new DshAdapter(descriptor, followDesktopRestarts)
         : new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key);
     var capabilities = adapter is DshAdapter dsh ? await dsh.ProbeAsync(lifetime.Token) : await ((HermesAdapter)adapter).ProbeAsync(lifetime.Token);
     Console.WriteLine(adapter.Info.Name + " 能力检查通过。");

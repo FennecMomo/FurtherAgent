@@ -33,6 +33,7 @@ if (args.Contains("--dsh-live"))
     return;
 }
 await TlsRetryChecks.Run(Check);
+await DshDiscoveryChecks.Run(Check);
 await RpcSchedulingChecks.Run(Check);
 await InterruptSendChecks.Run(Check);
 using (var stream = new MemoryStream())

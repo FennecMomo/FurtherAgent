@@ -133,7 +133,7 @@ public partial class MainWindow : Window
                         descriptor = dshBackground.DescriptorPath;
                     }
                     else descriptor = DshAdapter.FindDescriptor("desktop");
-                    var dsh = new DshAdapter(descriptor); localAdapter = dsh;
+                    var dsh = new DshAdapter(descriptor, followDesktopRestarts: LocalBackend.SelectedIndex == 1); localAdapter = dsh;
                     await dsh.ProbeAsync();
                     localHostName += LocalBackend.SelectedIndex == 2 ? " · DSH 后台" : " · DSH 桌面";
                 }

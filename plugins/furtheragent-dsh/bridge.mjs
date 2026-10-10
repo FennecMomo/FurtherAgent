@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -16,7 +16,14 @@ const rejectSubmission = message => { throw Object.assign(new Error(message), { 
 // Borrow Host services; never construct a Context, Session or Agent for a read.
 export function service(ctx, config = {}) {
   const mode = config.mode === 'background' ? 'background' : 'desktop';
+  const hasActiveTasks = () => {
+    const agents = ctx.agents.list?.() ?? [];
+    const jobs = ctx.get?.('jobs');
+    return agents.some(a => a.status === 'running' || a.inbox?.nextTurn?.length || a.inbox?.nextStep?.length)
+      || (jobs && [undefined, ...agents.map(a => a.id)].some(id => jobs.list(id).some(job => ['running', 'stopping'].includes(job.status)))) || false;
+  };
   const streams = new Map();
+  const streamRevisions = new Map();
   const disposers = [];
   if (ctx.on) {
     disposers.push(ctx.on('session/event', (session, event) => {
@@ -24,6 +31,8 @@ export function service(ctx, config = {}) {
     }, { global: true }));
     disposers.push(ctx.on('agent/assistant-stream', ({ agent, frame }) => {
       const id = agent.session.id;
+      if (streamRevisions.size >= 64 && !streamRevisions.has(id)) streamRevisions.delete(streamRevisions.keys().next().value);
+      streamRevisions.set(id, frame.revision);
       if (frame.type === 'end') { streams.delete(id); return; }
       let state = streams.get(id);
       if (!state || state.attemptId !== frame.attemptId || frame.type === 'start') {
@@ -82,20 +91,41 @@ export function service(ctx, config = {}) {
         turnId, messages: messages.slice(-500), prompts: [], canSend: true, canStop: running,
         model: model?.model ?? null, provider: model?.provider ?? null, reasoningEffort: model?.reasoningEffort ?? null,
         canChangeMode: agent ? !!ctx.get?.('commands')?.find(agent, 'plan') : !!values.plan,
-        mode: (plan?.pending ? !plan.active : plan?.active) ? 'plan' : 'default', pendingMessages: pending, acceptedRequestIds,
+        mode: (plan?.pending ? !plan.active : plan?.active) ? 'plan' : 'default', pendingMessages: pending, acceptedRequestIds, streamRevision: streamRevisions.get(id) ?? 0,
         statusDetail: `DSH ${mode} · ${running ? '执行中' : '空闲'} · 待处理 ${pending} 条${plan?.pending ? ' · 模式等待下一步骤生效' : ''} · 同一 Host，会话只读订阅`, cursor: observation.cursor };
     } finally { observation[Symbol.dispose](); }
   }
   const methods = {
     info: async () => ({ protocol: 1, mode, pid: process.pid, hostVersion: config.hostVersion ?? 'unknown',
-      activeTasks: (ctx.agents.list?.() ?? []).some(a => a.status === 'running' || a.inbox?.nextTurn?.length || a.inbox?.nextStep?.length),
-      capabilities: ['list', 'snapshot', 'create', 'send', 'steer', 'stop', 'model', 'plan', 'delivery', 'interrupt-send', ...(ctx.get?.('workspaceController') ? ['archive'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
+      activeTasks: hasActiveTasks(), instanceId: config.instanceId,
+      capabilities: ['list', 'snapshot', 'watch', 'create', 'send', 'steer', 'stop', 'model', 'plan', 'delivery', 'interrupt-send', ...(ctx.get?.('workspaceController') ? ['archive'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
     list: async (_, signal) => {
       const result = await ctx.sessionController.list({}, signal);
       const archived = new Set(ctx.get?.('workspaceRegistry')?.archivedSessionIds ?? []);
       return { ...result, items: result.items.filter(item => !archived.has(item.sessionId)) };
     },
     snapshot: (args, signal) => snapshot(args.id, signal),
+    watch: async (args, signal) => {
+      cleanId(args.id);
+      signal?.throwIfAborted();
+      let wake;
+      const changed = new Promise(resolve => { wake = resolve; });
+      const releases = [
+        ctx.on('session/event', session => { if (session.id === args.id) wake(); }, { global: true }),
+        ctx.on('agent/assistant-stream', ({ agent }) => { if (agent.session.id === args.id) wake(); }, { global: true }),
+      ];
+      const timer = setTimeout(wake, 15000); timer.unref();
+      signal?.addEventListener('abort', wake, { once: true });
+      try {
+        // Subscribe before reading so an event during the snapshot cannot be lost.
+        const initial = await snapshot(args.id, signal);
+        if (initial.cursor !== args.cursor || initial.streamRevision !== args.streamRevision || initial.status !== args.status || initial.pendingMessages !== args.pendingMessages) return initial;
+        await changed;
+        signal?.throwIfAborted();
+        await delay(50, undefined, { signal });
+        return await snapshot(args.id, signal);
+      } finally { clearTimeout(timer); signal?.removeEventListener('abort', wake); for (const release of releases) release(); }
+    },
     create: async (args, signal) => {
       const created = await ctx.sessionController.create({ sessionId: cleanId(args.id), cwd: config.cwd || undefined }, signal);
       if (typeof args.title === 'string' && args.title.trim()) await ctx.sessionController.rename({ sessionId: created.sessionId, title: args.title });
@@ -168,19 +198,22 @@ export function service(ctx, config = {}) {
     },
     shutdown: () => {
       if (mode !== 'background') throw new Error('Desktop lifecycle belongs to DSH');
-      if ((ctx.agents.list?.() ?? []).some(a => a.status === 'running' || a.inbox.nextTurn.length || a.inbox.nextStep.length))
+      if (hasActiveTasks())
         throw new Error('DSH 后台仍有运行或排队任务，请先停止任务再退出。');
       setTimeout(() => process.emit('SIGTERM'), 100).unref();
       return { accepted: true };
     },
   };
-  return { snapshot, close() { for (const dispose of disposers) dispose?.(); streams.clear(); }, async call(method, args, signal) {
+  return { snapshot, close() { for (const dispose of disposers) dispose?.(); streams.clear(); streamRevisions.clear(); }, async call(method, args, signal) {
     if (!Object.hasOwn(methods, method)) throw new Error('Unsupported bridge method');
     return methods[method](args ?? {}, signal);
   } };
 }
 
 export async function startBridge(ctx, config = {}) {
+  const home = ctx.get?.('profileContext')?.home ?? process.env.DSH_HOME ?? join(homedir(), '.dsh');
+  const instanceId = createHash('sha256').update(`${home}\n${config.mode === 'background' ? 'background' : 'desktop'}`).digest('hex');
+  config = { ...config, instanceId };
   const api = service(ctx, config); const token = randomBytes(32).toString('hex');
   const directory = config.directory ?? join(process.env.LOCALAPPDATA ?? join(homedir(), '.local', 'share'), 'FurtherAgent', 'dsh', 'instances');
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -208,7 +241,7 @@ export async function startBridge(ctx, config = {}) {
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
   const mode = config.mode === 'background' ? 'background' : 'desktop';
   const descriptor = join(directory, `${mode}-${process.pid}.json`);
-  try { await writeFile(descriptor, JSON.stringify({ protocol: 1, mode, pid: process.pid, endpoint: `http://127.0.0.1:${server.address().port}`, token }), { mode: 0o600, flag: 'wx' }); }
+  try { await writeFile(descriptor, JSON.stringify({ protocol: 1, mode, pid: process.pid, instanceId, endpoint: `http://127.0.0.1:${server.address().port}`, token }), { mode: 0o600, flag: 'wx' }); }
   catch (error) { api.close(); server.close(); throw error; }
   return { descriptor, async close() { api.close(); for (const abort of active) abort.abort(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await unlink(descriptor).catch(() => {}); } };
 }

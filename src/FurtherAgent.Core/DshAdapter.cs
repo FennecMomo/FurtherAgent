@@ -8,38 +8,74 @@ namespace FurtherAgent.Core;
 public sealed class DshAdapter : IAgentAdapter
 {
     private sealed class BridgeException(string message, string code) : IOException(message) { public string Code { get; } = code; }
-    private readonly string descriptorPath;
+    private string descriptorPath;
+    private readonly bool followDesktopRestarts;
+    private readonly object descriptorGate = new();
+    private string? instanceId;
+    private bool needsProbe;
     private readonly HttpClient http = new(new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(30) };
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim gate = new(1);
     private readonly Task monitor;
     private string? selected;
+    private CancellationTokenSource? watchLifetime;
+    private long selectionGeneration, cursor = -1, streamRevision;
     private string instanceMode = "desktop";
     private string runtimeVersion = "unknown";
     private HashSet<string> capabilities = [];
     private SessionView? current;
     private string? fingerprint;
-    private string? pendingText, pendingId;
+    private string? pendingText, pendingId, pendingSession;
     private string? pendingDelivery, pendingMethod;
-    public AgentInfo Info => new("dsh", instanceMode == "background" ? "DSH · 独立后台" : "DSH · 桌面", true,
+    public AgentInfo Info => new("dsh", instanceMode == "background" ? "DSH · 独立后台" : "DSH · 桌面", IsAvailable,
         $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。", CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"),
         CanChooseDelivery: capabilities.Contains("delivery"), CanInterruptSend: capabilities.Contains("interrupt-send"));
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
-    public DshAdapter(string descriptorPath) { this.descriptorPath = Path.GetFullPath(descriptorPath); monitor = MonitorAsync(); }
+    public DshAdapter(string descriptorPath, bool followDesktopRestarts = false)
+    { this.descriptorPath = Path.GetFullPath(descriptorPath); this.followDesktopRestarts = followDesktopRestarts; monitor = MonitorAsync(); }
+    private bool IsAvailable { get { try { _ = ResolveDescriptor(); return true; } catch { return false; } } }
+    private static bool IsLive(JsonNode? descriptor)
+    {
+        try { using var process = System.Diagnostics.Process.GetProcessById(descriptor!["pid"]!.GetValue<int>()); return !process.HasExited; }
+        catch { return false; }
+    }
+    private JsonNode ResolveDescriptor()
+    {
+        lock (descriptorGate)
+        {
+            JsonNode? Read(string path) { try { return JsonNode.Parse(File.ReadAllText(path)); } catch { return null; } }
+            var currentDescriptor = Read(descriptorPath);
+            if (IsLive(currentDescriptor))
+            {
+                string? actual = currentDescriptor?["instanceId"]?.ToString();
+                if (instanceId is not null && actual != instanceId) throw new IOException("DSH 实例归属发生变化，拒绝自动切换。");
+                instanceId ??= actual; return currentDescriptor!;
+            }
+            string directory = Path.GetDirectoryName(descriptorPath)!;
+            if (followDesktopRestarts && instanceId is not null && Directory.Exists(directory))
+            {
+                var matches = Directory.GetFiles(directory, "desktop-*.json").Select(path => (path, data: Read(path)))
+                    .Where(x => IsLive(x.data) && x.data?["instanceId"]?.ToString() == instanceId).ToArray();
+                if (matches.Length == 1) { descriptorPath = matches[0].path; needsProbe = true; return matches[0].data!; }
+            }
+            throw new IOException("DSH 所属实例已离线；等待该实例重新启动，不会另起实例接管。");
+        }
+    }
     public static string InstanceDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "dsh", "instances");
     public static string FindDescriptor(string mode)
     {
         var matches = Directory.Exists(InstanceDirectory) ? Directory.GetFiles(InstanceDirectory, mode + "-*.json").Where(path =>
         {
-            try { var d = JsonNode.Parse(File.ReadAllText(path))!; return !System.Diagnostics.Process.GetProcessById(d["pid"]!.GetValue<int>()).HasExited; }
+            try { return IsLive(JsonNode.Parse(File.ReadAllText(path))); }
             catch { return false; }
         }).ToArray() : [];
         return matches.Length switch { 1 => matches[0], 0 => throw new IOException("未发现 DSH 适配插件，请先启用对应模式的插件。"), _ => throw new IOException("发现多个 DSH 实例，请显式指定连接描述文件。") };
     }
     private async Task<JsonNode?> Call(string method, object? args, CancellationToken ct)
     {
-        var d = JsonNode.Parse(await File.ReadAllTextAsync(descriptorPath, ct))!;
+        var d = ResolveDescriptor();
+        if (needsProbe && method != "info") { await ProbeAsync(ct); d = ResolveDescriptor(); }
         var endpoint = new Uri(d["endpoint"]!.GetValue<string>());
         if (endpoint.Scheme != "http" || endpoint.Host != "127.0.0.1" || endpoint.AbsolutePath != "/" || endpoint.Query.Length != 0 || endpoint.UserInfo.Length != 0 || d["protocol"]?.GetValue<int>() != 1)
             throw new IOException("无效的 DSH 本机连接描述。");
@@ -59,6 +95,7 @@ public sealed class DshAdapter : IAgentAdapter
         instanceMode = info["mode"]?.ToString() ?? "desktop";
         runtimeVersion = info["hostVersion"]?.ToString() ?? "unknown";
         capabilities = (info["capabilities"]?.AsArray() ?? []).Select(x => x!.ToString()).ToHashSet(StringComparer.Ordinal);
+        needsProbe = false;
         return info;
     }
     public async Task ShutdownBackgroundAsync(CancellationToken ct = default) => _ = await Call("shutdown", null, ct);
@@ -74,7 +111,9 @@ public sealed class DshAdapter : IAgentAdapter
         await gate.WaitAsync(ct);
         try
         {
-            if (pendingId is not null && selected != id) throw new IOException("上次发送结果未知，请先核对原会话。");
+            if (pendingId is not null && pendingSession != id) throw new IOException("上次发送结果未知，请先核对原会话。");
+            watchLifetime?.Cancel(); selectionGeneration++;
+            cursor = -1; streamRevision = 0;
             var view = await ReadSnapshot(id, ct);
             selected = id; current = view; fingerprint = Json.Node(view).ToJsonString(); return view;
         }
@@ -88,8 +127,14 @@ public sealed class DshAdapter : IAgentAdapter
     private async Task<SessionView> ReadSnapshot(string id, CancellationToken ct)
     {
         var node = await Call("snapshot", new { id }, ct);
-        if (pendingId is not null && id == selected && (node?["acceptedRequestIds"]?.AsArray() ?? []).Any(x => x?.ToString() == pendingId))
-            pendingId = pendingText = pendingDelivery = pendingMethod = null;
+        return ParseSnapshot(id, node);
+    }
+    private SessionView ParseSnapshot(string id, JsonNode? node)
+    {
+        cursor = node?["cursor"]?.GetValue<long>() ?? -1;
+        streamRevision = node?["streamRevision"]?.GetValue<long>() ?? 0;
+        if (pendingId is not null && id == pendingSession && (node?["acceptedRequestIds"]?.AsArray() ?? []).Any(x => x?.ToString() == pendingId))
+            pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = null;
         return Json.Read<SessionView>(node);
     }
     public Task SendAsync(string text, CancellationToken ct) => SendAsync(text, "auto", ct);
@@ -106,11 +151,11 @@ public sealed class DshAdapter : IAgentAdapter
             if (pendingId is null) current = await ReadSnapshot(selected, ct);
             pendingDelivery ??= delivery == "auto" ? current?.Status == "active" ? "steer" : "queue" : delivery;
             pendingId ??= Guid.NewGuid().ToString("N"); pendingText = text;
-            pendingMethod = method;
+            pendingMethod = method; pendingSession = selected;
             try { await Call(method, new { id = selected, text, requestId = pendingId, mode = pendingDelivery, turnId }, ct); }
             catch (BridgeException ex) when (ex.Code == "bridge/not-submitted")
-            { pendingId = pendingText = pendingDelivery = pendingMethod = null; throw; }
-            pendingId = pendingText = pendingDelivery = pendingMethod = null;
+            { pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = null; throw; }
+            pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = null;
         }
         finally { gate.Release(); }
     }
@@ -150,18 +195,52 @@ public sealed class DshAdapter : IAgentAdapter
         {
             while (!lifetime.IsCancellationRequested)
             {
-                await Task.Delay(1000, lifetime.Token);
+                string? id; long generation; object watchArgs;
+                using var watching = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
                 await gate.WaitAsync(lifetime.Token);
                 try
                 {
-                    if (selected is null) continue;
-                    current = await ReadSnapshot(selected, lifetime.Token);
-                    string next = Json.Node(current).ToJsonString();
-                    if (next != fingerprint) { fingerprint = next; Changed?.Invoke(current); }
+                    id = selected; generation = selectionGeneration;
+                    watchArgs = new { id, cursor, streamRevision, status = current?.Status, pendingMessages = current?.PendingMessages };
+                    watchLifetime = watching;
                 }
-                catch (Exception ex) when (!lifetime.IsCancellationRequested)
-                { Faulted?.Invoke("DSH 连接中断，未重发操作：" + ex.Message); selected = null; }
                 finally { gate.Release(); }
+                try
+                {
+                    if (id is null) { await Task.Delay(200, watching.Token); continue; }
+                    bool canWatch = capabilities.Contains("watch");
+                    if (!canWatch) await Task.Delay(1000, watching.Token);
+                    var node = await Call(canWatch ? "watch" : "snapshot", canWatch ? watchArgs : new { id }, watching.Token);
+                    await gate.WaitAsync(watching.Token);
+                    try
+                    {
+                        if (generation != selectionGeneration || selected != id) continue;
+                        long nextCursor = node?["cursor"]?.GetValue<long>() ?? -1;
+                        long nextRevision = node?["streamRevision"]?.GetValue<long>() ?? 0;
+                        if (nextCursor < cursor || nextCursor == cursor && nextRevision < streamRevision) continue;
+                        current = ParseSnapshot(id, node);
+                        string next = Json.Node(current).ToJsonString();
+                        if (next != fingerprint) { fingerprint = next; Changed?.Invoke(current); }
+                    }
+                    finally { gate.Release(); }
+                }
+                catch (OperationCanceledException) when (watching.IsCancellationRequested) { }
+                catch (Exception ex) when (!lifetime.IsCancellationRequested)
+                {
+                    await gate.WaitAsync(lifetime.Token);
+                    try
+                    {
+                        if (generation == selectionGeneration && selected == id)
+                        { selected = null; Faulted?.Invoke("DSH 连接中断，未重发操作：" + ex.Message); }
+                    }
+                    finally { gate.Release(); }
+                }
+                finally
+                {
+                    await gate.WaitAsync();
+                    try { if (watchLifetime == watching) watchLifetime = null; }
+                    finally { gate.Release(); }
+                }
             }
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
