@@ -10,7 +10,7 @@ public static class Json
     public static T Read<T>(JsonNode? value) => value!.Deserialize<T>(Options)!;
 }
 
-public record DeviceRegistration(string Name, string? IdentitySecret = null);
+public record DeviceRegistration(string Name, string? IdentitySecret = null, int MaxControllers = 1);
 public record DeviceLease(string Code, string Secret, DateTimeOffset ExpiresAt);
 public record LeaseProof(string Code, string Secret);
 public record PairRequest(string Code);

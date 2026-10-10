@@ -90,7 +90,7 @@ try
     {
         await host.StartAsync("Smoke B");
         string originalCode = host.Lease!.Code;
-        Check(originalCode.Length == 16, "server issues authorization code");
+        Check(originalCode.Length == 8, "server issues eight-character authorization code");
         await Reject(async () => await registry.PostAsync<JsonNode>("unregister", new LeaseProof(originalCode, "wrong")), "device secret required to revoke sharing");
         await using (var secondHost = new DeviceHost(registry, () => new TestAdapter()))
         {
@@ -139,7 +139,7 @@ try
         await remote.Peer.CallAsync("respond", new { id = "test-prompt", decision = "decline" });
         Check(TestAdapter.Interrupts == 1 && TestAdapter.Decisions == 1, "interrupt and approval RPC routing (test adapter)");
         await using (var second = new RemoteDevice(false))
-            await Reject(() => second.ConnectAsync(registry, originalCode), "second controller rejected");
+        { await second.ConnectAsync(registry, originalCode); Check(second.IsConnected && remote.IsConnected, "second controller coexists with first"); }
 
         var restored = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         remote.Reconnected += () => restored.TrySetResult();
@@ -179,7 +179,7 @@ try
     {
         string path = DeviceIdentity.DefaultPath(registry.ServerIdentity, "Persistent test");
         string secret = DeviceIdentity.LoadOrCreate(path), fixedCode = DeviceIdentity.Code(secret);
-        Check(secret == DeviceIdentity.LoadOrCreate(path) && fixedCode.Length == 32, "device identity persists and derives fixed pairing code");
+        Check(secret == DeviceIdentity.LoadOrCreate(path) && fixedCode.Length == 8, "device identity persists and derives fixed pairing code");
         await using (var first = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
         {
             await first.StartAsync("Persistent test");
@@ -212,6 +212,8 @@ try
         await Reject(() => { _ = DeviceIdentity.LoadOrCreate(path); return Task.CompletedTask; }, "corrupt identity fails without silently changing code");
     }
     finally { Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_DIR", previousIdentityDir); Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", previousIdentityFile); }
+    // Run after the restart checks so separate suites do not exhaust the real per-IP pairing limiter.
+    await MultiControllerChecks.RunAsync(registry, Check);
     string? thread = null;
     for (int i = 0; i + 1 < args.Length; i++) if (args[i] == "--codex-thread") thread = args[i + 1];
     if (thread is not null)
@@ -253,7 +255,7 @@ sealed class TestAdapter : IAgentAdapter
     public event Action<string>? Faulted { add { } remove { } }
     public Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<SessionInfo>>([new("test", "Test session", "2026-10-08")]);
     public Task<SessionView> AttachAsync(string id, CancellationToken ct) => Task.FromResult(View("attached"));
-    private static SessionView View(string text) => new("test", "Test session", "test", "idle", null, [new("Codex", text)], []);
+    private static SessionView View(string text) => new("test", "Test session", "test", "idle", null, [new("Codex", text)], [new("test-prompt", "test", "Test", "", null)]);
     public Task SendAsync(string text, CancellationToken ct) { Interlocked.Increment(ref Sends); Changed?.Invoke(View(text)); return Task.CompletedTask; }
     public Task InterruptAsync(CancellationToken ct) { Interlocked.Increment(ref Interrupts); return Task.CompletedTask; }
     public Task RespondAsync(string id, string decision, JsonNode? response, CancellationToken ct) { Interlocked.Increment(ref Decisions); return Task.CompletedTask; }

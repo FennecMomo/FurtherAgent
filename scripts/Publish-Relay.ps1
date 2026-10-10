@@ -9,6 +9,7 @@ dotnet publish (Join-Path $repoRoot 'src/FurtherAgent.Server') -c Release -r lin
 if ($LASTEXITCODE -ne 0) { throw 'Relay publish failed.' }
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Relay.md'), (Join-Path $repoRoot 'docs/Stable-Pairing.md'), (Join-Path $repoRoot 'LICENSE'), (Join-Path $repoRoot 'deploy/furtheragent-relay.service') -Destination $releaseDir -Force
 $archive = "$releaseDir.tar.gz"
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Controller-0.9.1.md') -Destination $releaseDir -Force
 tar -czf $archive -C $releaseDir .
 if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed.' }
 Get-FileHash -LiteralPath $archive -Algorithm SHA256

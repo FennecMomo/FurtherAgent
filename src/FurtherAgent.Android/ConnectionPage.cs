@@ -29,7 +29,7 @@ internal sealed class ConnectionPage : ContentPage
         }, true);
         var intro = Ui.Text("把工作带到手机上", 26, true);
         var detail = Ui.Text("在电脑或服务器开启 FurtherAgent 共享，将授权码填在这里。双方通过中继连接，无需配置设备 IP。", 14);
-        var hint = Ui.Text("授权码加密保存在本机。关闭页面不会停止远端任务。每台远端设备当前只允许一个控制端；若提示已被占用，请先断开原控制端。", 12);
+        var hint = Ui.Text("支持电脑和手机同时连接、独立查看会话并操作。填写远端的 8 位固定码即可，分隔符可省略。需要中继和接入端均为 0.9.1 或更新版本。关闭页面不会停止远端任务。", 12);
         var stack = new VerticalStackLayout { Padding = 24, Spacing = 18,
             Children = { intro, detail, Ui.Text("中继服务", 12, true), server, Ui.Text("设备授权码", 12, true), code,
                 connect, message, hint,

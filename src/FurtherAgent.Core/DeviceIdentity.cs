@@ -8,8 +8,10 @@ public static class DeviceIdentity
     public static string Code(string secret)
     {
         if (secret.Length != 64 || !secret.All(Uri.IsHexDigit)) throw new ArgumentException("Invalid device identity.");
-        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("FurtherAgent/device/v1/" + secret.ToUpperInvariant())))[..32];
+        return LegacyCode(secret)[..8];
     }
+    public static string LegacyCode(string secret) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("FurtherAgent/device/v1/" + secret.ToUpperInvariant())))[..32];
+    public static string DisplayCode(string code) => code.Length == 8 ? code[..4] + "-" + code[4..] : code;
     public static string DefaultPath(string server, string name)
     {
         if (Environment.GetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE") is { Length: > 0 } configured) return Path.GetFullPath(configured);

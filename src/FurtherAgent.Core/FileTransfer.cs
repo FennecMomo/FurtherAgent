@@ -63,6 +63,11 @@ public sealed class FileTransferStore : IDisposable
     }
     public FileWorkspace List(string session)
     {
+        gate.Wait();
+        try { return ListCore(session); } finally { gate.Release(); }
+    }
+    private FileWorkspace ListCore(string session)
+    {
         string dir = Workspace(session);
         var files = new List<RemoteFile>();
         foreach (string area in new[] { "inbox", "outbox" })
@@ -93,13 +98,13 @@ public sealed class FileTransferStore : IDisposable
             _ = Workspace(stale.Value.Session); NoLink(stale.Value.Part); File.Delete(stale.Value.Part); uploads.Remove(stale.Key);
         }
         string session = args["session"]?.ToString() ?? throw new ArgumentException("缺少会话。");
-        if (method == "files/list") return Json.Node(List(session));
+        if (method == "files/list") return Json.Node(ListCore(session));
         if (method == "files/begin")
         {
             string name = FileName(args["name"]!.ToString()); long size = args["size"]!.GetValue<long>(); string hash = args["sha256"]!.ToString();
             if (size < 0 || size > MaxFileBytes || hash.Length != 64 || !hash.All(Uri.IsHexDigit)) throw new ArgumentException("文件大小或 SHA256 无效。");
             if (uploads.Count >= 8) throw new IOException("待完成上传过多，请取消旧上传或重启测试接入端。");
-            var workspace = List(session);
+            var workspace = ListCore(session);
             if (workspace.Files.Count >= 200 || workspace.Files.Sum(f => f.Size) + uploads.Values.Where(u => u.Session == session).Sum(u => u.Size) + size > 1024L * 1024 * 1024)
                 throw new IOException("会话文件额度已满（最多 200 个 / 1 GiB），请在接入端清理。");
             string id = Guid.NewGuid().ToString("N"), dir = Workspace(session), target = Path.Combine(dir, "inbox", id + "__" + name), part = Path.Combine(dir, id + ".part");
@@ -165,7 +170,7 @@ public sealed class FileTransferStore : IDisposable
         if (paths.Length > 20) throw new ArgumentException("每条消息最多附加 20 个文件。");
         return text + "\n\n[FurtherAgent 文件工作区]\n" +
             (paths.Length == 0 ? "" : "用户上传的文件已存到此机器，可按任务需要读取：\n" + string.Join("\n", paths.Select(p => Json.Node(p).ToJsonString())) + "\n") +
-            OutputInstruction + Json.Node(List(session).Outbox).ToJsonString();
+            OutputInstruction + Json.Node(ListCore(session).Outbox).ToJsonString();
     }
     public void Dispose()
     { foreach (var item in uploads.Values) { try { NoLink(item.Part); File.Delete(item.Part); } catch { } } uploads.Clear(); }

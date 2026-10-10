@@ -38,7 +38,7 @@ async Task<WebSocketTransport?> Accept(HttpContext context)
     { context.Response.StatusCode = 400; return null; }
     return new WebSocketTransport(await context.WebSockets.AcceptWebSocketAsync());
 }
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.8.2", mode = "relay" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.9.1", mode = "relay" }));
 app.MapPost("/devices", (DeviceRegistration input) =>
 {
     if (string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 100) return Results.BadRequest("设备名称无效。");
@@ -57,14 +57,14 @@ app.MapPost("/devices", (DeviceRegistration input) =>
                 return Results.Ok(new DeviceLease(fixedCode, existing.Secret, existing.Expires));
             }
             if (devices.Count >= 1000) return Results.StatusCode(503);
-            var stable = new RelayDevice(input.Name, identity, DateTimeOffset.UtcNow.AddMinutes(2));
+            var stable = new RelayDevice(input.Name, identity, DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, 8), DeviceIdentity.LegacyCode(identity));
             devices.Add(fixedCode, stable);
             return Results.Ok(new DeviceLease(fixedCode, identity, stable.Expires));
         }
         if (devices.Count >= 1000) return Results.StatusCode(503);
         string code;
-        do { code = Convert.ToHexString(RandomNumberGenerator.GetBytes(8)); } while (devices.ContainsKey(code));
-        var device = new RelayDevice(input.Name, Token(), DateTimeOffset.UtcNow.AddMinutes(2));
+        do { code = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)); } while (devices.ContainsKey(code));
+        var device = new RelayDevice(input.Name, Token(), DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, 8));
         devices.Add(code, device);
         return Results.Ok(new DeviceLease(code, device.Secret, device.Expires));
     }
@@ -76,7 +76,7 @@ app.MapPost("/unregister", (LeaseProof input) =>
         if (!Authorized(input.Code, input.Secret, out var device)) return Results.Unauthorized();
         devices.Remove(input.Code);
         foreach (var key in tickets.Where(p => p.Value.Code == input.Code).Select(p => p.Key).ToArray()) tickets.Remove(key);
-        device!.Control?.Abort(); device.Session?.Stop();
+        device!.Control?.Abort(); foreach (var session in device.Sessions.Values) session.Stop();
         return Results.Ok(new { ok = true });
     }
 });
@@ -85,9 +85,10 @@ app.MapPost("/pair", (PairRequest input) =>
     lock (gate)
     {
         Clean(); string code = Normalize(input.Code);
+        if (code.Length == 32) code = devices.FirstOrDefault(p => p.Value.LegacyCode == code).Key ?? code;
         if (!devices.TryGetValue(code, out var device)) return Results.NotFound("授权码不存在或已过期。");
         if (device.Control?.IsOpen != true) return Results.Conflict("B 暂时离线，正在等待重连。");
-        if (device.Session is not null) return Results.Conflict("此设备已有远程控制端，请先断开它。");
+        if (device.Sessions.Count >= device.MaxControllers) return Results.Conflict("控制端数量达到上限；旧版接入端需升级后才能多端连接。");
         if (tickets.Count >= 3000) return Results.StatusCode(503);
         string token = Token();
         tickets[token] = new Ticket(code, DateTimeOffset.UtcNow.AddSeconds(60));
@@ -129,7 +130,7 @@ app.Map("/host", async (HttpContext context) =>
         lock (gate)
         {
             if (device is not null && ReferenceEquals(device.Control, socket))
-            { device.Control = null; device.Expires = DateTimeOffset.UtcNow.AddMinutes(2); device.Session?.Stop(); }
+            { device.Control = null; device.Expires = DateTimeOffset.UtcNow.AddMinutes(2); foreach (var active in device.Sessions.Values) active.Stop(); }
         }
     }
 });
@@ -149,7 +150,7 @@ app.Map("/join", async (HttpContext context) =>
         lock (gate)
         {
             if (Authorized(hello["code"]?.GetValue<string>(), hello["secret"]?.GetValue<string>(), out var device) &&
-                device!.Session is { } candidate && candidate.Id == hello["sessionId"]?.GetValue<string>() && candidate.Host is null)
+                device!.Sessions.TryGetValue(hello["sessionId"]?.GetValue<string>() ?? "", out var candidate) && candidate.Host is null)
             { session = candidate; candidate.Host = socket; joined = true; }
         }
         if (!joined) { await socket.WriteAsync(Json.Node(new { error = "中继会话授权无效。" }), timeout.Token); return; }
@@ -178,8 +179,8 @@ app.Map("/control", async (HttpContext context) =>
             Clean(); var token = hello["ticket"]?.GetValue<string>() ?? "";
             if (!tickets.Remove(token, out var ticket) || !devices.TryGetValue(ticket.Code, out device) || device.Control?.IsOpen != true)
                 error = "连接票据无效、已使用或设备离线。";
-            else if (device.Session is not null) error = "此设备已有远程控制端。";
-            else { session = new RelaySession(socket); device.Session = session; control = device.Control; }
+            else if (device.Sessions.Count >= device.MaxControllers) error = "控制端数量达到上限，请升级接入端或断开不用的连接。";
+            else { session = new RelaySession(socket); device.Sessions.Add(session.Id, session); control = device.Control; }
         }
         if (error is not null) { await socket.WriteAsync(Json.Node(new { error }), timeout.Token); return; }
         await control!.WriteAsync(Json.Node(new { type = "connect", sessionId = session!.Id }), timeout.Token);
@@ -200,20 +201,22 @@ app.Map("/control", async (HttpContext context) =>
         if (session is not null)
         {
             session.Stop();
-            lock (gate) { if (ReferenceEquals(device?.Session, session)) device!.Session = null; }
+            lock (gate) { device?.Sessions.Remove(session.Id); }
             session.Done.TrySetResult();
         }
     }
 });
 app.Run();
 
-sealed class RelayDevice(string name, string secret, DateTimeOffset expires)
+sealed class RelayDevice(string name, string secret, DateTimeOffset expires, int maxControllers, string? legacyCode = null)
 {
     public string Name { get; } = name;
     public string Secret { get; } = secret;
     public DateTimeOffset Expires { get; set; } = expires;
     public WebSocketTransport? Control { get; set; }
-    public RelaySession? Session { get; set; }
+    public int MaxControllers { get; } = maxControllers;
+    public string? LegacyCode { get; } = legacyCode;
+    public Dictionary<string, RelaySession> Sessions { get; } = [];
 }
 sealed class RelaySession(WebSocketTransport controller)
 {

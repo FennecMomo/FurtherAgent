@@ -132,6 +132,7 @@ public partial class MainWindow : Window
                 hostRegistry = new RegistryClient(ServerUrl.Text);
                 SaveServerAddress(ServerUrl.Text.Trim());
                 localHostName = Environment.MachineName;
+                Func<IAgentAdapter>? adapterFactory = null;
                 if (LocalBackend.SelectedIndex > 0)
                 {
                     string descriptor;
@@ -142,15 +143,17 @@ public partial class MainWindow : Window
                     }
                     else descriptor = DshAdapter.FindDescriptor("desktop");
                     var dsh = new DshAdapter(descriptor, followDesktopRestarts: LocalBackend.SelectedIndex == 1); localAdapter = dsh;
+                    bool followRestarts = LocalBackend.SelectedIndex == 1;
+                    adapterFactory = () => new DshAdapter(descriptor, followRestarts);
                     await dsh.ProbeAsync();
                     localHostName += LocalBackend.SelectedIndex == 2 ? " · DSH 后台" : " · DSH 桌面";
                 }
-                host = new DeviceHost(hostRegistry, localAdapter is null ? null : () => new BorrowedAgentAdapter(localAdapter), persistentIdentity: true);
+                host = new DeviceHost(hostRegistry, adapterFactory, persistentIdentity: true);
                 host.Status += message => Dispatcher.BeginInvoke(() => HostStatus.Text = message);
-                host.CodeChanged += code => Dispatcher.BeginInvoke(() => { LocalCode.Text = code; CopyCodeButton.IsEnabled = true; });
+                host.CodeChanged += code => Dispatcher.BeginInvoke(() => { LocalCode.Text = DeviceIdentity.DisplayCode(code); CopyCodeButton.IsEnabled = true; });
                 try { await host.StartAsync(localHostName); LocalBackend.IsEnabled = false; }
                 catch { await host.DisposeAsync(); host = null; throw; }
-                LocalCode.Text = host.Lease!.Code;
+                LocalCode.Text = DeviceIdentity.DisplayCode(host.Lease!.Code);
                 CopyCodeButton.IsEnabled = true;
                 HostStatus.Text = "等待连接。请将上方授权码发送给 A。";
                 ShareButton.Content = "停止共享";

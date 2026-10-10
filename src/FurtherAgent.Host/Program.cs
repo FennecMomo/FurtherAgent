@@ -42,9 +42,11 @@ try
     }
     using var registry = new RegistryClient(Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER")
         ?? throw new ArgumentException("请配置 FURTHERAGENT_SERVER。"));
-    await using var host = new DeviceHost(registry, () => new BorrowedAgentAdapter(adapter), persistentIdentity: true);
+    await using var host = new DeviceHost(registry, () => backend.StartsWith("dsh")
+        ? new DshAdapter(descriptor, followDesktopRestarts)
+        : new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key), persistentIdentity: true);
     host.Status += Console.WriteLine;
-    host.CodeChanged += code => Console.WriteLine($"授权码：{code}（持有码可操作 Agent，请仅提供给可信任的人）");
+    host.CodeChanged += code => Console.WriteLine($"授权码：{DeviceIdentity.DisplayCode(code)}（支持多端同时连接）");
     await host.StartAsync(Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName, lifetime.Token);
     Console.WriteLine("接入端已就绪。" + adapter.Info.Detail);
     await Task.Delay(Timeout.InfiniteTimeSpan, lifetime.Token);

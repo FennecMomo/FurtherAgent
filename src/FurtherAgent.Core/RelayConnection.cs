@@ -7,6 +7,7 @@ public sealed class DeviceHost : IAsyncDisposable
 {
     private readonly RegistryClient registry;
     private readonly Func<IAgentAdapter> factory;
+    private readonly SharedAgentHub agents;
     private readonly CancellationTokenSource lifetime = new();
     private Task? supervisor;
     private WebSocketTransport? control;
@@ -19,7 +20,7 @@ public sealed class DeviceHost : IAsyncDisposable
     public event Action<string>? Status;
     public event Action<string>? CodeChanged;
     public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false)
-    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; }
+    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; }
 
     public async Task StartAsync(string name, CancellationToken ct = default)
     {
@@ -38,7 +39,7 @@ public sealed class DeviceHost : IAsyncDisposable
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
-        Lease ??= await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret), timeout.Token);
+        Lease ??= await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret, 8), timeout.Token);
         if (identitySecret is not null && (Lease.Code != DeviceIdentity.Code(identitySecret) || Lease.Secret != identitySecret))
             throw new IOException("中继尚不支持固定配对码，请升级中继；设备身份已保留，不会退回随机码。");
         var socket = await registry.OpenSocketAsync("host", timeout.Token);
@@ -71,7 +72,7 @@ public sealed class DeviceHost : IAsyncDisposable
                     if (message["type"]?.ToString() == "connect" && message["sessionId"] is { } id)
                     {
                         tasks.RemoveAll(t => t.IsCompleted);
-                        if (tasks.Count >= 2) throw new IOException("中继会话数量异常。");
+                        if (tasks.Count >= 16) throw new IOException("中继会话数量异常。");
                         tasks.Add(ServeAsync(id.GetValue<string>(), cycle.Token));
                     }
                     else throw new IOException("未知的中继控制消息。");
@@ -109,7 +110,7 @@ public sealed class DeviceHost : IAsyncDisposable
             var hello = await socket.ReadLimitedAsync(4096, timeout.Token);
             if (hello["ok"]?.GetValue<bool>() != true) throw new IOException(hello["error"]?.ToString() ?? "连接授权失败。");
             using var stop = ct.Register(socket.Abort);
-            await using var adapter = factory();
+            await using var adapter = await agents.ConnectAsync(ct);
             await using var peer = new RpcPeer(socket);
             using var pumping = CancellationTokenSource.CreateLinkedTokenSource(ct);
             int incremental = 0;
@@ -176,6 +177,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 {
                     await foreach (var view in updates.Reader.ReadAllAsync(pumping.Token))
                     {
+                        if (view.Id != attachedSession) continue;
                         bool mode = Volatile.Read(ref incremental) == 1;
                         if (mode != lastIncremental) { sync = new SessionSyncEncoder(); lastIncremental = mode; }
                         var enriched = WithFiles(view);
@@ -198,6 +200,7 @@ public sealed class DeviceHost : IAsyncDisposable
     {
         lifetime.Cancel(); control?.Abort();
         if (supervisor is not null) await supervisor;
+        await agents.DisposeAsync();
         if (files.IsValueCreated) files.Value.Dispose();
         if (control is not null) await control.DisposeAsync();
         if (Lease is not null)
