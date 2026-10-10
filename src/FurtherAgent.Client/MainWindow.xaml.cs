@@ -13,6 +13,9 @@ namespace FurtherAgent.Client;
 public partial class MainWindow : Window
 {
     private DeviceHost? host;
+    private IAgentAdapter? localAdapter;
+    private DshBackgroundRuntime? dshBackground;
+    private string localHostName = Environment.MachineName;
     private RegistryClient? hostRegistry, remoteRegistry;
     private RemoteDevice? remote;
     private IReadOnlyList<SessionInfo> sessions = [];
@@ -116,23 +119,46 @@ public partial class MainWindow : Window
         ShareButton.IsEnabled = false;
         try
         {
-            if (host is not null) { await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); LocalCode.Text = "尚未开启共享"; CopyCodeButton.IsEnabled = false; HostStatus.Text = "共享已停止"; ShareButton.Content = "开启共享"; }
+            if (host is not null) { await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true; LocalCode.Text = "尚未开启共享"; CopyCodeButton.IsEnabled = false; HostStatus.Text = "共享已停止"; ShareButton.Content = "开启共享"; }
             else
             {
                 hostRegistry = new RegistryClient(ServerUrl.Text);
-                host = new DeviceHost(hostRegistry, persistentIdentity: true);
+                localHostName = Environment.MachineName;
+                if (LocalBackend.SelectedIndex > 0)
+                {
+                    string descriptor;
+                    if (LocalBackend.SelectedIndex == 2)
+                    {
+                        dshBackground = await DshBackgroundRuntime.StartAsync(DshExecutable.Text);
+                        descriptor = dshBackground.DescriptorPath;
+                    }
+                    else descriptor = DshAdapter.FindDescriptor("desktop");
+                    var dsh = new DshAdapter(descriptor); localAdapter = dsh;
+                    await dsh.ProbeAsync();
+                    localHostName += LocalBackend.SelectedIndex == 2 ? " · DSH 后台" : " · DSH 桌面";
+                }
+                host = new DeviceHost(hostRegistry, localAdapter is null ? null : () => new BorrowedAgentAdapter(localAdapter), persistentIdentity: true);
                 host.Status += message => Dispatcher.BeginInvoke(() => HostStatus.Text = message);
                 host.CodeChanged += code => Dispatcher.BeginInvoke(() => { LocalCode.Text = code; CopyCodeButton.IsEnabled = true; });
-                try { await host.StartAsync(Environment.MachineName); }
-                catch { await host.DisposeAsync(); host = null; hostRegistry.Dispose(); throw; }
+                try { await host.StartAsync(localHostName); LocalBackend.IsEnabled = false; }
+                catch { await host.DisposeAsync(); host = null; hostRegistry.Dispose(); await DisposeLocalAdapterAsync(); throw; }
                 LocalCode.Text = host.Lease!.Code;
                 CopyCodeButton.IsEnabled = true;
                 HostStatus.Text = "等待连接。请将上方授权码发送给 A。";
                 ShareButton.Content = "停止共享";
             }
         }
-        catch (Exception ex) { Error(ex); }
+        catch (Exception ex)
+        {
+            if (host is null) { hostRegistry?.Dispose(); hostRegistry = null; await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true; }
+            Error(ex);
+        }
         finally { ShareButton.IsEnabled = true; }
+    }
+    private async Task DisposeLocalAdapterAsync()
+    {
+        if (localAdapter is not null) { await localAdapter.DisposeAsync(); localAdapter = null; }
+        if (dshBackground is not null) { await dshBackground.DisposeAsync(); dshBackground = null; }
     }
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
@@ -192,7 +218,8 @@ public partial class MainWindow : Window
         {
             string server = hostRegistry?.ServerIdentity ?? new Uri(ServerUrl.Text.TrimEnd('/') + '/').AbsoluteUri;
             if (host is not null) { await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); }
-            DeviceIdentity.Reset(DeviceIdentity.DefaultPath(server, Environment.MachineName));
+            await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true;
+            DeviceIdentity.Reset(DeviceIdentity.DefaultPath(server, localHostName));
             LocalCode.Text = "身份已重置，下次开启共享后显示新码"; CopyCodeButton.IsEnabled = false;
             ShareButton.Content = "开启共享"; HostStatus.Text = "共享已停止，旧配对码已失效。";
         }
@@ -694,6 +721,7 @@ public partial class MainWindow : Window
             transferCancellation?.Cancel();
             await DisconnectAsync();
             if (host is not null) await host.DisposeAsync();
+            await DisposeLocalAdapterAsync();
             hostRegistry?.Dispose();
         }
         finally { snapshotTimer.Stop(); DisposeTray(); closing = true; Application.Current.Shutdown(); }

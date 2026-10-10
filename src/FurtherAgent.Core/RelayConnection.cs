@@ -127,9 +127,13 @@ public sealed class DeviceHost : IAsyncDisposable
                 return id;
             }
             async Task<JsonNode?> FileOperation(string method, JsonNode? args, CancellationToken token)
-            { _ = FileSession(args); return await files.Value.HandleAsync(method, args!, token); }
+            {
+                if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) throw new NotSupportedException("当前 DSH 实例尚未开放文件传输。");
+                _ = FileSession(args); return await files.Value.HandleAsync(method, args!, token);
+            }
             async Task<JsonNode?> SendFiles(JsonNode? args, CancellationToken token)
             {
+                if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) throw new NotSupportedException("当前 DSH 实例尚未开放文件传输。");
                 string id = FileSession(args), text = args!["text"]?.ToString() ?? "";
                 if (text.Length > 100000) throw new ArgumentException("消息过长。");
                 var ids = args["files"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
@@ -139,7 +143,7 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             peer.Handler = async (method, args, token) => method switch
             {
-                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = true } }),
+                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
                 "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
                 "send-files" => await SendFiles(args, token),

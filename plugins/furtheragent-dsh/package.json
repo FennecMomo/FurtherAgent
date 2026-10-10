@@ -1,0 +1,1 @@
+{"name":"@fennecmomo/furtheragent-dsh","version":"0.8.0","type":"module","main":"index.mjs","files":["index.mjs","bridge.mjs"],"description":"Same-Host FurtherAgent bridge for DeepSeek Harness","license":"MIT"}
