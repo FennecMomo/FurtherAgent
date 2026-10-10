@@ -13,8 +13,13 @@ public static class ChatPresentation
         int start = entry.Text.LastIndexOf(marker, StringComparison.Ordinal);
         if (start < 0) return entry;
         string footer = entry.Text[(start + marker.Length)..];
-        const string instruction = "如需向用户交付文件，请把最终文件写入以下输出目录的顶层（普通文件，不使用符号链接，每文件最多 100 MiB），并在回复中告知文件名：\n";
+        string instruction = FileTransferStore.OutputInstruction;
         int output = footer.IndexOf(instruction, StringComparison.Ordinal);
+        if (output < 0)
+        {
+            instruction = "如需向用户交付文件，请把最终文件写入以下输出目录的顶层（普通文件，不使用符号链接，每文件最多 100 MiB），并在回复中告知文件名：\n";
+            output = footer.IndexOf(instruction, StringComparison.Ordinal);
+        }
         if (output < 0) return entry;
         try
         {

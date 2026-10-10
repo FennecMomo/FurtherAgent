@@ -15,7 +15,7 @@ public record DeviceLease(string Code, string Secret, DateTimeOffset ExpiresAt);
 public record LeaseProof(string Code, string Secret);
 public record PairRequest(string Code);
 public record PairResult(string Name, string Ticket);
-public record AgentInfo(string Id, string Name, bool Available, string Detail, bool CanCreate = false, bool CanConfigure = false, bool CanFiles = false, bool CanArchive = false, bool CanChooseDelivery = false, bool CanInterruptSend = false);
+public record AgentInfo(string Id, string Name, bool Available, string Detail, bool CanCreate = false, bool CanConfigure = false, bool CanFiles = false, bool CanArchive = false, bool CanChooseDelivery = false, bool CanInterruptSend = false, bool CanThumbnails = false);
 public record SessionInfo(string Id, string Title, string UpdatedAt)
 {
     public string DisplayTime => double.TryParse(UpdatedAt, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var epoch) && epoch > 0 && epoch < 253402300799
@@ -28,7 +28,8 @@ public record ChatEntry(string Role, string Text, string? Detail = null);
 public record PendingPrompt(string Id, string Kind, string Title, string Detail, JsonNode? Payload);
 public record SessionView(string Id, string Title, string Cwd, string Status, string? TurnId,
     List<ChatEntry> Messages, List<PendingPrompt> Prompts,
-    string? StatusDetail = null, bool CanSend = true, bool? CanStop = null, string? Model = null, string? Mode = null, int? PendingMessages = null);
+    string? StatusDetail = null, bool CanSend = true, bool? CanStop = null, string? Model = null, string? Mode = null, int? PendingMessages = null,
+    List<RemoteFile>? OutputFiles = null);
 
 public interface IAgentAdapter : IAsyncDisposable
 {

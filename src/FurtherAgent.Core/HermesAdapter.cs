@@ -369,7 +369,14 @@ public sealed class HermesAdapter : IAgentAdapter
             !unavailable && (!Busy || status == "running" && Supports("run_steer")),
             !unavailable && Busy && Supports("run_stop") && status != "stopping", modelName, "default");
     }
-    private void Publish() { if (session is not null) Changed?.Invoke(View()); }
+    private string? lastPublished;
+    private void Publish()
+    {
+        if (session is null) return;
+        var view = View(); string fingerprint = Json.Node(view).ToJsonString();
+        if (fingerprint == lastPublished) return;
+        lastPublished = fingerprint; Changed?.Invoke(view);
+    }
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref disposed, 1) != 0) return;

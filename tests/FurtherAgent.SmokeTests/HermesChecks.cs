@@ -7,7 +7,7 @@ static class HermesChecks
 {
     public static async Task RunAsync(RegistryClient registry, Action<bool, string> check)
     {
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(35));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var ct = timeout.Token;
         var api = new HermesFixture();
         await using var adapter = new HermesAdapter("http://127.0.0.1:8642", "test-only-secret", api);

@@ -7,7 +7,7 @@ namespace FurtherAgent.Client;
 
 public sealed class ChatMessageView : Border
 {
-    public ChatMessageView() => DataContextChanged += (_, _) => Render();
+    public ChatMessageView() { DataContextChanged += (_, _) => Render(); Loaded += (_, _) => Render(); }
     private void Render()
     {
         if (DataContext is not ChatEntry raw) return;
@@ -43,7 +43,7 @@ public sealed class ChatMessageView : Border
         var panel = new StackPanel();
         panel.Children.Add(new TextBlock { Text = kind == "user" ? "你" : "AI", FontSize = 11,
             Foreground = Brushes.SeaGreen, Margin = new Thickness(0, 0, 0, 4) });
-        panel.Children.Add(new MarkdownView { Markdown = entry.Text });
+        panel.Children.Add(new MarkdownView { AttachmentFactory = reference => (Window.GetWindow(this) as MainWindow)?.CreateFileVisual(reference), Markdown = entry.Text });
         if (entry.Detail is not null) panel.Children.Add(new Expander { Header = "调用详情", Content = new TextBox {
             Text = entry.Detail, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 240,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });

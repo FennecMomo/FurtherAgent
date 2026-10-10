@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 
 namespace FurtherAgent.Core;
 
-public record RemoteFile(string Id, string Name, long Size, string Sha256 = "")
+public record RemoteFile(string Id, string Name, long Size, string Sha256 = "", string Version = "")
 { public string DisplayName => $"{(Id.StartsWith("outbox/", StringComparison.Ordinal) ? "Agent 输出" : "上传文件")} · {Name} · {Size:N0} bytes"; }
 public record FileWorkspace(string Outbox, long MaxFileBytes, int ChunkBytes, List<RemoteFile> Files);
 public record FileProgress(long Completed, long Total);
@@ -12,11 +12,13 @@ public record FileProgress(long Completed, long Total);
 // Host-owned filesystem boundary. Clients address only files inside a hashed session workspace.
 public sealed class FileTransferStore : IDisposable
 {
+    internal const string OutputInstruction = "本客户端支持接收图片和文件。用户上传的图片可使用 vision_analyze 等可用图像工具查看，不要仅因 HTTP 入口而声称无法收发附件。生成的图片和文件必须实际写入下列输出目录顶层；只给出其他路径、MEDIA 标记或 Markdown 链接不会交付文件。请使用普通文件，不使用符号链接，每文件最多 100 MiB，并在回复中告知文件名。图片在回复相应位置使用 ![图片说明](attachment:文件名)，其他文件使用 [文件名](attachment:文件名)。输出目录：\n";
     public const long MaxFileBytes = 100L * 1024 * 1024;
     public const int ChunkBytes = 128 * 1024;
     private readonly string root;
     private readonly SemaphoreSlim gate = new(1);
     private readonly Dictionary<string, Upload> uploads = [];
+    private readonly Dictionary<string, FileThumbnail> thumbnails = [];
     private sealed record Upload(string Session, string Name, long Size, string Hash, string Part, string Target)
     { public DateTime UpdatedAt { get; set; } = DateTime.UtcNow; }
     public FileTransferStore(string? root = null)
@@ -68,7 +70,7 @@ public sealed class FileTransferStore : IDisposable
             {
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
                 var info = new FileInfo(path); if (info.Length > MaxFileBytes) continue;
-                files.Add(new(area + "/" + info.Name, area == "inbox" && info.Name.Length > 34 ? info.Name[34..] : info.Name, info.Length));
+                files.Add(new(area + "/" + info.Name, area == "inbox" && info.Name.Length > 34 ? info.Name[34..] : info.Name, info.Length, Version: info.Length + "-" + info.LastWriteTimeUtc.Ticks));
                 if (files.Count > 200) throw new IOException("会话文件过多，请在接入端清理后重试。");
             }
         return new(Path.Combine(dir, "outbox"), MaxFileBytes, ChunkBytes, files);
@@ -127,6 +129,18 @@ public sealed class FileTransferStore : IDisposable
             return Json.Node(new RemoteFile("inbox/" + Path.GetFileName(upload.Target), upload.Name, upload.Size, upload.Hash));
         }
         string fileId = args["id"]!.ToString(); string file = Resolve(session, fileId);
+        if (method == "files/thumbnail")
+        {
+            var info = new FileInfo(file); string version = info.Length + "-" + info.LastWriteTimeUtc.Ticks;
+            string cacheKey = file + "|" + version;
+            if (!thumbnails.TryGetValue(cacheKey, out var thumbnail))
+            {
+                thumbnail = ImageThumbnail.Create(file, version);
+                if (thumbnails.Count >= 32) thumbnails.Clear();
+                thumbnails[cacheKey] = thumbnail;
+            }
+            return Json.Node(thumbnail);
+        }
         if (method == "files/stat") return Json.Node(new RemoteFile(fileId, Path.GetFileName(file), new FileInfo(file).Length, await Hash(file, ct)));
         if (method == "files/read")
         {
@@ -151,7 +165,7 @@ public sealed class FileTransferStore : IDisposable
         if (paths.Length > 20) throw new ArgumentException("每条消息最多附加 20 个文件。");
         return text + "\n\n[FurtherAgent 文件工作区]\n" +
             (paths.Length == 0 ? "" : "用户上传的文件已存到此机器，可按任务需要读取：\n" + string.Join("\n", paths.Select(p => Json.Node(p).ToJsonString())) + "\n") +
-            "如需向用户交付文件，请把最终文件写入以下输出目录的顶层（普通文件，不使用符号链接，每文件最多 100 MiB），并在回复中告知文件名：\n" + Json.Node(List(session).Outbox).ToJsonString();
+            OutputInstruction + Json.Node(List(session).Outbox).ToJsonString();
     }
     public void Dispose()
     { foreach (var item in uploads.Values) { try { NoLink(item.Part); File.Delete(item.Part); } catch { } } uploads.Clear(); }
@@ -160,6 +174,8 @@ public sealed class FileTransferStore : IDisposable
 // Shared by WPF and CLI: transfer, integrity checks, cancellation and attachment submission.
 public sealed class FileTransferClient(RpcPeer peer)
 {
+    public async Task<FileThumbnail> ThumbnailAsync(string session, string id, CancellationToken ct = default) =>
+        Json.Read<FileThumbnail>(await peer.CallAsync("files/thumbnail", new { session, id }, ct));
     public async Task<FileWorkspace> ListAsync(string session, CancellationToken ct = default) =>
         Json.Read<FileWorkspace>(await peer.CallAsync("files/list", new { session }, ct));
     public async Task<RemoteFile> UploadAsync(string session, string path, IProgress<FileProgress>? progress = null, CancellationToken ct = default)

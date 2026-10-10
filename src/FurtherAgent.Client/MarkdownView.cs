@@ -10,6 +10,7 @@ namespace FurtherAgent.Client;
 // Native WPF text only: no HTML renderer, remote image fetches or embedded scripts.
 public sealed class MarkdownView : RichTextBox
 {
+    public Func<string, FrameworkElement?>? AttachmentFactory { get; init; }
     public static readonly DependencyProperty MarkdownProperty = DependencyProperty.Register(nameof(Markdown), typeof(string), typeof(MarkdownView),
         new PropertyMetadata("", (d, _) => ((MarkdownView)d).Refresh()));
     public string Markdown { get => (string)GetValue(MarkdownProperty); set => SetValue(MarkdownProperty, value); }
@@ -69,20 +70,24 @@ public sealed class MarkdownView : RichTextBox
     }
     private static void AddCode(FlowDocument doc, string value) => doc.Blocks.Add(new Paragraph(new Run(value.TrimEnd('\n')))
     { FontFamily = new FontFamily("Consolas"), Background = new SolidColorBrush(Color.FromRgb(230, 235, 229)), Padding = new Thickness(10), Margin = new Thickness(0, 6, 0, 10) });
-    private static void InlineText(InlineCollection output, string value)
+    private void InlineText(InlineCollection output, string value)
     {
         int offset = 0;
-        foreach (Match m in Regex.Matches(value, @"(`[^`]+`|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|(?<!\w)_[^_]+_(?!\w)|\[[^\]]+\]\(https?://[^\s)]+\))"))
+        foreach (Match m in Regex.Matches(value, @"(`[^`]+`|!?\[[^\]]*\]\([^\r\n)]+\)|MEDIA:[^\s]+|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|(?<!\w)_[^_]+_(?!\w))"))
         {
             output.Add(new Run(value[offset..m.Index])); string token = m.Value;
-            if (token.StartsWith('`')) output.Add(new Run(token[1..^1]) { FontFamily = new FontFamily("Consolas"), Background = Brushes.Gainsboro });
+            int attachmentSplit = token.IndexOf("](", StringComparison.Ordinal);
+            string? reference = token.StartsWith("MEDIA:") ? token[6..] : attachmentSplit >= 0 ? token[(attachmentSplit+2)..^1] : null;
+            var attachment = reference is null ? null : AttachmentFactory?.Invoke(reference);
+            if (attachment is not null) output.Add(new InlineUIContainer(attachment) { BaselineAlignment = BaselineAlignment.Center });
+            else if (token.StartsWith('`')) output.Add(new Run(token[1..^1]) { FontFamily = new FontFamily("Consolas"), Background = Brushes.Gainsboro });
             else if (token.StartsWith("**") || token.StartsWith("__")) output.Add(new Bold(new Run(token[2..^2])));
             else if (token.StartsWith("~~")) output.Add(new Run(token[2..^2]) { TextDecorations = TextDecorations.Strikethrough });
             else if (token.StartsWith('*') || token.StartsWith('_')) output.Add(new Italic(new Run(token[1..^1])));
             else
             {
                 int split = token.IndexOf("](", StringComparison.Ordinal);
-                if (Uri.TryCreate(token[(split + 2)..^1], UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
+                if (split >= 0 && !token.StartsWith('!') && Uri.TryCreate(token[(split + 2)..^1], UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https")
                 {
                     var link = new Hyperlink(new Run(token[1..split])) { NavigateUri = uri, ToolTip = uri.ToString() };
                     link.RequestNavigate += (_, e) => { try { Process.Start(new ProcessStartInfo(e.Uri.AbsoluteUri) { UseShellExecute = true }); } catch { } e.Handled = true; };

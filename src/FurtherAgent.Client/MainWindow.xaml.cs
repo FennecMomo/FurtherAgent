@@ -112,7 +112,8 @@ public partial class MainWindow : Window
             ready = true, connected = remote?.IsConnected == true, device = remote?.Device?.Name,
             stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection,
             connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt,
-            relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text };
+            relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text,
+            receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
         if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t)))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
@@ -346,11 +347,12 @@ public partial class MainWindow : Window
     {
         if (view.Id != selectedId) return;
         current = view; ModelButton.Content = string.IsNullOrWhiteSpace(view.Model) ? "模型与模式" : (view.Mode == "plan" ? "Plan" : "Build") + " · " + view.Model;
+        RenderOutputFiles(view);
         ModelButton.ToolTip = "模型与模式 · " + (view.Model ?? "打开会话后设置，远端需支持此功能"); SessionTitle.Text = string.IsNullOrWhiteSpace(view.Title) ? SessionTitle.Text : view.Title;
         SessionMeta.Text = $"{view.Cwd}\n" + (view.StatusDetail ?? $"{(view.Status == "active" ? "执行中" : "等待指令")} · 桌面实时同步");
         var builder = new StringBuilder();
         foreach (var message in view.Messages.Select(ChatPresentation.Display)) builder.AppendLine($"{message.Role}\n{message.Text}\n{message.Detail}\n");
-        var content = builder.ToString();
+        var content = builder.ToString() + outputFilesFingerprint;
         if (content != transcriptText)
         {
             bool atBottom = ChatScroll.VerticalOffset + ChatScroll.ViewportHeight >= ChatScroll.ExtentHeight - 30;
@@ -365,6 +367,89 @@ public partial class MainWindow : Window
         if (signature != promptSignature) { promptSignature = signature; RenderPrompts(view.Prompts); }
     }
     private string? operationPhase;
+    private string outputFilesFingerprint = "";
+    private readonly Dictionary<string, Task<System.Windows.Media.Imaging.BitmapSource>> thumbnailCache = [];
+    private readonly SemaphoreSlim thumbnailSlots = new(2);
+    public FrameworkElement? CreateFileVisual(string reference)
+    {
+        if (current is null || remote is null || reference.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return null;
+        string name;
+        try { name = Uri.UnescapeDataString(reference.Trim().Trim('"', '\'').Replace('\\','/').Split('/')[^1]); }
+        catch (UriFormatException) { return null; }
+        if (name.StartsWith("attachment:", StringComparison.Ordinal)) name = name[11..];
+        var file = current.OutputFiles?.FirstOrDefault(f => f.Name == name || f.Id == reference);
+        return file is null ? null : CreateFileVisual(current.Id, file);
+    }
+    private FrameworkElement CreateFileVisual(string session, RemoteFile file)
+    {
+        var button = new Button { Content = file.Name, ToolTip = file.Name + " · 点击加载原图/保存文件", Padding = new Thickness(3), Margin = new Thickness(0,4,4,4), MaxWidth = 330 };
+        bool picture = ImageThumbnail.Supported(file.Name);
+        button.Click += async (_, _) =>
+        {
+            if (current?.Id != session || actionBusy) return;
+            if (picture) await PreviewRemoteFileAsync(session, file); else await SaveRemoteFileAsync(session, file);
+        };
+        if (picture && agent?.CanThumbnails == true && remote is { } connection)
+        {
+            button.Content = "加载缩略图…";
+            button.Loaded += async (_, _) =>
+            {
+                try
+                {
+                    string key = connection.GetHashCode() + "|" + session + "|" + file.Id + "|" + file.Version;
+                    if (!thumbnailCache.TryGetValue(key, out var load))
+                    {
+                        if (thumbnailCache.Count >= 256) thumbnailCache.Remove(thumbnailCache.Keys.First());
+                        thumbnailCache[key] = load = LoadThumbnailAsync(connection, session, file.Id);
+                    }
+                    var bitmap = await load;
+                    if (button.IsLoaded) button.Content = new Image { Source = bitmap, MaxWidth = 320, MaxHeight = 240, Stretch = System.Windows.Media.Stretch.Uniform };
+                }
+                catch { button.Content = file.Name + "（缩略图不可用，点击查看原图）"; }
+            };
+        }
+        return button;
+    }
+    private async Task<System.Windows.Media.Imaging.BitmapSource> LoadThumbnailAsync(RemoteDevice connection, string session, string file)
+    {
+        await thumbnailSlots.WaitAsync();
+        try
+        {
+            var thumbnail = await new FileTransferClient(connection.Peer).ThumbnailAsync(session, file);
+            if (thumbnail.Data.Length > (ImageThumbnail.MaxEncodedBytes+2)/3*4) throw new IOException("缩略图数据超过限制。");
+            using var stream = new MemoryStream(Convert.FromBase64String(thumbnail.Data));
+            var probe = System.Windows.Media.Imaging.BitmapDecoder.Create(stream, System.Windows.Media.Imaging.BitmapCreateOptions.DelayCreation, System.Windows.Media.Imaging.BitmapCacheOption.OnDemand).Frames[0];
+            if (probe.PixelWidth > 320 || probe.PixelHeight > 240) throw new IOException("缩略图尺寸超过限制。");
+            stream.Position = 0;
+            var bitmap = new System.Windows.Media.Imaging.BitmapImage();
+            bitmap.BeginInit(); bitmap.CacheOption = System.Windows.Media.Imaging.BitmapCacheOption.OnLoad; bitmap.DecodePixelWidth = 320; bitmap.StreamSource = stream; bitmap.EndInit(); bitmap.Freeze();
+            return bitmap;
+        }
+        finally { thumbnailSlots.Release(); }
+    }
+    private void RenderOutputFiles(SessionView view)
+    {
+        string signature = view.Id + "|" + Json.Node(view.OutputFiles ?? []).ToJsonString();
+        if (signature == outputFilesFingerprint) return;
+        outputFilesFingerprint = signature; OutputFilesPanel.Children.Clear();
+        foreach (var file in view.OutputFiles ?? [])
+        {
+            var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 8) };
+            row.Children.Add(new TextBlock { Text = file.DisplayName, VerticalAlignment = VerticalAlignment.Center, Margin = new Thickness(8) });
+            var save = new Button { Content = "保存文件", Style = (Style)FindResource("Compact") };
+            save.Click += async (_, _) => { if (current?.Id == view.Id && !actionBusy) await SaveRemoteFileAsync(view.Id, file); };
+            row.Children.Add(save);
+            if (new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp" }.Contains(Path.GetExtension(file.Name).ToLowerInvariant()))
+            {
+                var preview = new Button { Content = "查看图片", Style = (Style)FindResource("Compact") };
+                preview.Click += async (_, _) => { if (current?.Id == view.Id && !actionBusy) await PreviewRemoteFileAsync(view.Id, file); };
+                row.Children.Add(preview);
+                bool embedded = view.Messages.Any(m => m.Text.Contains(file.Name, StringComparison.Ordinal) && (m.Text.Contains("](", StringComparison.Ordinal) || m.Text.Contains("MEDIA:", StringComparison.Ordinal)));
+                if (!embedded) OutputFilesPanel.Children.Add(CreateFileVisual(view.Id, file));
+            }
+            OutputFilesPanel.Children.Add(row);
+        }
+    }
     private string DeliveryMode => agent?.CanChooseDelivery != true ? "auto" : DeliveryPicker.SelectedIndex switch { 1 => "queue", 2 => "steer", _ => "auto" };
     private void Delivery_Changed(object sender, SelectionChangedEventArgs e)
     { if (IsLoaded) SetSessionEnabled(!actionBusy && remote?.IsConnected == true); }
@@ -598,9 +683,13 @@ public partial class MainWindow : Window
     private async void Download_Click(object sender, RoutedEventArgs e)
     {
         if (RemoteFiles.SelectedItem is not RemoteFile file || current?.Id != filesSession) return;
+        await SaveRemoteFileAsync(filesSession!, file);
+    }
+    private async Task SaveRemoteFileAsync(string id, RemoteFile file)
+    {
         var dialog = new Microsoft.Win32.SaveFileDialog { FileName = file.Name, Title = "保存文件（请选择不存在的文件名）", OverwritePrompt = true };
         if (dialog.ShowDialog(this) != true) return;
-        string id = filesSession!; CloseOverlays();
+        CloseOverlays();
         await TransferAsync(async (client, progress, ct) => { await client.DownloadAsync(id, file.Id, dialog.FileName, progress, ct); });
     }
     private void SaveServerAddress(string server)
@@ -635,6 +724,10 @@ public partial class MainWindow : Window
     private async void PreviewImage_Click(object sender, RoutedEventArgs e)
     {
         if (RemoteFiles.SelectedItem is not RemoteFile file || current?.Id != filesSession || actionBusy) return;
+        await PreviewRemoteFileAsync(filesSession!, file);
+    }
+    private async Task PreviewRemoteFileAsync(string id, RemoteFile file)
+    {
         if (!new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp" }.Contains(Path.GetExtension(file.Name).ToLowerInvariant()))
         { FilesStatus.Text = "此格式不支持图片预览，请下载后打开。"; return; }
         if (file.Size > 10 * 1024 * 1024) { FilesStatus.Text = "图片预览限制为 10 MiB，请下载原文件。"; return; }
@@ -643,7 +736,7 @@ public partial class MainWindow : Window
         {
             await TransferAsync(async (client, progress, ct) =>
             {
-                await client.DownloadAsync(filesSession!, file.Id, path, progress, ct);
+                await client.DownloadAsync(id, file.Id, path, progress, ct);
                 var bitmap = new System.Windows.Media.Imaging.BitmapImage();
                 using (var input = File.OpenRead(path))
                 {

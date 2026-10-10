@@ -112,13 +112,22 @@ public sealed class DeviceHost : IAsyncDisposable
             await using var adapter = factory();
             await using var peer = new RpcPeer(socket);
             using var pumping = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            int incremental = 0;
+            bool lastIncremental = false;
+            var sync = new SessionSyncEncoder();
             var updates = Channel.CreateBounded<SessionView>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
             adapter.Changed += view => updates.Writer.TryWrite(view);
             adapter.Faulted += message => { Status?.Invoke(message); socket.Abort(); };
             string? attachedSession = null;
+            SessionView WithFiles(SessionView view)
+            {
+                if (adapter.Info.Id != "hermes") return view;
+                try { return view with { OutputFiles = files.Value.List(view.Id).Files.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).ToList() }; }
+                catch (IOException) { return view with { StatusDetail = view.StatusDetail + " · 输出文件列表暂不可用，请打开会话文件查看。" }; }
+            }
             async Task<JsonNode> Attach(string id, CancellationToken token)
             {
-                var view = await adapter.AttachAsync(id, token); attachedSession = view.Id; return Json.Node(view);
+                var view = WithFiles(await adapter.AttachAsync(id, token)); attachedSession = view.Id; return Json.Node(view);
             }
             string FileSession(JsonNode? args)
             {
@@ -143,7 +152,8 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             peer.Handler = async (method, args, token) => method switch
             {
-                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles } }),
+                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1 }),
+                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
                 "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
                 "send-files" => await SendFiles(args, token),
@@ -165,7 +175,15 @@ public sealed class DeviceHost : IAsyncDisposable
                 try
                 {
                     await foreach (var view in updates.Reader.ReadAllAsync(pumping.Token))
-                    { await peer.NotifyAsync("session", view); await Task.Delay(100, pumping.Token); }
+                    {
+                        bool mode = Volatile.Read(ref incremental) == 1;
+                        if (mode != lastIncremental) { sync = new SessionSyncEncoder(); lastIncremental = mode; }
+                        var enriched = WithFiles(view);
+                        var update = sync.Encode(enriched);
+                        if (update is not null)
+                            await peer.NotifyAsync(mode ? "session-update" : "session", mode ? (object)update : enriched);
+                        await Task.Delay(500, pumping.Token);
+                    }
                 }
                 catch (Exception) { socket.Abort(); }
             });
@@ -193,6 +211,8 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     public DateTimeOffset? ConnectedAt { get; private set; }
     public DateTimeOffset? DisconnectedAt { get; private set; }
     public int ReconnectCount { get; private set; }
+    public long ReceivedBytes => socket?.ReceivedBytes ?? 0;
+    public long SentBytes => socket?.SentBytes ?? 0;
     private readonly CancellationTokenSource lifetime = new();
     private WebSocketTransport? socket;
     private Task? supervisor;
@@ -220,8 +240,20 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             if (response["ok"]?.GetValue<bool>() != true) throw new IOException(response["error"]?.ToString() ?? "中继连接失败。");
             socket = connection;
             Peer = new RpcPeer(connection);
-            Peer.Notification += (method, node) => Notification?.Invoke(method, node);
+            var sync = new SessionSyncDecoder();
+            Peer.Notification += (method, node) =>
+            {
+                if (method == "session-update")
+                {
+                    // Maintain the baseline even before a UI/CLI observer subscribes.
+                    var view = sync.Apply(Json.Read<SessionUpdate>(node));
+                    Notification?.Invoke("session", Json.Node(view));
+                }
+                else Notification?.Invoke(method, node);
+            };
             Peer.Start();
+            try { await Peer.CallAsync("session-sync", new { version = 1 }, timeout.Token); }
+            catch (IOException) when (Peer.Completion?.IsCompleted == false) { /* Legacy Host sends full snapshots. */ }
             ConnectedAt = DateTimeOffset.UtcNow;
         }
         catch { await connection.DisposeAsync(); throw; }

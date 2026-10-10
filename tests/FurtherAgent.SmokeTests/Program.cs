@@ -34,6 +34,8 @@ if (args.Contains("--dsh-live"))
 }
 await TlsRetryChecks.Run(Check);
 await DshDiscoveryChecks.Run(Check);
+SessionSyncChecks.Run(Check);
+await ThumbnailChecks.Run(Check);
 await RpcSchedulingChecks.Run(Check);
 await InterruptSendChecks.Run(Check);
 using (var stream = new MemoryStream())

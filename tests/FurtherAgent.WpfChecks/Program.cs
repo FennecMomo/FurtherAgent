@@ -10,6 +10,7 @@ using System.Xml.Linq;
 
 static class Program
 {
+    static int passed;
     [STAThread]
     static void Main(string[] args)
     {
@@ -21,6 +22,19 @@ static class Program
         var text = new TextRange(view.Document.ContentStart, view.Document.ContentEnd).Text;
         Require(text.Contains("alert(1)") && text.Contains("var x = 1;") && text.Contains("标题"), "code and untrusted HTML preserved as selectable text");
         Require(!blocks.OfType<BlockUIContainer>().Any(), "no remote image or embedded HTML controls");
+        int thumbnails=0, originals=0;
+        var withImage = new MarkdownView { AttachmentFactory = reference =>
+        {
+            if(reference!="attachment:plot.png") return null;
+            thumbnails++; var imageButton=new Button { Content="compressed thumbnail" };
+            imageButton.Click+=(_,_)=>originals++;
+            return imageButton;
+        }, Markdown="图片之前 ![图](attachment:plot.png) 图片之后\n![外部](https://example.com/image.png)\n`![代码](attachment:plot.png)`" };
+        var inline=withImage.Document.Blocks.OfType<Paragraph>().First().Inlines.ToArray();
+        Require(inline[0] is Run { Text:"图片之前 " } && inline[1] is InlineUIContainer && inline[2] is Run { Text:" 图片之后" }, "thumbnail occupies image position inside message text");
+        Require(thumbnails==1 && originals==0,"rendering thumbnail neither requests original nor activates external/code images");
+        ((Button)((InlineUIContainer)inline[1]).Child).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        Require(originals==1,"only image click requests original");
         var tool = new ChatMessageView { DataContext = new ChatEntry("tool", new string('x', 18042), "raw") };
         tool.Measure(new Size(600, double.PositiveInfinity));
         Require(tool.Child is Expander { IsExpanded: false } && tool.DesiredSize.Height < 80, "18K tool output is collapsed and compact");
@@ -52,7 +66,7 @@ static class Program
             store.Forget(); Require(store.Load(restored.Server) is null, "forget removes persistent connection");
         }
         finally { System.IO.Directory.Delete(System.IO.Path.GetDirectoryName(stateFile)!, true); }
-        Console.WriteLine("ALL 17 WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");
+        Console.WriteLine($"ALL {passed} WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");
         if (args.Length == 2) Preview(args[0], args[1]);
     }
     static void Preview(string repo, string output)
@@ -100,5 +114,5 @@ static class Program
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var file = System.IO.File.Create(output); encoder.Save(file);
     }
-    static void Require(bool success, string label) { if (!success) throw new Exception(label); Console.WriteLine("PASS: " + label); }
+    static void Require(bool success, string label) { if (!success) throw new Exception(label); passed++; Console.WriteLine("PASS: " + label); }
 }
