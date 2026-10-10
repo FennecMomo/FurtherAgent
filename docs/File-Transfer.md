@@ -15,6 +15,8 @@ Hermes 生成的文件仍写入本会话 outbox。接入端将文件名、大小
 - CLI：`thumbnail --session ID --id outbox/picture.png --output preview.jpg`，保存的文件是 JPEG；`download` 才请求原文件。
 - 历史里的任意磁盘路径并不自动变成附件。若旧回复只给出了其他路径，需让 Hermes 将产物复制到会话 outbox。
 
+0.8.2：对话底部附件区不再生成备用缩略图，只显示文件名及保存/查看按钮，避免文件先于正文生成时残留第二张预览。图片缩略图统一在正文对应位置显示；没有正文图片标记时仍可从底部查看或保存原图。
+
 ## 共享实现
 
 CLI 和 WPF 都直接调用 Core/FileTransfer.cs 中的 FileTransferClient；传输、分块、SHA256 校验、取消、落盘与附加消息规则不在两端各写一遍。B 的 DeviceHost 使用 FileTransferStore 统一处理同一组 files/* 与 send-files RPC。Codex/Hermes 适配器继续负责 Agent 会话控制。

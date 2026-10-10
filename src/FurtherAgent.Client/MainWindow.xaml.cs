@@ -447,8 +447,7 @@ public partial class MainWindow : Window
                 var preview = new Button { Content = "查看图片", Style = (Style)FindResource("Compact") };
                 preview.Click += async (_, _) => { if (current?.Id == view.Id && !actionBusy) await PreviewRemoteFileAsync(view.Id, file); };
                 row.Children.Add(preview);
-                bool embedded = view.Messages.Any(m => m.Text.Contains(file.Name, StringComparison.Ordinal) && (m.Text.Contains("](", StringComparison.Ordinal) || m.Text.Contains("MEDIA:", StringComparison.Ordinal)));
-                if (!embedded) OutputFilesPanel.Children.Add(CreateFileVisual(view.Id, file));
+
             }
             OutputFilesPanel.Children.Add(row);
         }
