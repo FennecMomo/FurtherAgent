@@ -41,9 +41,11 @@ export function service(ctx, config = {}) {
     cleanId(id);
     const observation = await ctx.sessionQuery.observeSession(id, { signal, projectionMode: 'all' });
     try {
-      const messages = []; const byId = new Map(); let turnId = null;
+      const messages = []; const byId = new Map(); let turnId = null; let lastModel;
       for (const event of observation.events) {
         if (event.type === 'turn/start') turnId = String(event.seq);
+        if (event.type === 'model/selection') lastModel = event.data;
+        if (event.type === 'request/header') lastModel = event.data?.header?.config ?? lastModel;
         // Replacement copies belong to model context, not the human transcript.
         if (event.surfaceOp !== undefined && event.surfaceOp !== 'append') continue;
         if (event.type === 'user/message' && event.data?.source && event.data.source.kind !== 'user') continue;
@@ -68,20 +70,32 @@ export function service(ctx, config = {}) {
       if (running && stream?.reasoning) messages.push({ role: 'reasoning.available', text: stream.reasoning });
       if (running && stream?.text) messages.push({ role: 'assistant', text: stream.text });
       const values = observation.projections?.values ?? {};
-      const model = values.modelSelection?.next ?? values.modelSelection?.lastUsed;
-      return { id, title: observation.header.title || id, cwd: observation.header.cwd ?? '', status: running ? 'active' : 'idle',
+      const model = values.modelSelection?.pending ?? lastModel;
+      // Wire pending is a transition flag, not the requested boolean state.
+      const plan = values.plan;
+      return { id, title: values.title?.title || observation.header.title || id, cwd: observation.header.cwd ?? '', status: running ? 'active' : 'idle',
         turnId, messages: messages.slice(-500), prompts: [], canSend: true, canStop: running,
-        model: model?.model ?? null, mode: 'default',
-        statusDetail: `DSH ${mode} · ${running ? '执行中' : '空闲'} · 待处理 ${pending} 条 · 同一 Host，会话只读订阅`, cursor: observation.cursor };
+        model: model?.model ?? null, provider: model?.provider ?? null, reasoningEffort: model?.reasoningEffort ?? null,
+        canChangeMode: agent ? !!ctx.get?.('commands')?.find(agent, 'plan') : !!values.plan,
+        mode: (plan?.pending ? !plan.active : plan?.active) ? 'plan' : 'default', pendingMessages: pending,
+        statusDetail: `DSH ${mode} · ${running ? '执行中' : '空闲'} · 待处理 ${pending} 条${plan?.pending ? ' · 模式等待下一步骤生效' : ''} · 同一 Host，会话只读订阅`, cursor: observation.cursor };
     } finally { observation[Symbol.dispose](); }
   }
   const methods = {
     info: async () => ({ protocol: 1, mode, pid: process.pid, hostVersion: config.hostVersion ?? 'unknown',
       activeTasks: (ctx.agents.list?.() ?? []).some(a => a.status === 'running' || a.inbox?.nextTurn?.length || a.inbox?.nextStep?.length),
-      capabilities: ['list', 'snapshot', 'create', 'send', 'steer', 'stop', 'model'], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
-    list: async (_, signal) => ctx.sessionController.list({}, signal),
+      capabilities: ['list', 'snapshot', 'create', 'send', 'steer', 'stop', 'model', 'plan', ...(ctx.get?.('workspaceController') ? ['archive'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
+    list: async (_, signal) => {
+      const result = await ctx.sessionController.list({}, signal);
+      const archived = new Set(ctx.get?.('workspaceRegistry')?.archivedSessionIds ?? []);
+      return { ...result, items: result.items.filter(item => !archived.has(item.sessionId)) };
+    },
     snapshot: (args, signal) => snapshot(args.id, signal),
-    create: (args, signal) => ctx.sessionController.create({ sessionId: cleanId(args.id), cwd: config.cwd || undefined }, signal),
+    create: async (args, signal) => {
+      const created = await ctx.sessionController.create({ sessionId: cleanId(args.id), cwd: config.cwd || undefined }, signal);
+      if (typeof args.title === 'string' && args.title.trim()) await ctx.sessionController.rename({ sessionId: created.sessionId, title: args.title });
+      return created;
+    },
     send: (args, signal) => {
       if (!['queue', 'steer'].includes(args.mode)) throw new Error('Unsupported delivery mode');
       if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) throw new Error('Invalid prompt');
@@ -90,8 +104,37 @@ export function service(ctx, config = {}) {
     },
     stop: args => ctx.sessionController.cancel({ sessionId: cleanId(args.id) }),
     models: () => ctx.sessionController.modelCatalog(),
-    configure: args => ctx.sessionController.selectModel({ sessionId: cleanId(args.id), provider: args.provider, model: args.model,
-      ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}) }),
+    settings: async (args, signal) => ({ catalog: await ctx.sessionController.modelCatalog(), view: await snapshot(args.id, signal) }),
+    configure: async (args, signal) => {
+      const id = cleanId(args.id);
+      if (args.mode !== undefined && !['default', 'build', 'plan'].includes(args.mode)) throw new Error('Unsupported DSH mode');
+      const resolved = await ctx.sessionController.resolveAgent(id);
+      if (resolved.error) throw resolved.error;
+      const agent = resolved.agent;
+      const commands = ctx.get?.('commands');
+      if (args.mode !== undefined && !commands?.find(agent, 'plan')) throw new Error('This DSH preset has no Plan command');
+      const before = await snapshot(id, signal);
+      const selection = before.model ? before : (await ctx.sessionController.modelCatalog()).default;
+      const sameModel = selection?.model === args.model && selection?.provider === args.provider;
+      const result = sameModel && !args.reasoningEffort ? { selected: { provider: selection.provider, model: selection.model } }
+        : await ctx.sessionController.selectModel({ sessionId: id, provider: args.provider, model: args.model,
+          ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}) });
+      if (args.mode !== undefined) {
+        const execution = await commands.execute(agent, args.mode === 'plan' ? '/plan' : '/plan off', [], signal);
+        if (!execution || execution.result.kind === 'error') throw new Error(execution?.result?.text ?? 'Plan command unavailable');
+        result.plan = execution.result.text;
+      }
+      return result;
+    },
+    archive: async args => {
+      if (typeof args.archived !== 'boolean') throw new Error('Archived must be boolean');
+      const controller = ctx.get?.('workspaceController');
+      if (!controller) throw new Error('Native archive is unavailable');
+      const id = cleanId(args.id);
+      const result = await controller[args.archived ? 'archiveSession' : 'unarchiveSession']({ sessionId: id });
+      if (result.archivedSessionIds.includes(id) !== args.archived) throw new Error('Archive readback mismatch');
+      return { archived: args.archived };
+    },
     shutdown: () => {
       if (mode !== 'background') throw new Error('Desktop lifecycle belongs to DSH');
       if ((ctx.agents.list?.() ?? []).some(a => a.status === 'running' || a.inbox.nextTurn.length || a.inbox.nextStep.length))

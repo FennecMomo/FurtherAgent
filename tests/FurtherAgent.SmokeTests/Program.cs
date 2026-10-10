@@ -26,6 +26,12 @@ int FreePort()
     var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
     int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop(); return port;
 }
+if (args.Contains("--dsh-live"))
+{
+    await DshLiveChecks.Run(Check);
+    Console.WriteLine($"ALL {passed} LIVE DSH CHECKS PASSED");
+    return;
+}
 await TlsRetryChecks.Run(Check);
 await RpcSchedulingChecks.Run(Check);
 await InterruptSendChecks.Run(Check);

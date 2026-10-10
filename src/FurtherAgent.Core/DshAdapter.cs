@@ -14,11 +14,13 @@ public sealed class DshAdapter : IAgentAdapter
     private readonly Task monitor;
     private string? selected;
     private string instanceMode = "desktop";
+    private string runtimeVersion = "unknown";
+    private HashSet<string> capabilities = [];
     private SessionView? current;
     private string? fingerprint;
     private string? pendingText, pendingId;
     public AgentInfo Info => new("dsh", instanceMode == "background" ? "DSH · 独立后台" : "DSH · 桌面", true,
-        "DSH 同一 Host 原生会话服务；查看历史不取得会话写入权。", CanCreate: true, CanConfigure: true);
+        $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。", CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"));
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
     public DshAdapter(string descriptorPath) { this.descriptorPath = Path.GetFullPath(descriptorPath); monitor = MonitorAsync(); }
@@ -52,6 +54,8 @@ public sealed class DshAdapter : IAgentAdapter
         var info = await Call("info", null, ct);
         if (info?["protocol"]?.GetValue<int>() != 1) throw new IOException("DSH 插件协议不兼容。");
         instanceMode = info["mode"]?.ToString() ?? "desktop";
+        runtimeVersion = info["hostVersion"]?.ToString() ?? "unknown";
+        capabilities = (info["capabilities"]?.AsArray() ?? []).Select(x => x!.ToString()).ToHashSet(StringComparer.Ordinal);
         return info;
     }
     public async Task ShutdownBackgroundAsync(CancellationToken ct = default) => _ = await Call("shutdown", null, ct);
@@ -75,7 +79,7 @@ public sealed class DshAdapter : IAgentAdapter
     }
     public async Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct)
     {
-        var result = await Call("create", new { id }, ct);
+        var result = await Call("create", new { id, title }, ct);
         return new(result!["sessionId"]!.ToString(), title, DateTimeOffset.UtcNow.ToString("O"));
     }
     public async Task SendAsync(string text, CancellationToken ct)
@@ -94,7 +98,8 @@ public sealed class DshAdapter : IAgentAdapter
     public async Task InterruptAsync(CancellationToken ct) => _ = await Call("stop", new { id = selected ?? throw new IOException("请先选择会话。") }, ct);
     public async Task<AgentSettings> SettingsAsync(CancellationToken ct)
     {
-        var catalog = await Call("models", null, ct); var models = new List<ModelOption>();
+        var settings = await Call("settings", new { id = selected ?? throw new IOException("请先选择会话。") }, ct);
+        var catalog = settings?["catalog"]; var view = settings?["view"]; var models = new List<ModelOption>();
         foreach (var provider in catalog?["groups"]?.AsArray() ?? [])
         {
             string name = provider?["id"]?.ToString() ?? provider?["provider"]?.ToString() ?? "";
@@ -104,12 +109,20 @@ public sealed class DshAdapter : IAgentAdapter
                 if (name.Length > 0 && id.Length > 0) models.Add(new(id, name, name + " / " + id));
             }
         }
-        return new(current?.Model ?? "", "", "default", models, models.Count > 0, false, "DSH 原生模型目录；未验收的模式能力保持禁用。");
+        return new(view?["model"]?.ToString() ?? catalog?["default"]?["model"]?.ToString() ?? "",
+            view?["provider"]?.ToString() ?? catalog?["default"]?["provider"]?.ToString() ?? "",
+            view?["mode"]?.ToString() ?? "default", models, models.Count > 0, capabilities.Contains("plan") && view?["canChangeMode"]?.GetValue<bool>() == true,
+            "DSH 原生设置：修改模型也会更新 DSH 的默认模型；执行中的 Plan 变更在下一执行步骤生效。");
     }
     public async Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct)
     {
-        if (mode is not ("default" or "build")) throw new NotSupportedException("此 DSH 桥接版本未开放 Plan 切换。");
-        _ = await Call("configure", new { id = selected ?? throw new IOException("请先选择会话。"), provider, model }, ct);
+        if (pendingId is not null) throw new IOException("上次发送结果未知，请先核对原消息再修改设置。");
+        _ = await Call("configure", new { id = selected ?? throw new IOException("请先选择会话。"), provider, model, mode }, ct);
+    }
+    public async Task ArchiveAsync(string id, bool archived, CancellationToken ct)
+    {
+        if (pendingId is not null) throw new IOException("上次发送结果未知，暂不能归档。");
+        _ = await Call("archive", new { id, archived }, ct);
     }
     public Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct) => throw new NotSupportedException("此 DSH 桥接版本尚未开放远程审批，请在所属 DSH 实例中处理。");
     private async Task MonitorAsync()
