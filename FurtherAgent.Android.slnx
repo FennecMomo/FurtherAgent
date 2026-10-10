@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="src/FurtherAgent.Android/FurtherAgent.Android.csproj" />
+  <Project Path="src/FurtherAgent.Mobile/FurtherAgent.Mobile.csproj" />
+  <Project Path="src/FurtherAgent.Core/FurtherAgent.Core.csproj" />
+</Solution>

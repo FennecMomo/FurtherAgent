@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>FurtherAgent.AndroidApp</RootNamespace>
+    <UseMaui>true</UseMaui>
+    <SingleProject>true</SingleProject>
+    <ApplicationTitle>FurtherAgent</ApplicationTitle>
+    <ApplicationId>top.fennecmomo.furtheragent</ApplicationId>
+    <ApplicationDisplayVersion>0.9.0</ApplicationDisplayVersion>
+    <Version>0.9.0</Version>
+    <ApplicationVersion>900</ApplicationVersion>
+    <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
+    <AndroidPackageFormats>apk</AndroidPackageFormats>
+    <PublishTrimmed>false</PublishTrimmed>
+    <RunAOTCompilation>false</RunAOTCompilation>
+    <!-- Avoid MAUI 10 Release JNI registration crash; see dotnet/maui#35209. -->
+    <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.0" />
+    <ProjectReference Include="../FurtherAgent.Mobile/FurtherAgent.Mobile.csproj" />
+    <MauiIcon Include="Resources/AppIcon/appicon.svg" Color="#183F34" />
+    <MauiSplashScreen Include="Resources/AppIcon/appicon.svg" Color="#F6F8F5" BaseSize="100,100" />
+  </ItemGroup>
+</Project>

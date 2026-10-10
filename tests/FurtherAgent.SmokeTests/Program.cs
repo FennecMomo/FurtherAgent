@@ -4,6 +4,8 @@ using System.Net.Sockets;
 using System.Text.Json.Nodes;
 using FurtherAgent.Core;
 
+if (args.Contains("--mobile-ui-fixture")) { await MobileUiFixture.RunAsync(); return; }
+
 int passed = 0;
 void Check(bool condition, string name)
 {
@@ -79,6 +81,7 @@ try
 {
     await WaitForServer();
     using var registry = new RegistryClient($"http://127.0.0.1:{serverPort}");
+    await MobileChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
     await FileChecks.RunAsync(registry, Check);
     await HermesChecks.RunAsync(registry, Check);
     await CliChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);

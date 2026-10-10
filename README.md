@@ -1,6 +1,8 @@
 # FurtherAgent
 
-FurtherAgent 是基于 **WPF** 的 Windows 远程 Agent 客户端。A 输入 B 显示的授权码，通过常开的服务端连接 B 上的 Codex 桌面会话，继续原项目中的工作。
+FurtherAgent 提供 **WPF Windows 客户端**和 **.NET MAUI Android 客户端**。A 输入 B 显示的授权码，通过常开的服务端连接 B 上的 Agent 会话，继续原项目中的工作。
+
+**Android 首版 0.9.0**：可安装 APK，包含离线界面预览、设备连接、会话列表、消息与 Markdown、文件、模型设置及确认操作。安装、构建与验证范围见 [Android 首版说明](docs/Android-0.9.0-Validation.md)。Windows 客户端版本仍为 0.8.2。
 
 当前版本：**0.8.2，修复图片重复预览**。底部附件区只保留文件名、保存和查看入口，图片缩略图仅在正文中显示。Hermes 输出文件直接出现在对话中，Markdown 图片位置显示服务端压缩缩略图，点击才下载原图；重复快照去重，协商增量同步，底栏显示当前连接收发数据量。验收见 [Hermes 0.8.1](docs/Hermes-0.8.1-Validation.md)。
 
@@ -40,14 +42,14 @@ WPF 的「添加文件」「会话文件 / 下载」与 CLI 的 upload/files/dow
 
 六项待扩展功能的难度和接口证据见 [可行性排查](docs/Feature-Feasibility.md)；无 SSH 时可将 [独立接入端准备指令](docs/Hermes-Integration-Handoff.md) 转给服务器 Hermes。
 
-手机端前期资料见 [旧项目功能盘点](docs/Mobile-Legacy-Feature-Inventory.md)。已完成 momo-chat 与 HermesApp 两个旧仓库的源码盘点，收集 37 项功能或原型条目，并对照现有中继能力整理复用建议；目前仅分析和收集需求，尚未开始手机端开发。
+手机端前期资料见 [旧项目功能盘点](docs/Mobile-Legacy-Feature-Inventory.md)。已完成 momo-chat 与 HermesApp 两个旧仓库的源码盘点，收集 37 项功能或原型条目。用户随后授权制作首版，当前实现范围见 Android 首版说明。
 
 手机端只面向 Android，不考虑 iOS；两个旧项目只作为功能参考，不约束开发实现。以 Android 功能完整性和本工程开发维护成本为标准，当前首选建议为 .NET MAUI 的 Android 单目标，依据与待验证项见 [Android 框架选型](docs/Mobile-Android-Framework.md)。
 
 ## 技术方向
 
-- 运行平台：Windows
-- 界面框架：WPF
+- 运行平台：Windows、Android（Android 8.0 起）
+- 界面框架：Windows WPF；Android .NET MAUI 原生控件，消息区域使用受限 WebView 渲染 Markdown
 - 开发语言：C#
 - .NET 版本：10
 - 服务端：ASP.NET Core，可部署在 Windows 或 Linux

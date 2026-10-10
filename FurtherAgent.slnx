@@ -3,6 +3,7 @@
     <Project Path="src/FurtherAgent.Cli/FurtherAgent.Cli.csproj" />
     <Project Path="src/FurtherAgent.Client/FurtherAgent.Client.csproj" />
     <Project Path="src/FurtherAgent.Core/FurtherAgent.Core.csproj" />
+    <Project Path="src/FurtherAgent.Mobile/FurtherAgent.Mobile.csproj" />
     <Project Path="src/FurtherAgent.Host/FurtherAgent.Host.csproj" />
     <Project Path="src/FurtherAgent.Server/FurtherAgent.Server.csproj" />
   </Folder>

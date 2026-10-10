@@ -1,0 +1,200 @@
+using System.Text.Json.Nodes;
+using FurtherAgent.Core;
+
+namespace FurtherAgent.Mobile;
+
+// All UI changes are marshalled by the application. No Windows settings or credentials are read.
+public sealed class MobileSession(Action<Action> dispatch) : IAsyncDisposable
+{
+    private RegistryClient? registry;
+    private RemoteDevice? remote;
+    private ConnectionHeartbeat? heartbeat;
+    private readonly SemaphoreSlim operation = new(1, 1);
+    private long generation;
+    private string? selected;
+    private string? pendingCreate;
+    public event Action? Changed;
+    public AgentInfo? Agent { get; private set; }
+    public SessionView? View { get; private set; }
+    public IReadOnlyList<SessionInfo> Sessions { get; private set; } = [];
+    public string Status { get; private set; } = "尚未连接";
+    public string DeviceName => remote?.Device?.Name ?? "远程设备";
+    public bool Connected => remote?.IsConnected == true;
+    public bool Busy { get; private set; }
+    public bool SendUncertain { get; private set; }
+    public string Heartbeat => heartbeat is null ? Status : $"中继 {heartbeat.Relay.State} · 设备 {heartbeat.Host.State}";
+    public string Traffic => remote is null ? "" : $"↓ {remote.ReceivedBytes / 1024d:N0} KB  ↑ {remote.SentBytes / 1024d:N0} KB";
+    public void AcknowledgeUncertain() { SendUncertain = false; Notify(); }
+    private void Notify() => Changed?.Invoke();
+    private RpcPeer Peer => remote is { IsConnected: true } r ? r.Peer : throw new IOException("连接已断开，请等待恢复后再操作。");
+
+    private async Task Run(Func<Task> action)
+    {
+        if (!await operation.WaitAsync(0)) throw new IOException("上一项操作仍在等待确认。");
+        Busy = true; Notify();
+        try { await action(); }
+        finally { Busy = false; operation.Release(); Notify(); }
+    }
+
+    public Task ConnectAsync(string url, string code) => Run(async () =>
+    {
+        await CloseConnectionAsync();
+        selected = null; View = null; Agent = null; Sessions = []; pendingCreate = null;
+        SendUncertain = false;
+        if (string.IsNullOrWhiteSpace(code)) throw new ArgumentException("请输入远端显示的授权码。");
+        var owner = new RemoteDevice();
+        var client = new RegistryClient(url);
+        registry = client; remote = owner;
+        Status = "正在连接中继…"; Notify();
+        owner.Notification += (method, node) =>
+        {
+            if (method != "session" || node is null) return;
+            var incoming = Json.Read<SessionView>(node);
+            dispatch(() => { if (remote == owner && incoming.Id == selected) { View = incoming; Notify(); } });
+        };
+        owner.ConnectionChanged += (_, message) => dispatch(() =>
+        {
+            if (remote != owner) return;
+            Status = message; Notify();
+        });
+        owner.Reconnected += () => dispatch(() => _ = RestoreAsync(owner));
+        try
+        {
+            await owner.ConnectAsync(client, code.Trim());
+            Agent = Json.Read<AgentInfo[]>(await Peer.CallAsync("agents", null)).FirstOrDefault(a => a.Available)
+                ?? throw new IOException("远端尚无可用 Agent。");
+            Sessions = Json.Read<SessionInfo[]>(await Peer.CallAsync("sessions", null));
+            heartbeat = new(client, owner); heartbeat.Start();
+            Status = "已连接 · " + Agent.Name;
+        }
+        catch { await CloseConnectionAsync(); Status = "连接失败，请检查地址与授权码"; throw; }
+    });
+
+    private async Task RestoreAsync(RemoteDevice owner)
+    {
+        // Reconnection is read-only. Wait for the uncertain operation to settle first.
+        await operation.WaitAsync();
+        try
+        {
+            if (remote != owner || !Connected) return;
+            var id = selected; long revision = generation;
+            var agent = Json.Read<AgentInfo[]>(await owner.Peer.CallAsync("agents", null)).FirstOrDefault(a => a.Available);
+            var sessions = Json.Read<SessionInfo[]>(await owner.Peer.CallAsync("sessions", null));
+            SessionView? view = id is null ? null : Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));
+            if (remote != owner || revision != generation) return;
+            Agent = agent; Sessions = sessions; View = view; Status = "已恢复连接 · 未重发任何操作";
+        }
+        catch (Exception ex) { if (remote == owner) Status = "恢复读取失败：" + ex.Message; }
+        finally { operation.Release(); Notify(); }
+    }
+
+    public Task RefreshAsync() => Run(async () =>
+    {
+        Sessions = Json.Read<SessionInfo[]>(await Peer.CallAsync("sessions", null));
+        if (selected is { } id) View = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id }));
+    });
+
+    public Task SelectAsync(string id) => Run(async () =>
+    {
+        long revision = ++generation;
+        // Preserve the old selection when a backend refuses switching during a running task.
+        var view = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id }));
+        if (revision != generation) return;
+        selected = id; View = view;
+    });
+
+    public Task CreateAsync() => Run(async () =>
+    {
+        if (Agent?.CanCreate != true) throw new NotSupportedException("此 Agent 请先在电脑端新建会话。");
+        pendingCreate ??= Guid.NewGuid().ToString("N");
+        var created = Json.Read<SessionInfo>(await Peer.CallAsync("create", new { id = pendingCreate, title = "手机新会话" }));
+        pendingCreate = null;
+        var view = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id = created.Id }));
+        ++generation; selected = created.Id; View = view;
+        Sessions = Json.Read<SessionInfo[]>(await Peer.CallAsync("sessions", null));
+    });
+
+    public Task SendAsync(string text, IReadOnlyList<string> fileIds) => Run(async () =>
+    {
+        if (SendUncertain) throw new IOException("上次提交结果未知，请先核对远端历史，再解除发送保护。");
+        if (View is not { CanSend: true } view) throw new IOException("当前会话暂不可发送。");
+        if (string.IsNullOrWhiteSpace(text) && fileIds.Count == 0) throw new ArgumentException("请输入内容或添加文件。");
+        if (text.Length > 100000) throw new ArgumentException("消息过长。");
+        var peer = Peer;
+        try
+        {
+            Status = "正在提交，请等待确认…"; Notify();
+            if (Agent?.CanFiles == true) await new FileTransferClient(peer).SendAsync(view.Id,
+                string.IsNullOrWhiteSpace(text) ? "请查看所附文件。" : text, fileIds, responseTimeout: TimeSpan.FromMinutes(3));
+            else
+            {
+                if (fileIds.Count > 0) throw new NotSupportedException("此 Agent 不支持文件。");
+                await peer.CallAsync("send", new { text }, responseTimeout: TimeSpan.FromMinutes(3));
+            }
+            Status = "已收到提交确认 · 等待 Agent 输出";
+        }
+        catch { SendUncertain = true; Status = "提交结果未知 · 草稿已保留，请先核对历史"; throw; }
+    });
+
+    public Task StopAsync() => Run(async () =>
+    {
+        if (View?.CanStop != true) throw new IOException("当前运行不可从此端停止。");
+        await Peer.CallAsync("interrupt", null); Status = "已提交停止请求";
+    });
+
+    public Task RespondAsync(string id, string decision, JsonNode? response = null) => Run(async () =>
+    {
+        if (View?.Prompts.Any(p => p.Id == id) != true) throw new IOException("该确认已失效，请刷新。");
+        await Peer.CallAsync("respond", new { id, decision, response });
+    });
+
+    public async Task<RemoteFile> UploadAsync(string path, IProgress<FileProgress> progress)
+    {
+        RemoteFile? uploaded = null;
+        await Run(async () =>
+        {
+            if (Agent?.CanFiles != true || View is null) throw new IOException("请先打开支持附件的会话。");
+            uploaded = await new FileTransferClient(Peer).UploadAsync(View.Id, path, progress);
+        });
+        return uploaded!;
+    }
+
+    public Task DownloadAsync(RemoteFile file, string destination, IProgress<FileProgress> progress) => Run(async () =>
+    {
+        if (View is null) throw new IOException("请先打开会话。");
+        await new FileTransferClient(Peer).DownloadAsync(View.Id, file.Id, destination, progress);
+    });
+
+    public async Task<AgentSettings> GetSettingsAsync()
+    {
+        AgentSettings? settings = null;
+        await Run(async () => settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null)));
+        return settings!;
+    }
+    public Task ConfigureAsync(string model, string provider, string mode) => Run(async () =>
+    {
+        if (Agent?.CanConfigure != true) throw new NotSupportedException("远端不支持设置。");
+        await Peer.CallAsync("configure", new { model, provider, mode });
+    });
+    public Task ArchiveAsync() => Run(async () =>
+    {
+        if (Agent?.CanArchive != true || View is null) throw new NotSupportedException("当前不支持归档。");
+        await Peer.CallAsync("archive", new { session = View.Id, archived = true });
+        ++generation; selected = null; View = null;
+        Sessions = Json.Read<SessionInfo[]>(await Peer.CallAsync("sessions", null));
+    });
+
+    public Task DisconnectAsync() => Run(async () =>
+    {
+        await CloseConnectionAsync(); View = null; selected = null; Sessions = []; Agent = null; Status = "已断开 · 远端任务不受影响";
+    });
+    private async Task CloseConnectionAsync()
+    {
+        ++generation;
+        var old = remote; remote = null;
+        if (heartbeat is not null) { await heartbeat.DisposeAsync(); heartbeat = null; }
+        if (old is not null) await old.DisposeAsync();
+        registry?.Dispose(); registry = null;
+    }
+    public async ValueTask DisposeAsync() => await CloseConnectionAsync();
+}
