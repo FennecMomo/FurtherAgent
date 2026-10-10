@@ -34,7 +34,7 @@
 - `artifacts/release/FurtherAgent-Relay-0.9.1-linux-x64.tar.gz`
 - `artifacts/release/FurtherAgent-Hermes-0.9.1-linux-x64.tar.gz`
 
-本次交付代码与发布包；公网部署状态另行核对，不能把本地验证视为线上已升级。
+2026-10-10 已完成公网部署，实际切换及验证见下文；本地验证和线上验证分别记录。
 
 ## 验证
 
@@ -49,3 +49,29 @@ WPF Markdown 与持久化 20 项检查全部通过。发布 Windows 包使用 `s
 0.9.1 APK 已在 Android 11 模拟器覆盖安装并实际运行。以小写、含连字符的 8 位码连接隔离 Host；手机保持在线时，桌面 CLI 发出 `DESKTOP_AND_PHONE_091`，手机实际界面收到该消息和回复。手机点击允许后，独立 CLI 重新连接读到 `accept`，全过程没有配对冲突，Android crash 日志为空。截图：`artifacts/android-validation/multi-091.png`。该流程使用实际中继和 APK，但 Agent 为隔离测试适配器。
 
 APK SHA256：`E3632672817C7BD74E61E84B06F064714F3C3A8CE99F2301D098CA9E951E6592`。
+
+## 2026-10-10 线上部署与验收
+
+用户明确授权更新服务器，并要求提前把完整提示词与 TODO 交给服务器 Hermes，确保连接中断后仍能独立完成部署。操作清单保存于服务器 `/home/ubuntu/furtheragent-deploy-091-todo.txt`。部署脚本以独立后台进程运行，不依赖客户端连接；先验证候选，再切换，失败自动恢复旧程序。
+
+首次预检发现旧 Host 发布目录缺少 `createdump`，脚本在创建新目录和停止线上进程前退出。补齐文件后重新上传 v2 包，所有复用运行库与本地 0.9.1 自包含发布逐文件 SHA256 一致。候选中继和 Host 在 `127.0.0.1:47321` 通过 API 探测、短码与旧码配对，然后经过 45 秒缓冲切换线上。
+
+北京时间 15:02:09，部署脚本完成持续存活检查；15:03，Hermes 在服务器本地完成独立二次核验：
+
+| 组件 | 运行版本 | 当次 PID | 程序路径 |
+| --- | --- | --- | --- |
+| 公网中继 | 0.9.1 | 3737786 | `/home/ubuntu/furtheragent-0.9.1/relay/FurtherAgent.Server` |
+| 生产 Hermes-default | 0.9.1 | 3737805 | `/home/ubuntu/furtheragent-0.9.1/host/FurtherAgent.Host` |
+| 运维 Hermes-FA-081-Integration | 0.9.1 | 3737823 | 同上，使用自身原有环境与身份 |
+
+- 公网 `https://furtheragent.fennecmomo.top/health` 实际返回 `status=ok, version=0.9.1, mode=relay`。
+- 生产和运维接入端沿用各自原身份、文件根与 Hermes 配置；脚本对身份字节做前后核验，没有重新生成身份。监听仍为 `127.0.0.1:47320`。
+- Hermes 网关 PID 15657 及进程启动时间保持不变，没有重启网关。
+- 两个独立 Windows CLI 分别使用 8 位短码与原 32 位长码，实际同时连接生产 Hermes-default。每个连接观察 20 秒，在线时间重叠约 16.7 秒，均读到可用 Agent 与 36 个会话，心跳正常并以退出码 0 结束，无配对冲突。
+- 运维接入端在切换后恢复连接，成功下载部署完成报告及 Hermes 本地二次验收报告。此项验证覆盖真实公网并发连接与旧码兼容；本轮未用实体手机复验，也未向生产业务会话发送测试消息。
+
+原 0.6.0 中继、0.8.1 生产 Host 和专用 `host-final` 目录保留。新目录下保留受限 `rollback-private.json`、环境文件、日志和脱敏部署报告；具体回滚脚本位置记录在 `deployment-result.json` 的 `rollbackScript` 字段。需要人工回滚时先确认没有部署 worker 持锁，再执行该脚本的 `--rollback`，不可盲目重复部署或重置身份。私有状态含环境与身份信息，不入 Git。
+
+本次沿用原后台进程部署方式，没有新增 systemd 服务或开机自启。进程仍位于 `hermes-gateway.service` 的 cgroup 中，重启该网关会连带终止这些 FurtherAgent 进程；这是现有运维限制，固定身份持久化不代表自动启动。
+
+本地原始日志、包、脚本及报告保存在忽略目录 `artifacts/integration/update-091`。该目录可能包含私有配置，不作为源码提交或公开附件。
