@@ -40,7 +40,7 @@ WPF 的「添加文件」「会话文件 / 下载」与 CLI 的 upload/files/dow
 
 六项待扩展功能的难度和接口证据见 [可行性排查](docs/Feature-Feasibility.md)；无 SSH 时可将 [独立接入端准备指令](docs/Hermes-Integration-Handoff.md) 转给服务器 Hermes。
 
-手机端前期资料见 [旧项目功能盘点](docs/Mobile-Legacy-Feature-Inventory.md)。目前仅分析和收集需求，已完成 momo-chat 源码盘点；HermesApp 因仓库访问受阻待补，尚未开始手机端开发。
+手机端前期资料见 [旧项目功能盘点](docs/Mobile-Legacy-Feature-Inventory.md)。已完成 momo-chat 与 HermesApp 两个旧仓库的源码盘点，收集 37 项功能或原型条目，并对照现有中继能力整理复用建议；目前仅分析和收集需求，尚未开始手机端开发。
 
 ## 技术方向
 
