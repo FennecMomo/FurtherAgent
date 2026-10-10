@@ -7,13 +7,13 @@ public static class CliRunner
 {
     private const string Help = """
 FurtherAgent.Cli <command> [options]
-Commands: probe, agents, sessions, read, create, settings, configure, send, interrupt-send, watch, stop, respond, files, upload, download, archive, unarchive
+Commands: probe, agents, sessions, read, create, settings, configure, send, interrupt-send, watch, stop, respond, files, upload, download, thumbnail, archive, unarchive
 Connection: --server URL (or FURTHERAGENT_SERVER); --code-file PATH
             Authorization code is read from FURTHERAGENT_CODE or FURTHERAGENT_CODE_FILE if no file option is supplied.
 Session:    --session ID (required for read/settings/configure/send/watch/stop/respond)
 Create:     --request-id 32_HEX_GUID --title TITLE (both optional; generated ID printed before submission)
 Send:       --text TEXT or --text-file PATH; optional --file PATH or --file-id ID; --seconds N; --delivery auto|queue|steer (DSH)
-Files:      files --session ID; upload --session ID --path PATH; download --session ID --id FILE_ID --output PATH
+Files:      files --session ID; upload --session ID --path PATH; download --session ID --id FILE_ID --output PATH; thumbnail --session ID --id FILE_ID --output PATH
 Watch:      --seconds N (1..600, default 15)
 Archive:    archive/unarchive --session ID (native backend support required; no delete)
 Configure:  --model ID --provider ID --mode default|plan (mode defaults to default)
@@ -22,7 +22,7 @@ All successful commands emit JSON Lines. No automatic reconnection or mutation r
 Exit codes: 0 success, 1 failure, 130 cancelled. A send success confirms acceptance, not completion.
 This CLI does not read or modify WPF settings and never opens a desktop window.
 """;
-    private static readonly HashSet<string> Commands = ["probe", "agents", "sessions", "read", "create", "settings", "configure", "send", "interrupt-send", "watch", "stop", "respond", "files", "upload", "download", "archive", "unarchive"];
+    private static readonly HashSet<string> Commands = ["probe", "agents", "sessions", "read", "create", "settings", "configure", "send", "interrupt-send", "watch", "stop", "respond", "files", "upload", "download", "thumbnail", "archive", "unarchive"];
     private static readonly HashSet<string> Common = ["server", "code-file"];
     private static readonly Dictionary<string, string[]> CommandOptions = new()
     {
@@ -30,7 +30,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
         ["create"] = ["request-id", "title"], ["settings"] = ["session"],
         ["interrupt-send"] = ["session", "text", "text-file", "seconds", "file", "file-id"],
         ["configure"] = ["session", "model", "provider", "mode"], ["send"] = ["session", "text", "text-file", "seconds", "file", "file-id", "delivery"],
-        ["files"] = ["session"], ["upload"] = ["session", "path"], ["download"] = ["session", "id", "output"],
+        ["files"] = ["session"], ["upload"] = ["session", "path"], ["download"] = ["session", "id", "output"], ["thumbnail"] = ["session", "id", "output"],
         ["watch"] = ["session", "seconds"], ["stop"] = ["session"],
         ["archive"] = ["session"], ["unarchive"] = ["session"],
         ["respond"] = ["session", "request-id", "decision", "response-file"]
@@ -73,7 +73,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                 if (string.IsNullOrWhiteSpace(text) || text.Length > 100000) throw new ArgumentException("Message must contain 1..100000 characters.");
             }
             if (command == "upload") _ = Required("path");
-            if (command == "download") { _ = Required("id"); _ = Required("output"); }
+            if (command is "download" or "thumbnail") { _ = Required("id"); _ = Required("output"); }
             if (command == "create")
             {
                 requestId = options.GetValueOrDefault("request-id", Guid.NewGuid().ToString("N"));
@@ -139,7 +139,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                     if (!agents.Any(a => a.Available && a.CanArchive)) throw new NotSupportedException("Remote adapter does not advertise native archive support.");
                     Emit("accepted", await Call("archive", new { session, archived = command == "archive" }));
                 }
-                if (command is "files" or "upload" or "download" or "send" or "interrupt-send")
+                if (command is "files" or "upload" or "download" or "thumbnail" or "send" or "interrupt-send")
                 {
                     var agents = Json.Read<AgentInfo[]>(await Call("agents", null));
                     bool supported = agents.Any(a => a.Available && a.CanFiles);
@@ -148,6 +148,12 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                     var transfer = new FileTransferClient(peer);
                     if (!supported && (command is not ("send" or "interrupt-send") || options.ContainsKey("file") || options.ContainsKey("file-id")))
                         throw new NotSupportedException("Remote host needs file transfer support (0.4.0+).");
+                    if (command == "thumbnail")
+                    {
+                        if (!agents.Any(a => a.Available && a.CanThumbnails)) throw new NotSupportedException("Remote host does not advertise thumbnail support.");
+                        var thumbnail = await transfer.SaveThumbnailAsync(session!, Required("id"), Required("output"), ct);
+                        Emit("thumbnail", new { thumbnail.Width, thumbnail.Height, thumbnail.MediaType, thumbnail.Version, bytes = Convert.FromBase64String(thumbnail.Data).Length });
+                    }
                     if (command == "files") Emit("files", await transfer.ListAsync(session!, ct));
                     if (command == "upload") Emit("uploaded", await transfer.UploadAsync(session!, Required("path"), ct: ct));
                     if (command == "download") Emit("downloaded", await transfer.DownloadAsync(session!, Required("id"), Required("output"), ct: ct));
@@ -180,7 +186,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                 if (await Task.WhenAny(delay, peer.Completion!) != delay) throw new IOException("Relay disconnected during observation; no mutation was replayed.");
                 await delay;
                 if (command == "probe") Emit("heartbeat", new { connected = remote.IsConnected, agentCount = Json.Read<AgentInfo[]>(await Call("agents", null)).Length });
-                Emit("observation-ended", new { seconds, connected = remote.IsConnected });
+                Emit("observation-ended", new { seconds, connected = remote.IsConnected, receivedBytes = remote.ReceivedBytes, sentBytes = remote.SentBytes });
             }
             return 0;
         }

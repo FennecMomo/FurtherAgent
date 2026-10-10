@@ -269,7 +269,7 @@ public partial class MainWindow : Window
         PromptBorder.Visibility = Visibility.Collapsed;
         EmptyTitle.Text = "你的 Agent，随时继续。"; EmptyDescription.Text = "连接设备，选择已有会话或新建会话。"; EmptyConnect.Visibility = Visibility.Visible;
         RemoteStatus.Text = "尚未连接"; SessionTitle.Text = "选择远端会话，继续工作";
-        SessionMeta.Text = "连接后显示远端会话历史与可用的运行状态"; Messages.ItemsSource = null; transcriptText = ""; Composer.Clear(); EmptyState.Visibility = Visibility.Visible;
+        SessionMeta.Text = "连接后显示远端会话历史与可用的运行状态"; Messages.ItemsSource = null; transcriptText = ""; OutputFilesPanel.Children.Clear(); outputFilesFingerprint = renderedOutputFilesFingerprint = ""; Composer.Clear(); EmptyState.Visibility = Visibility.Visible;
     }
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
@@ -332,6 +332,8 @@ public partial class MainWindow : Window
         }
         RelayHealth.Text = heartbeat is { } h ? Describe("中继", h.Relay) : "中继：未连接";
         HostHealth.Text = heartbeat is { } b ? Describe("客户端 B", b.Host) : "客户端 B：未连接";
+        static string Bytes(long value) => value >= 1048576 ? $"{value / 1048576d:F2} MiB" : $"{value / 1024d:F1} KiB";
+        TrafficStatus.Text = remote is null ? "" : $"当前连接 ↑ {Bytes(remote.SentBytes)}  ↓ {Bytes(remote.ReceivedBytes)}";
         RelayHealth.Foreground = heartbeat?.Relay.State == "在线" ? System.Windows.Media.Brushes.SeaGreen : System.Windows.Media.Brushes.DarkGoldenrod;
         HostHealth.Foreground = heartbeat?.Host.State == "在线" ? System.Windows.Media.Brushes.SeaGreen : System.Windows.Media.Brushes.DarkGoldenrod;
         ActivityStatus.Text = !ConnectButton.IsEnabled ? "正在连接设备…"
@@ -352,12 +354,12 @@ public partial class MainWindow : Window
         SessionMeta.Text = $"{view.Cwd}\n" + (view.StatusDetail ?? $"{(view.Status == "active" ? "执行中" : "等待指令")} · 桌面实时同步");
         var builder = new StringBuilder();
         foreach (var message in view.Messages.Select(ChatPresentation.Display)) builder.AppendLine($"{message.Role}\n{message.Text}\n{message.Detail}\n");
-        var content = builder.ToString() + outputFilesFingerprint;
-        if (content != transcriptText)
+        var content = builder.ToString();
+        if (content != transcriptText || renderedOutputFilesFingerprint != outputFilesFingerprint)
         {
             bool atBottom = ChatScroll.VerticalOffset + ChatScroll.ViewportHeight >= ChatScroll.ExtentHeight - 30;
             double previous = ChatScroll.VerticalOffset;
-            transcriptText = content; Messages.ItemsSource = view.Messages;
+            transcriptText = content; renderedOutputFilesFingerprint = outputFilesFingerprint; Messages.ItemsSource = view.Messages;
             if (atBottom) ChatScroll.ScrollToEnd(); else ChatScroll.ScrollToVerticalOffset(previous);
         }
         EmptyTitle.Text = "新会话已就绪"; EmptyDescription.Text = "在下方输入第一条消息，开始这段对话。"; EmptyConnect.Visibility = Visibility.Collapsed;
@@ -368,6 +370,7 @@ public partial class MainWindow : Window
     }
     private string? operationPhase;
     private string outputFilesFingerprint = "";
+    private string renderedOutputFilesFingerprint = "";
     private readonly Dictionary<string, Task<System.Windows.Media.Imaging.BitmapSource>> thumbnailCache = [];
     private readonly SemaphoreSlim thumbnailSlots = new(2);
     public FrameworkElement? CreateFileVisual(string reference)
@@ -777,7 +780,7 @@ public partial class MainWindow : Window
             var rows = ArchiveIndex(); rows.RemoveAll(x => x.Id == id);
             rows.Add(new(id, current.Title, DateTimeOffset.Now.ToString("O"))); SaveArchiveIndex(rows);
             await peer.CallAsync("archive", new { session = id, archived = true });
-            selectedId = null; current = null; Messages.ItemsSource = null; transcriptText = "";
+            selectedId = null; current = null; Messages.ItemsSource = null; transcriptText = ""; OutputFilesPanel.Children.Clear(); outputFilesFingerprint = renderedOutputFilesFingerprint = "";
             ClearAttachments(); Composer.Clear(); await RefreshAsync();
             EmptyTitle.Text = "会话已归档"; EmptyDescription.Text = "可通过左侧「恢复归档」找回，会话内容未删除。"; EmptyState.Visibility = Visibility.Visible;
         });
@@ -799,7 +802,7 @@ public partial class MainWindow : Window
                 button.IsEnabled = false;
                 await ActionAsync(async peer =>
                 {
-                    SaveDraft(); ClearAttachments(); selectedId = null; current = null; Messages.ItemsSource = null; transcriptText = "";
+                    SaveDraft(); ClearAttachments(); selectedId = null; current = null; Messages.ItemsSource = null; transcriptText = ""; OutputFilesPanel.Children.Clear(); outputFilesFingerprint = renderedOutputFilesFingerprint = "";
                     await peer.CallAsync("attach", new { id });
                     await peer.CallAsync("archive", new { session = id, archived = false });
                     var rows = ArchiveIndex(); rows.RemoveAll(x => x.Id == id); SaveArchiveIndex(rows);

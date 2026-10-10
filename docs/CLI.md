@@ -44,3 +44,8 @@ $cli = 'E:/etc/FurtherAgent/artifacts/release/FurtherAgent-Cli-0.4.0-win-x64/Fur
 新建与模型设置要求升级后的 Hermes Host；旧 Host 缺少能力标志时 create 明确报不支持，不会尝试发送未知写入。所有命令输出 JSON Lines，诊断错误写 stderr。文本参数在连接前校验，错误参数不会导致提交；同一 Hermes Host 进程保留未知提交的幂等键，可显式原样重试。
 
 0.4.0 支持 upload/files/download，以及 send --file / --file-id。双向文件校验、边界、示例见 File-Transfer.md。图片预览、视觉输入、权限切换、归档仍需另行接入。
+
+## 0.8.1 缩略图与流量
+
+`thumbnail --session ID --id outbox/picture.png --output preview.jpg` 仅请求压缩 JPEG，不下载原文件；远端必须声明 CanThumbnails。
+`watch` 的 observation-ended 事件带 receivedBytes/sentBytes，表示本次 WebSocket 连接的应用载荷，未计 TLS 和 HTTP 健康检查。

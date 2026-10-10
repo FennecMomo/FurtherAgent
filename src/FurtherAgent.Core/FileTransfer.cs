@@ -176,6 +176,14 @@ public sealed class FileTransferClient(RpcPeer peer)
 {
     public async Task<FileThumbnail> ThumbnailAsync(string session, string id, CancellationToken ct = default) =>
         Json.Read<FileThumbnail>(await peer.CallAsync("files/thumbnail", new { session, id }, ct));
+    public async Task<FileThumbnail> SaveThumbnailAsync(string session, string id, string path, CancellationToken ct = default)
+    {
+        var result = await ThumbnailAsync(session, id, ct);
+        if (result.Data.Length > (ImageThumbnail.MaxEncodedBytes + 2) / 3 * 4) throw new IOException("缩略图数据超过限制。");
+        var bytes = Convert.FromBase64String(result.Data);
+        await using var target = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        await target.WriteAsync(bytes, ct); return result;
+    }
     public async Task<FileWorkspace> ListAsync(string session, CancellationToken ct = default) =>
         Json.Read<FileWorkspace>(await peer.CallAsync("files/list", new { session }, ct));
     public async Task<RemoteFile> UploadAsync(string session, string path, IProgress<FileProgress>? progress = null, CancellationToken ct = default)
