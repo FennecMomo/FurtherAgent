@@ -42,6 +42,8 @@ WPF 的「添加文件」「会话文件 / 下载」与 CLI 的 upload/files/dow
 
 手机端前期资料见 [旧项目功能盘点](docs/Mobile-Legacy-Feature-Inventory.md)。已完成 momo-chat 与 HermesApp 两个旧仓库的源码盘点，收集 37 项功能或原型条目，并对照现有中继能力整理复用建议；目前仅分析和收集需求，尚未开始手机端开发。
 
+手机端只面向 Android，不考虑 iOS；两个旧项目只作为功能参考，不约束开发实现。以 Android 功能完整性和本工程开发维护成本为标准，当前首选建议为 .NET MAUI 的 Android 单目标，依据与待验证项见 [Android 框架选型](docs/Mobile-Android-Framework.md)。
+
 ## 技术方向
 
 - 运行平台：Windows
