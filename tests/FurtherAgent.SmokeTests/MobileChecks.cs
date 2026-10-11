@@ -7,13 +7,24 @@ internal static class MobileChecks
     public static async Task RunAsync(RegistryClient registry, string url, Action<bool, string> check)
     {
         var adapter = new Adapter();
-        await using var host = new DeviceHost(registry, () => adapter);
+        string filesRoot = Path.Combine(Path.GetTempPath(), "fa-mobile-files-" + Guid.NewGuid().ToString("N"));
+        await using var host = new DeviceHost(registry, () => adapter, filesRoot);
         await host.StartAsync("Android controller test");
         await using var mobile = new MobileSession(a => a());
         await mobile.ConnectAsync(url, host.Lease!.Code);
         check(mobile.Connected && mobile.Sessions.Count == 2, "mobile pairs and lists sessions through real relay");
         await mobile.SelectAsync("one");
         check(mobile.View?.Id == "one", "mobile opens remote session");
+        using (var files = new FileTransferStore(filesRoot))
+        {
+            string output = Path.Combine(files.List("one").Outbox, "new-output.txt");
+            await File.WriteAllTextAsync(output, "created after attach");
+            var listed = await mobile.ListOutputFilesAsync();
+            check(listed.Any(f => f.Name == "new-output.txt") && mobile.View!.OutputFiles!.Count == 1,
+                "mobile refreshes files created after attach without a conversation update");
+            File.Delete(output);
+            check((await mobile.ListOutputFilesAsync()).Count == 0, "mobile file refresh removes stale outputs");
+        }
         await mobile.SendAsync("手机中文 🚀", []);
         for (int i = 0; i < 50 && mobile.View?.Messages.Any(m => m.Text.StartsWith("手机中文 🚀", StringComparison.Ordinal)) != true; i++) await Task.Delay(100);
         check(adapter.Sends == 1 && mobile.View?.Messages.Any(m => m.Text.StartsWith("手机中文 🚀", StringComparison.Ordinal)) == true, "mobile receives real relay incremental update after send");
@@ -44,7 +55,10 @@ internal static class MobileChecks
         check(!html.Contains("<script>") && !html.Contains("href=\"javascript:") && !html.Contains("href=\"fa-copy://0\">copy") && !html.Contains("<img"), "mobile Markdown blocks HTML, executable links, injected copy links and remote images");
         check(html.Contains("<table>") && html.Contains("<pre><code") && html.Contains("href=\"https://example.com\""), "mobile Markdown retains tables, code and safe external links");
         string demo = Transcript.Render(Transcript.Preview);
-        check(demo.Contains("离线界面预览") && demo.Contains("<details>"), "mobile offline preview is explicitly labeled and tools collapse");
+        string attachment = Transcript.Render(Transcript.Preview with { Messages = [new("assistant", "[package](attachment:app.apk)")] });
+        check(attachment.Contains("href=\"attachment:app.apk\""), "mobile attachment links reach native download handler");
+        check(demo.Contains("离线界面预览") && !demo.Contains("<details>"), "mobile preview retains conversation and omits tool records");
+        Directory.Delete(filesRoot, true);
     }
     private sealed class Adapter : IAgentAdapter
     {

@@ -8,15 +8,17 @@ namespace FurtherAgent.Core;
 public static class Frames
 {
     public const int MaxBytes = 32 * 1024 * 1024;
-    public static async Task<JsonNode> ReadAsync(Stream stream, CancellationToken ct)
+    public static Task<JsonNode> ReadAsync(Stream stream, CancellationToken ct) => ReadAsync(stream, MaxBytes, ct);
+    // Only the local desktop pipe may carry full histories larger than relay messages.
+    public static Task<JsonNode> ReadDesktopAsync(Stream stream, CancellationToken ct) => ReadAsync(stream, int.MaxValue, ct);
+    private static async Task<JsonNode> ReadAsync(Stream stream, int limit, CancellationToken ct)
     {
         var header = new byte[4];
         await stream.ReadExactlyAsync(header, ct);
         int length = BinaryPrimitives.ReadInt32LittleEndian(header);
-        if (length <= 0 || length > MaxBytes) throw new IOException("消息长度无效或超过 32 MiB。");
-        var bytes = new byte[length];
-        await stream.ReadExactlyAsync(bytes, ct);
-        return JsonNode.Parse(bytes) ?? throw new IOException("空消息。");
+        if (length <= 0 || length > limit) throw new IOException("消息长度无效或超过 32 MiB。");
+        using var frame = new FrameReadStream(stream, length);
+        return await JsonNode.ParseAsync(frame, cancellationToken: ct) ?? throw new IOException("空消息。");
     }
     public static async Task WriteAsync(Stream stream, JsonNode message, CancellationToken ct)
     {
@@ -28,6 +30,39 @@ public static class Frames
         await stream.WriteAsync(bytes, ct);
         await stream.FlushAsync(ct);
     }
+}
+
+// Expose exactly one frame to the JSON parser; never consume the following frame
+// or allocate a buffer from an untrusted length header. Does not own the pipe.
+internal sealed class FrameReadStream(Stream source, int length) : Stream
+{
+    private int remaining = length;
+    public override bool CanRead => true;
+    public override bool CanSeek => false;
+    public override bool CanWrite => false;
+    public override long Length => throw new NotSupportedException();
+    public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+    public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+    public override int Read(Span<byte> buffer)
+    {
+        if (remaining == 0 || buffer.Length == 0) return 0;
+        int read = source.Read(buffer[..Math.Min(buffer.Length, remaining)]);
+        if (read == 0) throw new EndOfStreamException("桌面消息未完整接收。");
+        remaining -= read;
+        return read;
+    }
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default)
+    {
+        if (remaining == 0 || buffer.Length == 0) return 0;
+        int read = await source.ReadAsync(buffer[..Math.Min(buffer.Length, remaining)], ct);
+        if (read == 0) throw new EndOfStreamException("桌面消息未完整接收。");
+        remaining -= read;
+        return read;
+    }
+    public override void Flush() => throw new NotSupportedException();
+    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }
 
 // One reader and serialized writes per stream. Mutating requests are never replayed.

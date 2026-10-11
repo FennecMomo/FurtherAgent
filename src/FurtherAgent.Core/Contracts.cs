@@ -16,11 +16,20 @@ public record LeaseProof(string Code, string Secret);
 public record PairRequest(string Code);
 public record PairResult(string Name, string Ticket);
 public record AgentInfo(string Id, string Name, bool Available, string Detail, bool CanCreate = false, bool CanConfigure = false, bool CanFiles = false, bool CanArchive = false, bool CanChooseDelivery = false, bool CanInterruptSend = false, bool CanThumbnails = false);
-public record SessionInfo(string Id, string Title, string UpdatedAt)
+public record SessionInfo(string Id, string Title, string UpdatedAt, string Cwd = "")
 {
-    public string DisplayTime => double.TryParse(UpdatedAt, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var epoch) && epoch > 0 && epoch < 253402300799
-        ? DateTimeOffset.FromUnixTimeSeconds((long)epoch).ToLocalTime().ToString("MM-dd HH:mm")
-        : DateTimeOffset.TryParse(UpdatedAt, out var date) ? date.ToLocalTime().ToString("MM-dd HH:mm") : UpdatedAt;
+    public DateTimeOffset SortTime => ParseTime(UpdatedAt);
+    public string Workspace => string.IsNullOrWhiteSpace(Cwd) ? "工作区未知" : Cwd;
+    public static DateTimeOffset ParseTime(string text)
+    {
+        if (double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var n) && double.IsFinite(n))
+        {
+            if (n > 253402300799) n /= 1000;
+            if (n >= 0 && n < 253402300799) return DateTimeOffset.FromUnixTimeMilliseconds((long)(n * 1000));
+        }
+        return DateTimeOffset.TryParse(text, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var time) ? time : DateTimeOffset.MinValue;
+    }
+    public string DisplayTime => SortTime == DateTimeOffset.MinValue ? UpdatedAt : SortTime.ToLocalTime().ToString("MM-dd HH:mm");
 }
 public record ModelOption(string Id, string Provider, string Label);
 public record AgentSettings(string Model, string Provider, string Mode, List<ModelOption> Models, bool CanChangeModel, bool CanChangeMode, string Detail);
@@ -29,7 +38,10 @@ public record PendingPrompt(string Id, string Kind, string Title, string Detail,
 public record SessionView(string Id, string Title, string Cwd, string Status, string? TurnId,
     List<ChatEntry> Messages, List<PendingPrompt> Prompts,
     string? StatusDetail = null, bool CanSend = true, bool? CanStop = null, string? Model = null, string? Mode = null, int? PendingMessages = null,
-    List<RemoteFile>? OutputFiles = null);
+    List<RemoteFile>? OutputFiles = null, HistoryWindow? History = null);
+
+public record HistoryWindow(string Revision, int Start, int Total);
+public record HistoryPage(string Session, string Revision, int Start, int End, int Total, List<ChatEntry> Messages);
 
 public interface IAgentAdapter : IAsyncDisposable
 {

@@ -9,7 +9,7 @@ namespace FurtherAgent.AndroidApp;
 
 public sealed class MainPage : ContentPage
 {
-    private readonly MobileSession session = new(action => MainThread.BeginInvokeOnMainThread(action));
+    private readonly MobileSession session = new(action => MainThread.BeginInvokeOnMainThread(action), new HistoryCache(Path.Combine(FileSystem.AppDataDirectory, "history-cache-v1")));
     private readonly WebView transcript = new();
     private readonly Label title = Ui.Text("工作，随时接续", 21, true);
     private readonly Label subtitle = Ui.Text("离线预览 · 不会执行任务", 11);
@@ -24,6 +24,7 @@ public sealed class MainPage : ContentPage
     private readonly IDispatcherTimer timer;
     private CancellationTokenSource? speechCancel, speechStop;
     private bool recordingSpeech, suspended;
+    private bool rendering, prependHistory;
 
     public MainPage()
     {
@@ -35,7 +36,7 @@ public sealed class MainPage : ContentPage
         var logo = Ui.Text("F", 24, true); logo.TextColor = Colors.White; logo.HorizontalTextAlignment = TextAlignment.Center; logo.VerticalTextAlignment = TextAlignment.Center;
         var badge = new Border { Content = logo, BackgroundColor = Ui.Green, WidthRequest = 42, HeightRequest = 42,
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 }, StrokeThickness = 0 };
-        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.5", 9) } };
+        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.8", 9) } };
         foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
         var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
             ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
@@ -49,8 +50,7 @@ public sealed class MainPage : ContentPage
         files = Ui.Button("附件", FileMenuAsync);
         models = Ui.Button("模型", SettingsAsync);
         prompts = Ui.Button("待确认", RespondAsync);
-        var toolbar = new Grid { ColumnSpacing = 6, ColumnDefinitions = [new(GridLength.Star), new(GridLength.Star), new(GridLength.Star), new(GridLength.Star)] };
-        toolbar.Add(files); toolbar.Add(models, 1); toolbar.Add(stop, 2); toolbar.Add(prompts, 3);
+        var toolbar = new HorizontalStackLayout { Spacing = 6, Children = { files, models, stop, prompts } };
         voice = Ui.Button("语音", VoiceInputAsync);
         voice.AutomationId = "voice-input";
         SemanticProperties.SetDescription(voice, "实时语音输入，点击结束后可编辑，不会自动发送");
@@ -66,7 +66,7 @@ public sealed class MainPage : ContentPage
         timer = Dispatcher.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(400);
         timer.Tick += async (_, _) =>
         {
-            if (pendingRender && webReady) { pendingRender = false; await RenderAsync(); }
+            if (pendingRender && webReady && !rendering) { pendingRender = false; await RenderAsync(); }
         };
         timer.Start(); RefreshButtons();
     }
@@ -78,12 +78,29 @@ public sealed class MainPage : ContentPage
         try
         {
             if (!Uri.TryCreate(args.Url, UriKind.Absolute, out var uri)) return;
-            if (uri.Scheme == "fa-copy" && int.TryParse(uri.Host, out int index))
+            if (uri.Scheme == "fa-history")
+            {
+                if (uri.Host == "older" && !session.Busy && !interactionBusy)
+                {
+                    try { await Act(session.LoadOlderAsync); prependHistory = session.ReadingOlder; if (!session.ReadingOlder) lastSession = ""; QueueRender(); }
+                    finally { await transcript.EvaluateJavaScriptAsync("historyLoadDone()"); }
+                }
+                else if (uri.Host == "latest") { session.ShowLatest(); lastSession = ""; QueueRender(); }
+            }
+            else if (uri.Scheme == "fa-copy" && int.TryParse(uri.Host, out int index))
             {
                 var view = preview ? Transcript.Preview : session.View;
                 if (view is not null && index >= 0 && index < view.Messages.Count)
                 { await Clipboard.SetTextAsync(ChatPresentation.Display(view.Messages[index]).Text); status.Text = "已复制消息"; }
             }
+            else if (uri.Scheme == "attachment") await Act(async () =>
+            {
+                string name = Uri.UnescapeDataString(args.Url["attachment:".Length..]);
+                var output = await session.ListOutputFilesAsync();
+                var file = output.FirstOrDefault(f => f.Name == name)
+                    ?? throw new IOException("附件尚未生成或已移除，请稍后重试。");
+                await DownloadOutputAsync(file);
+            });
             else if (uri.Scheme is "https" or "http") await Browser.OpenAsync(uri, BrowserLaunchMode.External);
         }
         catch (Exception ex) { await ErrorAsync(ex); }
@@ -100,7 +117,7 @@ public sealed class MainPage : ContentPage
         }
         title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
         subtitle.Text = preview ? "离线预览 · 不会执行任务" : session.View is { } v
-            ? $"{session.Agent?.Name} · {StateName(v)}" : session.Agent?.Name ?? "尚未连接";
+            ? $"{session.Agent?.Name} · {StateName(v)}\n{v.Cwd}" : session.Agent?.Name ?? "尚未连接";
         status.Text = session.Status;
         RefreshButtons(); QueueRender();
     }
@@ -112,15 +129,15 @@ public sealed class MainPage : ContentPage
         bool ready = session.Connected && !session.Busy && !interactionBusy && session.View is not null && !preview;
         composer.IsEnabled = !session.Busy && !interactionBusy && session.View is not null && !preview;
         voice.IsEnabled = recognizingSpeech || composer.IsEnabled;
-        voice.Text = recognizingSpeech ? (recordingSpeech ? "结束" : "取消") : "语音";
+        Ui.SetAction(voice, recognizingSpeech ? (recordingSpeech ? "结束" : "取消") : "语音");
         composer.Placeholder = session.View is not null && !preview ? "继续这个会话…" : "连接设备后，在这里发送消息…";
         send.IsEnabled = ready && session.View!.CanSend && (!string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0);
-        send.Text = session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑";
+        Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑", true);
         stop.IsEnabled = ready && session.View!.CanStop == true;
         files.IsEnabled = ready && session.Agent?.CanFiles == true;
         models.IsEnabled = ready && session.Agent?.CanConfigure == true;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
-        prompts.Text = session.View?.Prompts.Count > 0 ? $"确认 {session.View.Prompts.Count}" : "待确认";
+        Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"确认 {session.View.Prompts.Count}" : "待确认");
         conversations.IsEnabled = session.Connected && !session.Busy && !interactionBusy;
         attachments.Text = PendingFiles.Count == 0 ? "" : "待发送：" + string.Join("、", PendingFiles.Select(f => f.Name));
         attachments.IsVisible = PendingFiles.Count > 0;
@@ -128,16 +145,21 @@ public sealed class MainPage : ContentPage
     private void QueueRender() => pendingRender = true;
     private async Task RenderAsync()
     {
-        var view = preview ? Transcript.Preview : session.View ?? new SessionView("empty", "", "", "idle", null, [], []);
-        string html = Transcript.Render(view);
-        if (lastHtml == html && lastSession == view.Id) return;
-        bool reset = lastSession != view.Id;
+        rendering = true;
         try
         {
-            await transcript.EvaluateJavaScriptAsync($"renderTranscript({JsonSerializer.Serialize(html)}, {(reset ? "true" : "false")});");
+            var view = preview ? Transcript.Preview : session.View ?? new SessionView("empty", "", "", "idle", null, [], []);
+            bool hasOlder = session.HasOlder, older = session.ReadingOlder;
+            string html = await Task.Run(() => Transcript.Render(view, hasOlder, older));
+            if (!preview && session.View is not null && !ReferenceEquals(view, session.View)) { pendingRender = true; return; }
+            if (lastHtml == html && lastSession == view.Id) { prependHistory = false; return; }
+            bool reset = lastSession != view.Id;
+            bool prepend = prependHistory; prependHistory = false;
+            await transcript.EvaluateJavaScriptAsync($"renderTranscript({JsonSerializer.Serialize(html)}, {(reset ? "true" : "false")}, {(prepend ? "true" : "false")});");
             lastHtml = html; lastSession = view.Id;
         }
-        catch { webReady = false; }
+        catch (Exception ex) { status.Text = "记录显示失败，可重新选择会话：" + ex.Message; }
+        finally { rendering = false; }
     }
     public void SaveDraft()
     {
@@ -298,17 +320,21 @@ public sealed class MainPage : ContentPage
         });
         if (choice == "查看远端输出") await Act(async () =>
         {
-            var output = session.View?.OutputFiles ?? [];
+            var output = await session.ListOutputFilesAsync();
             if (output.Count == 0) { await DisplayAlertAsync("会话产物", "目前没有输出文件，可让 Agent 把结果放入会话输出目录。", "知道了"); return; }
             string[] options = output.Select((f, i) => $"{i + 1}. {f.Name} · {f.Size / 1024d:N0} KB").ToArray();
             string selected = await DisplayActionSheetAsync("下载后可保存或分享", "取消", null, options);
             int index = Array.IndexOf(options, selected); if (index < 0) return;
-            string dir = Path.Combine(FileSystem.CacheDirectory, "downloads", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
-            string name = Path.GetFileName(output[index].Name.Replace('\\', '/'));
-            string path = Path.Combine(dir, string.IsNullOrWhiteSpace(name) ? "output" : name);
-            await session.DownloadAsync(output[index], path, Progress("下载"));
-            await Share.Default.RequestAsync(new ShareFileRequest { Title = "保存或分享文件", File = new ShareFile(path) });
+            await DownloadOutputAsync(output[index]);
         });
+    }
+    private async Task DownloadOutputAsync(RemoteFile file)
+    {
+        string dir = Path.Combine(FileSystem.CacheDirectory, "downloads", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
+        string name = Path.GetFileName(file.Name.Replace('\\', '/'));
+        string path = Path.Combine(dir, string.IsNullOrWhiteSpace(name) ? "output" : name);
+        await session.DownloadAsync(file, path, Progress("下载"));
+        await Share.Default.RequestAsync(new ShareFileRequest { Title = "保存或分享文件", File = new ShareFile(path) });
     }
     private IProgress<FileProgress> Progress(string action) => new Progress<FileProgress>(p => status.Text = $"{action} {p.Completed / 1024d:N0} / {p.Total / 1024d:N0} KB");
     private async Task SettingsAsync() => await Act(async () =>

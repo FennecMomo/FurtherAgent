@@ -12,7 +12,7 @@ internal sealed class SessionsPage : ContentPage
     public SessionsPage(MainPage home, MobileSession session)
     {
         Title = "远端会话"; Ui.Theme(this);
-        void Filter() => list.ItemsSource = session.Sessions.Where(s => s.Title.Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase) || s.Id.Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase)).ToArray();
+        void Filter() => list.ItemsSource = session.Sessions.Where(s => s.Title.Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase) || s.Cwd.Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase) || s.Id.Contains(search.Text ?? "", StringComparison.OrdinalIgnoreCase)).OrderByDescending(s => s.SortTime).ThenBy(s => s.Id).ToArray();
         async Task Run(Func<Task> action)
         {
             if (working) return; working = true; list.IsEnabled = false;
@@ -29,7 +29,8 @@ internal sealed class SessionsPage : ContentPage
         {
             var title = Ui.Text("", 16, true); Ui.TextTheme(title); title.SetBinding(Label.TextProperty, nameof(SessionInfo.Title));
             var time = Ui.Text("", 11); Ui.TextTheme(time); time.SetBinding(Label.TextProperty, nameof(SessionInfo.DisplayTime));
-            return new VerticalStackLayout { Padding = new Thickness(18, 14), Spacing = 5, Children = { title, time, new BoxView { HeightRequest = 1, Color = Color.FromArgb("#DDE6DF"), Margin = new Thickness(0, 8, 0, 0) } } };
+            var workspace = Ui.Text("", 12); Ui.TextTheme(workspace); workspace.SetBinding(Label.TextProperty, nameof(SessionInfo.Workspace));
+            return new VerticalStackLayout { Padding = new Thickness(18, 14), Spacing = 5, Children = { title, workspace, time, new BoxView { HeightRequest = 1, Color = Color.FromArgb("#DDE6DF"), Margin = new Thickness(0, 8, 0, 0) } } };
         });
         list.SelectionChanged += async (_, args) =>
         {
@@ -45,6 +46,6 @@ internal sealed class SessionsPage : ContentPage
         {
             if (session.View is null || session.Agent?.CanArchive != true) { await DisplayAlertAsync("归档不可用", "当前没有支持归档的会话。", "知道了"); return; }
             if (await DisplayAlertAsync("归档会话", session.View.Title, "归档", "取消")) await session.ArchiveAsync();
-        })));
+        })) { IconImageSource = Ui.Icon("归档当前") });
     }
 }

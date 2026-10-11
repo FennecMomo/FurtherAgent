@@ -7,9 +7,9 @@
     <SingleProject>true</SingleProject>
     <ApplicationTitle>FurtherAgent</ApplicationTitle>
     <ApplicationId>top.fennecmomo.furtheragent</ApplicationId>
-    <ApplicationDisplayVersion>0.9.5</ApplicationDisplayVersion>
-    <Version>0.9.5</Version>
-    <ApplicationVersion>905</ApplicationVersion>
+    <ApplicationDisplayVersion>0.9.8</ApplicationDisplayVersion>
+    <Version>0.9.8</Version>
+    <ApplicationVersion>908</ApplicationVersion>
     <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
     <PublishTrimmed>false</PublishTrimmed>
@@ -22,6 +22,7 @@
     <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.0" />
     <ProjectReference Include="../FurtherAgent.Mobile/FurtherAgent.Mobile.csproj" />
     <MauiIcon Include="Resources/AppIcon/appicon.svg" Color="#183F34" />
+    <MauiImage Include="Resources/Images/*.svg" BaseSize="24,24" />
     <MauiSplashScreen Include="Resources/AppIcon/appicon.svg" Color="#F6F8F5" BaseSize="100,100" />
   </ItemGroup>
 </Project>

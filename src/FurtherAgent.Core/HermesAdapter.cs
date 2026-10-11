@@ -74,7 +74,7 @@ public sealed class HermesAdapter : IAgentAdapter
             {
                 if (row?["id"]?.ToString() is not { Length: > 0 } id) continue;
                 result[id] = new(id, row["title"]?.ToString() is { Length: > 0 } t ? t : id,
-                    row["last_active"]?.ToString() ?? row["updated_at"]?.ToString() ?? "");
+                    row["last_active"]?.ToString() ?? row["updated_at"]?.ToString() ?? "", row["cwd"]?.ToString() ?? row["working_directory"]?.ToString() ?? "");
             }
             if (page["has_more"]?.GetValue<bool>() != true) break;
         }

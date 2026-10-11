@@ -114,6 +114,8 @@ public sealed class DeviceHost : IAsyncDisposable
             await using var peer = new RpcPeer(socket);
             using var pumping = CancellationTokenSource.CreateLinkedTokenSource(ct);
             int incremental = 0;
+            int paged = 0;
+            SessionView? historySource = null;
             bool lastIncremental = false;
             var sync = new SessionSyncEncoder();
             var updates = Channel.CreateBounded<SessionView>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
@@ -128,7 +130,9 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             async Task<JsonNode> Attach(string id, CancellationToken token)
             {
-                var view = WithFiles(await adapter.AttachAsync(id, token)); attachedSession = view.Id; return Json.Node(view);
+                var view = WithFiles(await adapter.AttachAsync(id, token));
+                historySource = view; attachedSession = view.Id;
+                return Json.Node(Volatile.Read(ref paged) == 1 || adapter.Info.Id == "codex" ? HistoryPaging.Latest(view) : view);
             }
             string FileSession(JsonNode? args)
             {
@@ -153,6 +157,9 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             peer.Handler = async (method, args, token) => method switch
             {
+                "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, 1) >= 0 }),
+                "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
+                    args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>())),
                 "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1 }),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
@@ -181,6 +188,8 @@ public sealed class DeviceHost : IAsyncDisposable
                         bool mode = Volatile.Read(ref incremental) == 1;
                         if (mode != lastIncremental) { sync = new SessionSyncEncoder(); lastIncremental = mode; }
                         var enriched = WithFiles(view);
+                        historySource = enriched;
+                        if (Volatile.Read(ref paged) == 1 || adapter.Info.Id == "codex") enriched = HistoryPaging.Latest(enriched);
                         var update = sync.Encode(enriched);
                         if (update is not null)
                             await peer.NotifyAsync(mode ? "session-update" : "session", mode ? (object)update : enriched);

@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.IO.Pipes;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace FurtherAgent.Core;
@@ -20,7 +21,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private long revision;
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
-    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 保留原会话与工具 · 需在 B 打开 Codex", false, true);
+    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 远端选择时自动打开桌面会话 · 需在 B 运行 Codex", false, true);
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
     public CodexDesktopAdapter(string? codexHome = null) => home = codexHome ??
@@ -43,7 +44,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             }
             catch (System.Text.Json.JsonException) { /* Concurrent partial last line. */ }
         }
-        return entries.Values.OrderByDescending(x => x.UpdatedAt).Take(300).ToArray();
+        return CodexSessionCatalog.Enrich(home, entries.Values).OrderByDescending(x => x.SortTime).ThenBy(x => x.Id).Take(300).ToArray();
     }
     private async Task ConnectAsync(CancellationToken ct)
     {
@@ -70,11 +71,16 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             sessionId = id; owner = null; state = null; revision = 0;
             snapshot = new(TaskCreationOptions.RunContinuationsAsynchronously);
         }
-        var discovered = await RequestAsync("thread-owner-discovery", new { hostId = "local", conversationId = id }, 1, ct, false);
-        owner = discovered["handledByClientId"]?.GetValue<string>() ?? throw new IOException("找不到会话宿主。");
+        owner = await CodexThreadActivation.ActivateAsync(id, CodexThreadActivation.Open, async token =>
+        {
+            var discovered = await RequestAsync("thread-owner-discovery", new { hostId = "local", conversationId = id },
+                1, token, false, timeoutMs: 2000, allowMissingOwner: true);
+            return Text(discovered["resultType"]) == "error" ? null
+                : discovered["handledByClientId"]?.GetValue<string>() ?? throw new IOException("桌面返回的会话宿主无效。");
+        }, ct);
         await FollowAsync(true, ct);
         try { return await snapshot.Task.WaitAsync(TimeSpan.FromSeconds(15), ct); }
-        catch (TimeoutException) { throw new IOException("未收到桌面会话快照。请在 B 的 Codex 中打开该会话，再重新选择。"); }
+        catch (TimeoutException) { throw new IOException("桌面会话已打开，但未及时收到快照，请稍后重新选择该会话。"); }
     }
     private Task FollowAsync(bool following, CancellationToken ct) => WriteAsync(Json.Node(new
     {
@@ -82,7 +88,8 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         targetClientIds = owner is null ? null : new[] { owner },
         @params = new { conversationId = sessionId, hostId = "local", following }
     }), ct);
-    private async Task<JsonNode> RequestAsync(string method, object args, int version, CancellationToken ct, bool targeted = true)
+    private async Task<JsonNode> RequestAsync(string method, object args, int version, CancellationToken ct, bool targeted = true,
+        int timeoutMs = 25000, bool allowMissingOwner = false)
     {
         string id = Guid.NewGuid().ToString();
         var source = new TaskCompletionSource<JsonNode>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -90,9 +97,10 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         try
         {
             await WriteAsync(Json.Node(new { type = "request", requestId = id, sourceClientId = clientId,
-                method, @params = args, version, targetClientId = targeted ? owner : null, timeoutMs = 25000 }), ct);
-            var reply = await source.Task.WaitAsync(TimeSpan.FromSeconds(28), ct);
-            if (Text(reply["resultType"]) != "success")
+                method, @params = args, version, targetClientId = targeted ? owner : null, timeoutMs }), ct);
+            var reply = await source.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs + 3000), ct);
+            if (Text(reply["resultType"]) != "success" &&
+                !(allowMissingOwner && Text(reply["resultType"]) == "error" && Text(reply["error"]) == "no-client-found"))
                 throw new IOException($"Codex 桌面拒绝请求：{Text(reply["error"])}。请确认会话已在 B 桌面打开，且桌面版本兼容。");
             return reply;
         }
@@ -110,7 +118,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         {
             while (!lifetime.IsCancellationRequested)
             {
-                var m = await Frames.ReadAsync(pipe, lifetime.Token);
+                var m = await Frames.ReadDesktopAsync(pipe, lifetime.Token);
                 switch (Text(m["type"]))
                 {
                     case "response":
@@ -238,9 +246,10 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             ? entities.Select(p => p.Value!).OrderBy(t => t["turnStartedAtMs"]?.GetValue<double>() ?? 0).ToArray()
             : s["turns"]?.AsArray().Select(t => t!).ToArray() ?? [];
         var messages = new List<ChatEntry>();
-        foreach (var t in turns)
+        // Keep projected history on the host. Controllers receive bounded pages.
+        foreach (var t in turns.Reverse())
         {
-            foreach (var item in t["items"]?.AsArray() ?? [])
+            foreach (var item in (t["items"]?.AsArray() ?? []).Reverse())
             {
                 string kind = Text(item?["type"]);
                 string content = kind switch
@@ -251,21 +260,25 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                     "commandExecution" => Text(item?["command"]) + "\n" + Text(item?["aggregatedOutput"]),
                     "mcpToolCall" => Text(item?["server"]) + "/" + Text(item?["tool"]) + " · " + Text(item?["status"]),
                     "fileChange" => "文件修改 · " + Text(item?["status"]) + "\n" + string.Join("\n", item?["changes"]?.AsArray().Select(c => Text(c?["path"])) ?? []),
+                    "contextCompaction" => "上下文已压缩，完整对话记录仍可向上翻阅。",
                     _ => ""
                 };
                 if (!string.IsNullOrWhiteSpace(content))
                 {
-                    string? detail = kind is "userMessage" or "agentMessage" ? null : item?.ToJsonString();
+                    string? detail = kind is "userMessage" or "agentMessage" or "contextCompaction" ? null : item?.ToJsonString();
                     if (detail?.Length > 20000) detail = detail[..20000] + "\n[详情截断]";
-                    messages.Add(new(kind == "userMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail));
+                    var entry = new ChatEntry(kind == "userMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : kind == "contextCompaction" ? "系统" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail);
+                    messages.Add(entry);
                 }
             }
         }
+        messages.Reverse();
         var prompts = (s["requests"]?.AsArray() ?? []).Select(r => new PendingPrompt(Text(r?["id"]), Text(r?["method"]),
             Text(r?["method"]), r?["params"]?.ToJsonString() ?? "", r?["params"]?.DeepClone())).ToList();
         var last = turns.LastOrDefault(t => Text(t["status"]) == "inProgress");
         return new(Text(s["id"]), Text(s["title"]), Text(s["cwd"]), Text(s["threadRuntimeStatus"]?["type"]),
-            last is null ? null : Text(last["turnId"]), messages.TakeLast(250).ToList(), prompts, Model: Text(s["latestCollaborationMode"]?["settings"]?["model"] ?? s["latestModel"]), Mode: Text(s["latestCollaborationMode"]?["mode"]));
+            last is null ? null : Text(last["turnId"]), messages, prompts,
+            Model: Text(s["latestCollaborationMode"]?["settings"]?["model"] ?? s["latestModel"]), Mode: Text(s["latestCollaborationMode"]?["mode"]));
     }
     internal static string Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var text) ? text : n?.ToJsonString() ?? "";
     public async ValueTask DisposeAsync()

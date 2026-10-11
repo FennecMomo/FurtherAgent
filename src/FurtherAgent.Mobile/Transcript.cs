@@ -17,7 +17,7 @@ public static class Transcript
     {
         protected override void Write(HtmlRenderer renderer, LinkInline link)
         {
-            bool allowed = Uri.TryCreate(link.Url, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http";
+            bool allowed = Uri.TryCreate(link.Url, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" or "attachment";
             if (allowed) { renderer.Write("<a href=\""); renderer.WriteEscapeUrl(link.Url); renderer.Write("\">"); }
             renderer.WriteChildren(link);
             if (allowed) renderer.Write("</a>");
@@ -42,19 +42,29 @@ public static class Transcript
         renderer.Render(Markdown.Parse(text, Pipeline));
         return writer.ToString();
     }
-    public static string Render(SessionView view)
+    public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false)
     {
         var html = new StringBuilder();
-        for (int i = 0; i < view.Messages.Count; i++)
+        if (hasOlder) html.Append("<p class='history'><a id='older' href='fa-history://older'>上滑或点此加载更早的记录</a></p>");
+        else html.Append("<p class='history'>已到已加载历史的开头</p>");
+        for (int i = 0; i < Math.Min(32, view.Messages.Count); i++)
         {
             var entry = ChatPresentation.Display(view.Messages[i]);
+            if (!HistoryPaging.IsConversation(entry)) continue;
             string kind = ChatPresentation.Kind(entry);
-            string content = MarkdownHtml(entry.Text);
+            string text = entry.Text.Length <= 8000 ? entry.Text : entry.Text[..8000] + "\n[长内容显示已截断，可复制原文或在电脑查看]";
+            // Large tool output and compaction summaries are plain text, not Markdown trees.
+            string content;
+            try { content = kind is "tool" or "reasoning" or "system" || entry.Text.Length > 8000 ? "<pre class='plain'>" + E(text) + "</pre>" : MarkdownHtml(text); }
+            catch (Exception) { content = "<pre class='plain'>" + E(text) + "</pre>"; }
+            html.Append($"<section id='m-{(view.History?.Start ?? 0) + i}'>");
             if (kind is "tool" or "reasoning" or "system")
-                html.Append($"<details><summary>{E(entry.Role)}</summary><div class='body'>{content}<pre>{E(entry.Detail ?? "")}</pre></div></details>");
+                html.Append($"<details><summary>{E(entry.Role)}</summary><div class='body'>{content}<pre>{E(entry.Detail is { Length: > 2000 } d ? d[..2000] + "\n[详情截断]" : entry.Detail ?? "")}</pre></div></details>");
             else
                 html.Append($"<article class='{kind}'><div class='who'>{(kind == "user" ? "你" : "FurtherAgent")}<a class='copy' href='fa-copy://{i}'>复制</a></div><div class='body'>{content}</div></article>");
+            html.Append("</section>");
         }
+        if (readingOlder) html.Append("<p class='history'><a href='fa-history://latest'>回到最新记录</a></p>");
         if (view.Messages.Count == 0) html.Append("<div class='empty'><b>从这里继续工作</b><p>发送一条消息，远端 Agent 会在原会话中回复。</p></div>");
         return html.ToString();
     }
@@ -65,8 +75,15 @@ public static class Transcript
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <style>
 :root{color-scheme:light dark;--bg:#f6f8f5;--card:#fff;--text:#20372c;--muted:#708176;--line:#e0e7df;--user:#e4efe7}*{box-sizing:border-box}body{margin:0;padding:18px 16px 36px;background:var(--bg);color:var(--text);font:15px/1.75 system-ui,sans-serif;overflow-wrap:anywhere}article{margin:0 0 20px}.user{background:var(--user);border-radius:18px 18px 5px 18px;padding:12px 15px;margin-left:28px}.assistant{background:var(--card);border:1px solid var(--line);border-radius:5px 18px 18px 18px;padding:14px 16px;margin-right:8px}.who{font-size:11px;font-weight:650;color:var(--muted);margin-bottom:7px;letter-spacing:.3px}.copy{float:right;font-size:11px;text-decoration:none;color:var(--muted)}p{margin:8px 0}p:first-child{margin-top:0}p:last-child{margin-bottom:0}h1,h2,h3{font-size:18px;line-height:1.4}pre{overflow-x:auto;background:var(--bg);padding:12px;border-radius:9px;font:12px/1.65 monospace;white-space:pre}code{font:13px monospace;background:var(--bg)}table{display:block;overflow-x:auto;border-collapse:collapse;font-size:13px}td,th{border:1px solid var(--line);padding:7px 10px;min-width:70px}blockquote{margin:10px 0;border-left:3px solid #81ad93;padding-left:12px;color:var(--muted)}a{color:#428062}img{max-width:100%}details{border:1px solid var(--line);border-radius:10px;margin:10px 0;padding:9px 12px;font-size:13px;color:var(--muted)}summary{cursor:pointer}.empty{text-align:center;padding:64px 20px;color:var(--muted)}.empty b{color:var(--text);font-size:20px}ul,ol{padding-left:22px}@media(prefers-color-scheme:dark){:root{--bg:#101c17;--card:#182820;--text:#e4ece6;--muted:#a1b4a7;--line:#2b4034;--user:#264637}}
+.history{text-align:center;font-size:12px;color:var(--muted)}pre.plain{white-space:pre-wrap;word-break:break-word}
 </style></head><body><main id="chat"></main><script>
-function renderTranscript(html, reset){const bottom=innerHeight+scrollY>=document.body.scrollHeight-100;const y=scrollY;const opened=[...document.querySelectorAll('details')].map(x=>x.open);document.getElementById('chat').innerHTML=html;if(!reset)document.querySelectorAll('details').forEach((x,i)=>x.open=opened[i]||false);requestAnimationFrame(()=>scrollTo(0,reset||bottom?document.body.scrollHeight:y));}
+let armed=false,loading=false;
+function older(){if(!loading&&document.getElementById('older')){loading=true;location.href='fa-history://older';}}
+addEventListener('touchmove',()=>{armed=true;if(scrollY<30)older();},{passive:true});
+addEventListener('wheel',e=>{armed=true;if(e.deltaY<0&&scrollY<30)older();},{passive:true});
+addEventListener('scroll',()=>{if(armed&&scrollY<30){armed=false;older();}},{passive:true});
+function historyLoadDone(){loading=false;}
+function renderTranscript(html, reset,prepend){const bottom=innerHeight+scrollY>=document.body.scrollHeight-100;const y=scrollY;const anchor=[...document.querySelectorAll('section')].find(x=>x.getBoundingClientRect().bottom>0);const aid=anchor?.id;const ay=anchor?.getBoundingClientRect().top;const opened=new Set([...document.querySelectorAll('section details[open]')].map(x=>x.parentElement.id));document.getElementById('chat').innerHTML=html;if(!reset)document.querySelectorAll('section details').forEach(x=>x.open=opened.has(x.parentElement.id));armed=false;loading=false;requestAnimationFrame(()=>{const a=aid&&document.getElementById(aid);if(prepend&&a)scrollTo(0,scrollY+a.getBoundingClientRect().top-ay);else scrollTo(0,reset||bottom?document.body.scrollHeight:y);});}
 </script></body></html>
 """;
 

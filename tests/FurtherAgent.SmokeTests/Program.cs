@@ -13,6 +13,11 @@ void Check(bool condition, string name)
     if (!condition) throw new Exception("FAIL: " + name);
     Console.WriteLine("PASS: " + name); passed++;
 }
+if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
+if (args.Contains("--codex-activation-checks")) { await CodexActivationChecks.Run(Check); return; }
+if (args.Contains("--codex-activation-live")) { await CodexActivationChecks.RunLive(Check); return; }
+if (args.Length == 2 && args[0] == "--codex-history-live") { await CodexHistoryChecks.RunLive(args[1], Check); return; }
+if (args.Length == 4 && args[0] == "--paging-live") { await PagingChecks.RunLive(args[1], args[2], args[3], Check); return; }
 async Task Reject(Func<Task> action, string name)
 {
     bool rejected = false;
@@ -36,6 +41,9 @@ if (args.Contains("--dsh-live"))
     return;
 }
 await TlsRetryChecks.Run(Check);
+ConversationChecks.Run(Check);
+await CodexHistoryChecks.Run(Check);
+await CodexActivationChecks.Run(Check);
 await DshDiscoveryChecks.Run(Check);
 SessionSyncChecks.Run(Check);
 await ThumbnailChecks.Run(Check);
@@ -86,6 +94,9 @@ try
     await FileChecks.RunAsync(registry, Check);
     await HermesChecks.RunAsync(registry, Check);
     await CliChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
+    // Isolate the extra pagination requests from the per-IP production rate limit.
+    server.Kill(true); await server.WaitForExitAsync(); server.Dispose(); server = StartServer(); await WaitForServer();
+    await PagingChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
     await Reject(async () => await registry.PostAsync<PairResult>("pair", new PairRequest("INVALID")), "unknown authorization code rejected");
     await using (var host = new DeviceHost(registry, () => new TestAdapter()))
     {
