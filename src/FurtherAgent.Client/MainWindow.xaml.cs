@@ -47,6 +47,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
+        Title = "FurtherAgent · " + version; VersionLabel.Text = version + " · 远程工作空间";
         snapshotTimer = new(System.Windows.Threading.DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(250) };
         snapshotTimer.Tick += (_, _) =>
         {
@@ -212,6 +214,7 @@ public partial class MainWindow : Window
             remote.Reconnected += () => Dispatcher.BeginInvoke(async () => await RestoreSessionAsync(connected));
             var agents = Json.Read<AgentInfo[]>(await remote.Peer.CallAsync("agents", null));
             agent = agents.FirstOrDefault(a => a.Available) ?? throw new IOException("远端没有可用适配器。");
+            WorkspaceButton.Visibility = agent.CanWorkspaces ? Visibility.Visible : Visibility.Collapsed;
             AgentPicker.Items.Clear(); AgentPicker.Items.Add(agent.Name); AgentPicker.SelectedIndex = 0;
             RemoteStatus.Text = $"已通过服务端连接 · {remote.Device!.Name}";
             DisconnectButton.IsEnabled = RefreshButton.IsEnabled = true;
@@ -268,7 +271,7 @@ public partial class MainWindow : Window
         var previous = remote; remote = null;
         if (previous is not null) await previous.DisposeAsync();
         remoteRegistry?.Dispose(); remoteRegistry = null;
-        sessions = []; SessionList.ItemsSource = null;
+        sessions = []; workspaces = []; workspaceGroups = []; SessionList.ItemsSource = null; WorkspaceButton.Visibility = Visibility.Collapsed;
         DisconnectButton.IsEnabled = RefreshButton.IsEnabled = false; SetSessionEnabled(false);
         PromptBorder.Visibility = Visibility.Collapsed;
         EmptyTitle.Text = "你的 Agent，随时继续。"; EmptyDescription.Text = "连接设备，选择已有会话或新建会话。"; EmptyConnect.Visibility = Visibility.Visible;
@@ -295,7 +298,15 @@ public partial class MainWindow : Window
     private async Task RefreshAsync()
     {
         if (remote is null) return;
-        sessions = Json.Read<List<SessionInfo>>(await remote.Peer.CallAsync("sessions", null));
+        var connection = remote;
+        var loaded = Json.Read<List<SessionInfo>>(await connection.Peer.CallAsync("sessions", null));
+        if (remote != connection) return;
+        sessions = loaded;
+        if (agent?.CanWorkspaces == true)
+        {
+            try { await LoadWorkspacesAsync(connection); }
+            catch (Exception ex) { StatusBar.Text = "会话已加载；工作空间目录读取失败：" + ex.Message; }
+        }
         Filter();
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e)
@@ -303,14 +314,13 @@ public partial class MainWindow : Window
     private void Search_Changed(object sender, TextChangedEventArgs e) { if (SessionList is not null) Filter(); }
     private void Filter()
     {
-        var selected = selectedId;
-        var filtered = sessions.Where(s => s.Title.Contains(SearchBox.Text.Trim(), StringComparison.OrdinalIgnoreCase)).ToArray();
-        SessionList.ItemsSource = filtered;
-        SessionList.SelectedItem = filtered.FirstOrDefault(s => s.Id == selected);
+        workspaceGroups = WorkspaceGroup.Build(sessions, workspaces, SearchBox.Text, selectedId, workspaceGroups);
+        SessionList.ItemsSource = workspaceGroups;
     }
-    private async void Session_Changed(object sender, SelectionChangedEventArgs e)
+    private async void Session_Changed(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
-        if (remote is null || SessionList.SelectedItem is not SessionInfo session || session.Id == selectedId) return;
+        if (remote is null || SessionList.SelectedItem is not WorkspaceSession row || row.Info.Id == selectedId) return;
+        var session = row.Info;
         ClearAttachments(); SaveDraft(); ShowConversations(); ModelOverlay.Visibility = Visibility.Collapsed;
         int version = ++selectionVersion;
         selectedId = session.Id; Composer.Text = drafts.GetValueOrDefault(session.Id, ""); current = null; promptSignature = null; SetSessionEnabled(false);
@@ -559,7 +569,7 @@ public partial class MainWindow : Window
     private void Conversations_Click(object sender, RoutedEventArgs e) => ShowConversations();
     private void Settings_Click(object sender, RoutedEventArgs e)
     { CloseOverlays(); ConversationPage.Visibility = Visibility.Collapsed; SettingsPage.Visibility = Visibility.Visible; }
-    private void CloseOverlays() { ConnectOverlay.Visibility = NewOverlay.Visibility = ModelOverlay.Visibility = FilesOverlay.Visibility = Visibility.Collapsed; }
+    private void CloseOverlays() { ConnectOverlay.Visibility = NewOverlay.Visibility = ModelOverlay.Visibility = FilesOverlay.Visibility = WorkspaceOverlay.Visibility = Visibility.Collapsed; }
     private void CloseOverlay_Click(object sender, RoutedEventArgs e) { if (!actionBusy) CloseOverlays(); }
     private void OpenConnect_Click(object sender, RoutedEventArgs e)
     {
@@ -613,27 +623,47 @@ public partial class MainWindow : Window
     { if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control && SendButton.IsEnabled) { e.Handled = true; Send_Click(sender, e); } }
     private void CopyChat_Click(object sender, RoutedEventArgs e)
     { try { if (transcriptText.Length > 0) { Clipboard.SetText(transcriptText); StatusBar.Text = "对话已复制。"; } } catch (Exception ex) { Error(ex); } }
-    private void New_Click(object sender, RoutedEventArgs e)
+    private async void New_Click(object sender, RoutedEventArgs e)
     {
+        if (actionBusy) return;
         if (remote?.IsConnected != true) { OpenConnect_Click(sender, e); return; }
         CloseOverlays(); NewOverlay.Visibility = Visibility.Visible; NewError.Text = "";
-        NewHint.Text = agent?.CanCreate == true ? "创建空会话，打开后发送第一条消息。" : "此版本远端不支持新建。Hermes 请升级至 0.3.0 接入端；Codex 请在远端桌面新建，再刷新会话列表。";
+        NewHint.Text = agent?.CanCreate == true ? (agent.CanWorkspaces ? "在所选远端工作空间创建空会话，打开后再发送第一条消息。" : "创建空会话，打开后再发送第一条消息。") : "此版本远端不支持新建，请升级接入端。";
         CreateButton.IsEnabled = NewTitle.IsEnabled = agent?.CanCreate == true;
-        createRequestId ??= Guid.NewGuid().ToString("N");
+        NewWorkspacePanel.Visibility = agent?.CanWorkspaces == true ? Visibility.Visible : Visibility.Collapsed;
+        createRequestId = Guid.NewGuid().ToString("N"); NewWorkspace.IsEnabled = true;
+        if (agent?.CanWorkspaces == true)
+        {
+            var connection = remote; CreateButton.IsEnabled = false;
+            try
+            {
+                await LoadWorkspacesAsync(connection);
+                if (remote != connection) return;
+                FillWorkspacePicker(SessionList.SelectedItem is WorkspaceGroup group ? group.Path : sessions.FirstOrDefault(s => s.Id == selectedId)?.Cwd);
+                Filter();
+            }
+            catch (Exception ex) { NewError.Text = ex.Message; }
+            finally { CreateButton.IsEnabled = remote == connection && agent?.CanCreate == true; }
+        }
     }
     private async void Create_Click(object sender, RoutedEventArgs e)
     {
         if (remote is null || actionBusy || string.IsNullOrWhiteSpace(NewTitle.Text)) return;
+        string cwd = agent?.CanWorkspaces == true ? (NewWorkspace.SelectedItem as WorkspaceInfo)?.Path ?? "" : "";
+        if (agent?.CanWorkspaces == true && cwd.Length == 0) { NewError.Text = "请先选择或添加远端工作空间。"; return; }
         var connection = remote; CreateButton.IsEnabled = false; NewError.Text = "";
+        NewTitle.IsEnabled = NewWorkspace.IsEnabled = false;
         actionBusy = true; SessionList.IsEnabled = false; SetSessionEnabled(false);
         try
         {
-            var result = Json.Read<SessionInfo>(await connection.Peer.CallAsync("create", new { id = createRequestId, title = NewTitle.Text.Trim() }));
+            var result = Json.Read<SessionInfo>(await connection.Peer.CallAsync("create", new { id = createRequestId, title = NewTitle.Text.Trim(), cwd }, responseTimeout: TimeSpan.FromSeconds(90)));
             if (remote != connection) return;
             createRequestId = null; SaveDraft(); current = null; promptSignature = null; selectedId = result.Id; selectionVersion++; Composer.Clear();
+            foreach (var group in workspaceGroups.Where(g => WorkspaceGroup.Key(g.Path) == WorkspaceGroup.Key(result.Cwd))) group.IsExpanded = true;
             sessions = new[] { result }.Concat(sessions.Where(x => x.Id != result.Id)).ToArray(); SearchBox.Clear(); Filter();
-            Render(Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = result.Id })));
             CloseOverlays(); ShowConversations(); StatusBar.Text = "新会话已创建，可以发送第一条消息。";
+            try { Render(Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = result.Id }))); }
+            catch (Exception ex) { selectedId = null; StatusBar.Text = "会话已创建，但打开失败。请在列表中重新选择该会话：" + ex.Message; }
         }
         catch (Exception ex) { if (current is null) selectedId = null; createRequestId ??= Guid.NewGuid().ToString("N"); NewError.Text = ex.Message; Error(ex); }
         finally { actionBusy = false; CreateButton.IsEnabled = true; SessionList.IsEnabled = true; SetSessionEnabled(remote?.IsConnected == true && current is not null); }

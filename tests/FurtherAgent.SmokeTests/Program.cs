@@ -45,6 +45,7 @@ await ConnectionProfileChecks.Run(Check);
 ConversationChecks.Run(Check);
 await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);
+await WorkspaceChecks.Run(Check);
 await DshDiscoveryChecks.Run(Check);
 SessionSyncChecks.Run(Check);
 await ThumbnailChecks.Run(Check);

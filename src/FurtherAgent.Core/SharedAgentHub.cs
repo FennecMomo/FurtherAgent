@@ -103,6 +103,10 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         private void OnFaulted(string reason) => Faulted?.Invoke(reason);
         public Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct) => hub.Catalog(a => a.ListAsync(ct), ct);
         public Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct) => hub.Catalog(a => a.CreateAsync(id, title, ct), ct);
+        public Task<SessionInfo> CreateAsync(string id, string title, string cwd, CancellationToken ct) => hub.Catalog(a => a.CreateAsync(id, title, cwd, ct), ct);
+        public Task<IReadOnlyList<WorkspaceInfo>> WorkspacesAsync(CancellationToken ct) => hub.Catalog(a => a.WorkspacesAsync(ct), ct);
+        public Task<WorkspaceDirectories> BrowseDirectoriesAsync(string path, CancellationToken ct) => hub.Catalog(a => a.BrowseDirectoriesAsync(path, ct), ct);
+        public Task<WorkspaceInfo> AddWorkspaceAsync(string id, string path, string folder, CancellationToken ct) => hub.Catalog(a => a.AddWorkspaceAsync(id, path, folder, ct), ct);
         public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
         {
             var next = hub.Get(id);

@@ -21,11 +21,16 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private long revision;
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
-    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 远端选择时自动打开桌面会话 · 需在 B 运行 Codex", false, true);
+    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 支持远程工作空间和空会话 · 需在 B 运行 Codex", true, true, CanWorkspaces: true);
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
     public CodexDesktopAdapter(string? codexHome = null) => home = codexHome ??
         Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
+
+    public Task<IReadOnlyList<WorkspaceInfo>> WorkspacesAsync(CancellationToken ct) => new CodexWorkspaces(home).ListAsync(ct);
+    public Task<WorkspaceDirectories> BrowseDirectoriesAsync(string path, CancellationToken ct) => Task.FromResult(CodexWorkspaces.Browse(path, ct));
+    public Task<WorkspaceInfo> AddWorkspaceAsync(string id, string path, string folder, CancellationToken ct) => new CodexWorkspaces(home).AddAsync(id, path, folder, ct);
+    public Task<SessionInfo> CreateAsync(string id, string title, string cwd, CancellationToken ct) => new CodexWorkspaces(home).CreateAsync(id, title, cwd, ct);
 
     public async Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct)
     {

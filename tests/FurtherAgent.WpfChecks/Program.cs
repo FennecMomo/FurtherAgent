@@ -14,6 +14,16 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        var groupSessions = new[] { new SessionInfo("old", "old", "2026-10-10", @"C:\Projects\demo"), new SessionInfo("new", "new", "2026-10-12", "c:/projects/demo/"), new SessionInfo("other", "other", "2026-10-11", @"D:\Projects\demo") };
+        var groupWorkspaces = new[] { new WorkspaceInfo("empty", "空工作空间", @"E:\empty") };
+        var groups = WorkspaceGroup.Build(groupSessions, groupWorkspaces, "", "new");
+        Require(groups.Count == 3 && groups[0].Sessions.Count == 2 && groups[0].Sessions[0].Info.Id == "new", "workspace grouping normalizes Windows paths and sorts by latest session");
+        Require(groups.Count(g => g.Name.Equals("demo", StringComparison.OrdinalIgnoreCase)) == 2 && groups.Last().Sessions.Count == 0, "same names on different drives stay separate; empty workspaces stay visible");
+        groups[0].IsExpanded = false;
+        var refreshedGroups = WorkspaceGroup.Build(groupSessions, groupWorkspaces, "", "new", groups);
+        Require(!refreshedGroups[0].IsExpanded && refreshedGroups[0].Sessions[0].IsSelected, "refresh retains collapsed groups and selected conversation");
+        Require(WorkspaceGroup.Build(groupSessions, groupWorkspaces, @"D:\Projects", null).Single().Sessions.Single().Info.Id == "other", "workspace path search filters groups");
+        Require(WorkspaceGroup.Build(groupSessions, groupWorkspaces, "new", null, groups).Single() is { IsExpanded: true, Sessions.Count: 1 }, "title search expands matching group and excludes unrelated conversations");
         var view = new MarkdownView { Markdown = "# 标题\n**粗体** 和 `代码`\n> 引用\n- 列表\n```cs\nvar x = 1;\n```\n| A | B |\n|---|---|\n| 一 | 二 |\n[文档](https://example.com)\n<script>alert(1)</script>\n![图片](file:///secret)\n[危险](javascript:alert(1))" };
         var blocks = view.Document.Blocks.ToArray();
         Require(blocks.OfType<Table>().Single().RowGroups[0].Rows.Count == 2, "table rows rendered natively");

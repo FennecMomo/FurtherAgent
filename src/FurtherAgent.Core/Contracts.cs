@@ -15,7 +15,13 @@ public record DeviceLease(string Code, string Secret, DateTimeOffset ExpiresAt);
 public record LeaseProof(string Code, string Secret);
 public record PairRequest(string Code);
 public record PairResult(string Name, string Ticket);
-public record AgentInfo(string Id, string Name, bool Available, string Detail, bool CanCreate = false, bool CanConfigure = false, bool CanFiles = false, bool CanArchive = false, bool CanChooseDelivery = false, bool CanInterruptSend = false, bool CanThumbnails = false);
+public record AgentInfo(string Id, string Name, bool Available, string Detail, bool CanCreate = false, bool CanConfigure = false, bool CanFiles = false, bool CanArchive = false, bool CanChooseDelivery = false, bool CanInterruptSend = false, bool CanThumbnails = false, bool CanWorkspaces = false);
+public record WorkspaceInfo(string Id, string Name, string Path)
+{
+    public string DisplayName => $"{Name} · {Path}";
+}
+public record WorkspaceDirectory(string Name, string Path);
+public record WorkspaceDirectories(string Path, string? Parent, IReadOnlyList<WorkspaceDirectory> Directories);
 public record SessionInfo(string Id, string Title, string UpdatedAt, string Cwd = "")
 {
     public DateTimeOffset SortTime => ParseTime(UpdatedAt);
@@ -51,6 +57,11 @@ public interface IAgentAdapter : IAsyncDisposable
     Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct);
     Task<SessionView> AttachAsync(string id, CancellationToken ct);
     Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct) => throw new NotSupportedException("此适配器暂不支持远程新建会话，请先在远端创建后刷新。");
+    Task<SessionInfo> CreateAsync(string id, string title, string cwd, CancellationToken ct) =>
+        string.IsNullOrEmpty(cwd) ? CreateAsync(id, title, ct) : throw new NotSupportedException("此适配器不支持指定工作空间。");
+    Task<IReadOnlyList<WorkspaceInfo>> WorkspacesAsync(CancellationToken ct) => throw new NotSupportedException("请升级 Codex 接入端以管理工作空间。");
+    Task<WorkspaceDirectories> BrowseDirectoriesAsync(string path, CancellationToken ct) => throw new NotSupportedException("此适配器不支持浏览远端目录。");
+    Task<WorkspaceInfo> AddWorkspaceAsync(string id, string path, string folder, CancellationToken ct) => throw new NotSupportedException("此适配器不支持新增工作空间。");
     Task<AgentSettings> SettingsAsync(CancellationToken ct) => throw new NotSupportedException("请升级远端接入端以使用会话设置。");
     Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => throw new NotSupportedException("此适配器不支持修改会话设置。");
     Task ArchiveAsync(string id, bool archived, CancellationToken ct) => throw new NotSupportedException("此适配器未接通原生归档。");
