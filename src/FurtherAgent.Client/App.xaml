@@ -19,7 +19,7 @@
   <Style x:Key="CodexRuntimeButton" TargetType="Button" BasedOn="{StaticResource Compact}"><Style.Triggers><Trigger Property="IsEnabled" Value="False"><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers></Style>
   <Style x:Key="OriginalTreeItem" TargetType="TreeViewItem"><Setter Property="IsExpanded" Value="{Binding IsExpanded, Mode=TwoWay}"/><Setter Property="IsSelected" Value="{Binding IsSelected, Mode=TwoWay}"/><Setter Property="Padding" Value="2,7"/><Setter Property="HorizontalContentAlignment" Value="Stretch"/></Style>
   <Style x:Key="CodexTreeItem" TargetType="TreeViewItem" BasedOn="{StaticResource OriginalTreeItem}">
-   <Setter Property="Padding" Value="8,8"/><Setter Property="Margin" Value="0,1"/>
+   <Setter Property="Padding" Value="8,6"/><Setter Property="Margin" Value="0,1"/>
    <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="TreeViewItem">
     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
      <Border x:Name="SelectionSurface" Grid.ColumnSpan="2" CornerRadius="11" Background="Transparent"/>

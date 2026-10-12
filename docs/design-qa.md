@@ -1,5 +1,9 @@
 # Desktop theme visual QA — 0.12.0
 
+## 0.12.1 typography follow-up
+
+User feedback: the first release felt oversized. Reduced UI text from 16 to 14 DIP and chat text from 17 to 15 DIP, with line height 27 → 23 DIP. Section, dialog and settings titles now use a theme-specific hierarchy. Reduced sidebar row/button vertical padding by 2 DIP per side. English uses Segoe UI and remaining characters explicitly map to Microsoft YaHei UI in a composite font; the original theme retains its previous fonts and sizes. Inspected the generated main conversation and settings views at `artifacts/theme-0.12.1/`; the same theme-switch and editable-model checks pass. These are selected FurtherAgent typography values, not claimed measurements of Codex internals.
+
 Status: passed for the implemented WPF theme scope.
 
 Reference: user attachment `codex-clipboard-92881b11-cc26-4f64-ac8b-66580bd9e917.png`, supplied 2026-10-12. Target is the existing Windows client, not a separate web prototype.

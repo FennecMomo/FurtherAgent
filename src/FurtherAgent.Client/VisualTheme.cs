@@ -6,6 +6,14 @@ namespace FurtherAgent.Client;
 
 public static class VisualTheme
 {
+    public static FontFamily CodexFont { get; } = CreateCodexFont();
+    private static FontFamily CreateCodexFont()
+    {
+        var font = new FontFamily();
+        font.FamilyMaps.Add(new FontFamilyMap { Unicode = "0000-024F", Target = "Segoe UI" });
+        font.FamilyMaps.Add(new FontFamilyMap { Target = "Microsoft YaHei UI" });
+        return font;
+    }
     public const string Codex = "codex", Original = "original";
     public static readonly DependencyProperty IsCodexProperty = DependencyProperty.RegisterAttached("IsCodex", typeof(bool), typeof(VisualTheme),
         new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits));
@@ -27,16 +35,19 @@ public static class VisualTheme
         Put("ShellRadius", new CornerRadius(0), new CornerRadius(16, 16, 0, 0));
         Put("SidebarPadding", new Thickness(18), new Thickness(10, 14, 10, 12));
         Put("ContentMargin", new Thickness(30, 20, 30, 14), new Thickness(20, 18, 20, 10));
-        Put("UIFont", new FontFamily("Microsoft YaHei UI"), new FontFamily("Microsoft YaHei UI"));
-        Put("UIFontSize", 13d, 16d);
-        Put("HeaderSize", 23d, 16d);
+        Put("UIFont", new FontFamily("Microsoft YaHei UI"), CodexFont);
+        Put("UIFontSize", 13d, 14d);
+        Put("HeaderSize", 23d, 14d);
+        Put("PageTitleSize", 28d, 22d);
+        Put("DialogTitleSize", 24d, 20d);
+        Put("SectionTitleSize", 18d, 15d);
         Put("HeaderMargin", new Thickness(0, 0, 0, 18), new Thickness(10, 4, 4, 14));
         Put("ComposerRadius", new CornerRadius(12), new CornerRadius(28));
         Put("ComposerPadding", new Thickness(0), new Thickness(14, 10, 10, 8));
         Put("ComposerMinHeight", 76d, 48d);
         Put("ComposerFooterMargin", new Thickness(0), new Thickness(0, 4, 0, 0));
         Put("ButtonRadius", new CornerRadius(7), new CornerRadius(9));
-        Put("SidebarButtonPadding", new Thickness(16, 10, 16, 10), new Thickness(12, 9, 12, 9));
+        Put("SidebarButtonPadding", new Thickness(16, 10, 16, 10), new Thickness(12, 7, 12, 7));
         Put("SidebarButtonBackground", r["Brush24644D"], Brushes.Transparent);
         Put("SidebarActionBackground", r["BrushEAEDEA"], Brushes.Transparent);
         Put("SidebarActionAlignment", HorizontalAlignment.Center, HorizontalAlignment.Left);
