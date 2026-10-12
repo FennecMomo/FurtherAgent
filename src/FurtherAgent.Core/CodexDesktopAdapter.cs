@@ -205,20 +205,14 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             threadSettings = new { model = model.Trim(), collaborationMode = collaboration }, activeTurnId = (string?)null }, 2, ct);
         if (result["result"]?["applied"]?.GetValue<bool>() != true) throw new IOException("桌面未应用会话设置。");
     }
-    public async Task SendAsync(string text, CancellationToken ct)
+    public Task SendAsync(string text, CancellationToken ct) => SendMessageAsync(text, false, ct);
+    private async Task SendMessageAsync(string text, bool questionReply, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 100000) throw new ArgumentException("消息不能为空或超过 100000 字符。");
         SessionView view;
         lock (gate) view = ToView(state ?? throw new IOException("请先选择会话。"));
-        var input = new[] { new { type = "text", text, text_elements = Array.Empty<object>() } };
-        var messageId = Guid.NewGuid().ToString();
-        if (view.Status == "active")
-            await RequestAsync("thread-follower-steer-turn", new { conversationId = sessionId, input,
-                restoreMessage = new { id = messageId, text }, clientUserMessageId = messageId, attachments = Array.Empty<object>() }, 1, ct);
-        else
-            await RequestAsync("thread-follower-start-turn", new { conversationId = sessionId,
-                turnStart = new { request = new { threadId = sessionId, input, clientUserMessageId = messageId, turnTrigger = "composer" },
-                    context = new { inheritThreadSettings = true, attachments = Array.Empty<object>(), commentAttachments = Array.Empty<object>() } } }, 2, ct);
+        var request = CodexMessageSubmission.Build(view, text, questionReply);
+        await RequestAsync(request.Method, request.Parameters, request.Version, ct);
     }
     public async Task InterruptAsync(CancellationToken ct)
     {
@@ -239,7 +233,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                     ? ToView(state ?? throw new IOException("请先选择会话。")).Prompts.SingleOrDefault(p => p.Id == requestId)
                         ?? throw new IOException("该问题已回答或失效，请刷新。")
                     : throw new IOException("该问题的回答已提交，请等待同步。");
-                await SendAsync(CodexQuestions.Reply(prompt, response), ct);
+                await SendMessageAsync(CodexQuestions.Reply(prompt, response), true, ct);
                 lock (gate) submittedQuestions.Add(requestId);
             }
             finally { answerWrites.Release(); }

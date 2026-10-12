@@ -1,5 +1,11 @@
 # Codex 提问适配：Windows 0.12.2 / Android 0.10.1
 
+## Windows 0.12.3 提交路径修正（原生旧卡片同步仍未解决）
+
+修正活动轮次提交缺少 `restoreMessage.context` 的错误。本机 Codex 提交函数会在转发前读取 `context.workspaceRoots`，后续恢复/匹配流程也读取 `commentAttachments` 等字段；旧请求只有 id/text，会在此处报错。统一构造普通消息和问题回答的完整恢复上下文，以同一 clientUserMessageId 关联消息。存在 inProgress 轮次时优先 steer，不仅依赖粗粒度 active 状态；异步回答使用原生 `send_user_message_async_question` 标记。
+
+验证：13 项问题回归通过；`scripts/Test-CodexQuestionContract.cjs` 对本机提取的 Codex 提交函数执行只读兼容检查，旧参数在 workspaceRoots 访问处失败，新参数通过转发前准备。此检查不发送消息，不证明原生 UI 卡片同步。已经结束轮次的旧卡片仍无法通过当前 follower 接口回写，本版本不宣称修复这一限制。
+
 旧版只处理 `requests` 内的 `item/tool/requestUserInput`。异步提问位于 `agentMessage.questions`，即使消息正文为空也必须显示；回答按 Codex 的 `send_user_message_question_reply` 消息格式携带 questionItemId 回传。
 
 本次保留原同步提问，新增异步问题投影、选项规范化、当前问题校验与回答提交。已接受的用户回复移除对应问题，尚未接受的 steering 不提前移除，新轮次不重新弹出旧问题。界面把回复包装显示为问题和答案，不展示协议标签。

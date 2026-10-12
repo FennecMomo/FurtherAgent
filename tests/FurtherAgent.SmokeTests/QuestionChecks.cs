@@ -13,6 +13,25 @@ internal static class QuestionChecks
         var answers = new JsonObject();
         foreach (var q in prompt.Payload["questions"]!.AsArray()) answers[q!["id"]!.ToString()] = new JsonObject { ["answers"] = new JsonArray("甲") };
         string text = CodexQuestions.Reply(prompt, new JsonObject { ["answers"] = answers });
+        var waiting = CodexDesktopAdapter.ToView(state);
+        var submission = CodexMessageSubmission.Build(waiting, text, true);
+        check(submission.Method == "thread-follower-steer-turn" && submission.Version == 1,
+            "in-progress question uses steer even without an active runtime badge");
+        var restore = submission.Parameters["restoreMessage"]!;
+        check(restore["context"]?["commentAttachments"] is JsonArray && restore["context"]?["workspaceRoots"] is JsonArray
+            && restore["context"]?["prompt"]?.ToString() == text,
+            "steer supplies restore context fields read by the native Codex submit path");
+        check(restore["id"]?.ToString() == submission.Parameters["clientUserMessageId"]?.ToString(),
+            "optimistic steer and server message share one correlation id");
+        check(restore["context"]?["turnTrigger"]?.ToString() == "send_user_message_async_question",
+            "question answer uses the native question submission trigger");
+        var completedSubmission = CodexMessageSubmission.Build(waiting with { TurnId = null, Status = "idle" }, text, true);
+        check(completedSubmission.Method == "thread-follower-start-turn"
+            && completedSubmission.Parameters["turnStart"]?["request"]?["turnTrigger"]?.ToString() == "send_user_message_async_question",
+            "completed turns use a new native question reply turn without pretending to update old UI state");
+        var ordinarySubmission = CodexMessageSubmission.Build(waiting, "普通消息");
+        check(ordinarySubmission.Parameters["restoreMessage"]?["context"]?["turnTrigger"]?.ToString() == "composer",
+            "ordinary active-turn messages retain composer semantics and complete restore context");
         check(CodexQuestions.DisplayReply(text).Contains("回答：甲") && !CodexQuestions.DisplayReply(text).Contains("questionItemId"), "reply envelope projects as readable user answers");
         var items = state["turns"]![0]!["items"]!.AsArray();
         var steering = JsonNode.Parse("""{"type":"steeringUserMessage","status":"pending","input":[]}""")!;
