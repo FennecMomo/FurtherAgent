@@ -58,7 +58,7 @@ public partial class MainWindow : Window
             if (next is { } update && remote == update.Connection && selectedId == update.View.Id) { Render(update.View); lastRenderedAt = DateTimeOffset.UtcNow; }
         };
         snapshotTimer.Start();
-        using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/FurtherAgent.ico")).Stream)
+        using (var stream = Application.GetResourceStream(new Uri("pack://application:,,,/FurtherAgent.Client;component/Assets/FurtherAgent.ico")).Stream)
         using (var icon = new System.Drawing.Icon(stream))
             tray = new System.Windows.Forms.NotifyIcon { Icon = (System.Drawing.Icon)icon.Clone(), Text = "FurtherAgent", Visible = true };
         var menu = new System.Windows.Forms.ContextMenuStrip();
@@ -383,7 +383,7 @@ public partial class MainWindow : Window
         EmptyTitle.Text = "新会话已就绪"; EmptyDescription.Text = "在下方输入第一条消息，开始这段对话。"; EmptyConnect.Visibility = Visibility.Collapsed;
         EmptyState.Visibility = view.Messages.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SetSessionEnabled(!actionBusy && remote?.IsConnected == true);
-        var signature = string.Join("|", view.Prompts.Select(p => p.Id + p.Kind));
+        var signature = string.Join("|", view.Prompts.Select(p => p.Id + p.Kind + p.Payload?.ToJsonString()));
         if (signature != promptSignature) { promptSignature = signature; RenderPrompts(view.Prompts); }
     }
     private string? operationPhase;
@@ -533,16 +533,27 @@ public partial class MainWindow : Window
         PromptPanel.Children.Clear(); PromptBorder.Visibility = prompts.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
         foreach (var prompt in prompts)
         {
-            PromptPanel.Children.Add(new TextBlock { Text = "Agent 需要你的确认", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) });
-            if (prompt.Kind == "item/tool/requestUserInput" && prompt.Payload?["questions"] is JsonArray questions)
+            PromptPanel.Children.Add(new TextBlock { Text = prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind ? "Agent 需要你的回答" : "Agent 需要你的确认", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) });
+            if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
             {
                 var answers = new Dictionary<string, TextBox>();
                 foreach (var q in questions)
                 {
                     PromptPanel.Children.Add(new TextBlock { Text = q?["question"]?.ToString(), TextWrapping = TextWrapping.Wrap });
+                    var answer = new TextBox { ToolTip = "点击选项，或直接输入你的回答" };
                     if (q?["options"] is JsonArray options)
-                        PromptPanel.Children.Add(new TextBlock { Text = string.Join("\n", options.Select(o => $"• {o?["label"]}：{o?["description"]}")), TextWrapping = TextWrapping.Wrap });
-                    var answer = new TextBox(); PromptPanel.Children.Add(answer); answers[q!["id"]!.ToString()] = answer;
+                    {
+                        var choices = new WrapPanel();
+                        foreach (var option in options)
+                        {
+                            string label = option?["label"]?.ToString() ?? "";
+                            var choice = new Button { Content = label, ToolTip = option?["description"]?.ToString(), Padding = new Thickness(10, 6, 10, 6) };
+                            choice.Click += (_, _) => answer.Text = label;
+                            choices.Children.Add(choice);
+                        }
+                        PromptPanel.Children.Add(choices);
+                    }
+                    PromptPanel.Children.Add(answer); answers[q!["id"]!.ToString()] = answer;
                 }
                 var button = new Button { Content = "提交回答" };
                 button.Click += async (_, _) => await ActionAsync(async peer =>

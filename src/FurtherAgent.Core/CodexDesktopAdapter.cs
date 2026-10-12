@@ -19,6 +19,8 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private string? sessionId, owner;
     private JsonNode? state;
     private long revision;
+    private readonly SemaphoreSlim answerWrites = new(1, 1);
+    private readonly HashSet<string> submittedQuestions = [];
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
     public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 支持远程工作空间和空会话 · 需在 B 运行 Codex", true, true, CanWorkspaces: true);
@@ -227,6 +229,22 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     }
     public async Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct)
     {
+        if (requestId.StartsWith("codex-async:", StringComparison.Ordinal))
+        {
+            await answerWrites.WaitAsync(ct);
+            try
+            {
+                PendingPrompt prompt;
+                lock (gate) prompt = !submittedQuestions.Contains(requestId)
+                    ? ToView(state ?? throw new IOException("请先选择会话。")).Prompts.SingleOrDefault(p => p.Id == requestId)
+                        ?? throw new IOException("该问题已回答或失效，请刷新。")
+                    : throw new IOException("该问题的回答已提交，请等待同步。");
+                await SendAsync(CodexQuestions.Reply(prompt, response), ct);
+                lock (gate) submittedQuestions.Add(requestId);
+            }
+            finally { answerWrites.Release(); }
+            return;
+        }
         JsonNode request;
         lock (gate)
             request = state?["requests"]?.AsArray().FirstOrDefault(r => Text(r?["id"]) == requestId)?.DeepClone()
@@ -259,7 +277,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                 string kind = Text(item?["type"]);
                 string content = kind switch
                 {
-                    "userMessage" => string.Join("\n", item?["content"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? []),
+                    "userMessage" => CodexQuestions.DisplayReply(string.Join("\n", item?["content"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? [])),
                     "agentMessage" => Text(item?["text"]),
                     "reasoning" => Text(item?["summary"] ?? item?["text"] ?? item?["content"]),
                     "commandExecution" => Text(item?["command"]) + "\n" + Text(item?["aggregatedOutput"]),
@@ -280,6 +298,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         messages.Reverse();
         var prompts = (s["requests"]?.AsArray() ?? []).Select(r => new PendingPrompt(Text(r?["id"]), Text(r?["method"]),
             Text(r?["method"]), r?["params"]?.ToJsonString() ?? "", r?["params"]?.DeepClone())).ToList();
+        prompts.AddRange(CodexQuestions.Pending(turns));
         var last = turns.LastOrDefault(t => Text(t["status"]) == "inProgress");
         return new(Text(s["id"]), Text(s["title"]), Text(s["cwd"]), Text(s["threadRuntimeStatus"]?["type"]),
             last is null ? null : Text(last["turnId"]), messages, prompts,

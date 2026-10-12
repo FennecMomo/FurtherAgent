@@ -26,6 +26,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Controller-0.9.1.md') -D
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Connections-0.10.0.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Workspaces-0.11.0.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Codex-Theme-0.12.0.md') -Destination (Join-Path $releaseDir 'docs') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Questions-0.12.2.md') -Destination (Join-Path $releaseDir 'docs') -Force
 $zip = Join-Path $repoRoot "artifacts/release/FurtherAgent-$version.zip"
 Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath $zip -Force
 Get-FileHash -LiteralPath $zip -Algorithm SHA256

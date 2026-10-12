@@ -14,6 +14,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--questions") { QuestionUiChecks.Run(args[1]); return; }
         if (args.Length == 3 && args[0] == "--themes") { ThemePreview.Run(args[1], args[2]); return; }
         var groupSessions = new[] { new SessionInfo("old", "old", "2026-10-10", @"C:\Projects\demo"), new SessionInfo("new", "new", "2026-10-12", "c:/projects/demo/"), new SessionInfo("other", "other", "2026-10-11", @"D:\Projects\demo") };
         var groupWorkspaces = new[] { new WorkspaceInfo("empty", "空工作空间", @"E:\empty") };

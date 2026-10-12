@@ -14,6 +14,8 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
+if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
+if (args.Length == 3 && args[0] == "--question-watch") { await QuestionChecks.Watch(args[1], args[2]); return; }
 if (args.Contains("--codex-activation-checks")) { await CodexActivationChecks.Run(Check); return; }
 if (args.Contains("--codex-activation-live")) { await CodexActivationChecks.RunLive(Check); return; }
 if (args.Length == 2 && args[0] == "--codex-history-live") { await CodexHistoryChecks.RunLive(args[1], Check); return; }
@@ -43,6 +45,7 @@ if (args.Contains("--dsh-live"))
 await TlsRetryChecks.Run(Check);
 await ConnectionProfileChecks.Run(Check);
 ConversationChecks.Run(Check);
+QuestionChecks.Run(Check);
 await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);
 await WorkspaceChecks.Run(Check);

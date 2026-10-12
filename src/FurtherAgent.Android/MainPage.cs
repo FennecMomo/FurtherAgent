@@ -140,7 +140,8 @@ public sealed class MainPage : ContentPage
         Ui.SetAction(files, downloadCancel is null ? "附件" : "取消下载");
         models.IsEnabled = ready && session.Agent?.CanConfigure == true;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
-        Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"确认 {session.View.Prompts.Count}" : "待确认");
+        bool hasQuestion = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true;
+        Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"{(hasQuestion ? "回答问题" : "确认")} {session.View.Prompts.Count}" : "待确认", hasQuestion);
         conversations.IsEnabled = session.Connected && !session.Busy && !interactionBusy;
         attachments.Text = PendingFiles.Count == 0 ? "" : "待发送：" + string.Join("、", PendingFiles.Select(f => f.Name));
         attachments.IsVisible = PendingFiles.Count > 0;
@@ -369,13 +370,21 @@ public sealed class MainPage : ContentPage
     private async Task RespondAsync() => await Act(async () =>
     {
         var prompt = session.View?.Prompts.FirstOrDefault(); if (prompt is null) return;
-        if (prompt.Kind == "item/tool/requestUserInput" && prompt.Payload?["questions"] is JsonArray questions)
+        if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
         {
             var answers = new JsonObject();
             foreach (var q in questions)
             {
                 string options = q?["options"] is JsonArray opts ? "\n" + string.Join("\n", opts.Select(o => $"• {o?["label"]}：{o?["description"]}")) : "";
-                string? answer = await DisplayPromptAsync("Agent 需要你的回答", q?["question"] + options, "继续", "取消", maxLength: 4000);
+                string? answer;
+                var labels = (q?["options"] as JsonArray)?.Select(o => o?["label"]?.ToString() ?? "").Where(s => s.Length > 0).ToArray() ?? [];
+                if (labels.Length > 0)
+                {
+                    answer = await DisplayActionSheetAsync(q?["question"]?.ToString() ?? "Agent 需要你的回答", "稍后回答", null, [.. labels, "自行填写…"]);
+                    if (answer == "稍后回答" || answer is null) return;
+                    if (answer == "自行填写…") answer = await DisplayPromptAsync("填写回答", q?["question"] + options, "继续", "取消", maxLength: 4000);
+                }
+                else answer = await DisplayPromptAsync("Agent 需要你的回答", q?["question"]?.ToString(), "继续", "取消", maxLength: 4000);
                 if (string.IsNullOrWhiteSpace(answer)) return;
                 answers[q!["id"]!.ToString()] = new JsonObject { ["answers"] = new JsonArray(JsonValue.Create(answer)) };
             }
