@@ -29,7 +29,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
         ["probe"] = ["seconds"], ["agents"] = [], ["sessions"] = [], ["read"] = ["session"],
         ["create"] = ["request-id", "title"], ["settings"] = ["session"],
         ["interrupt-send"] = ["session", "text", "text-file", "seconds", "file", "file-id"],
-        ["configure"] = ["session", "model", "provider", "mode"], ["send"] = ["session", "text", "text-file", "seconds", "file", "file-id", "delivery"],
+        ["configure"] = ["session", "model", "provider", "mode", "reasoning-effort"], ["send"] = ["session", "text", "text-file", "seconds", "file", "file-id", "delivery"],
         ["files"] = ["session"], ["upload"] = ["session", "path"], ["download"] = ["session", "id", "output"], ["thumbnail"] = ["session", "id", "output"],
         ["watch"] = ["session", "seconds"], ["stop"] = ["session"],
         ["archive"] = ["session"], ["unarchive"] = ["session"],
@@ -178,7 +178,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                 }
                 if (command == "stop") Emit("accepted", await Call("interrupt", null));
                 if (command == "respond") Emit("accepted", await Call("respond", new { id = requestId, decision = options.GetValueOrDefault("decision", ""), response }));
-                if (command == "configure") Emit("accepted", await Call("configure", new { model = Required("model"), provider = options.GetValueOrDefault("provider", ""), mode = options.GetValueOrDefault("mode", "default") }));
+                if (command == "configure") Emit("accepted", await Call("configure", new { model = Required("model"), provider = options.GetValueOrDefault("provider", ""), mode = options.GetValueOrDefault("mode", "default"), reasoningEffort = options.GetValueOrDefault("reasoning-effort") }));
             }
             if (seconds > 0)
             {

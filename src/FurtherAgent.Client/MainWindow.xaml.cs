@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private ConnectionHeartbeat? heartbeat;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
+    private int modelSettingsGeneration;
     private string transcriptText = "";
     private CancellationTokenSource? transferCancellation;
     private readonly List<RemoteFile> attachedFiles = [];
@@ -687,24 +688,51 @@ public partial class MainWindow : Window
     {
         if (remote is null || current is null) return;
         var connection = remote; string id = current.Id;
+        int generation = ++modelSettingsGeneration;
         CloseOverlays(); ModelOverlay.Visibility = Visibility.Visible; ModelError.Text = ""; ModelHint.Text = "正在读取远端设置…";
-        ApplyModelButton.IsEnabled = false; ModelPicker.IsEnabled = ProviderText.IsEnabled = ModePicker.IsEnabled = false;
+        ApplyModelButton.IsEnabled = false; ModelPicker.IsEnabled = ProviderText.IsEnabled = ModePicker.IsEnabled = ReasoningPicker.IsEnabled = false;
+        UsageText.Text = "正在读取远端套餐限额…";
         try
         {
-            var settings = Json.Read<AgentSettings>(await connection.Peer.CallAsync("settings", null));
-            if (remote != connection || selectedId != id) return;
+            var settings = Json.Read<AgentSettings>(await connection.Peer.CallAsync("settings", null, responseTimeout: TimeSpan.FromMinutes(1)));
+            if (remote != connection || selectedId != id || generation != modelSettingsGeneration) return;
+            ApplyModelSettings(settings, id);
+        }
+        catch (Exception ex) { if (generation == modelSettingsGeneration) { ModelError.Text = ex.Message; UsageText.Text = "未能获取远端限额，请刷新重试。"; } }
+        finally { loadingSettings = false; }
+    }
+    private void ApplyModelSettings(AgentSettings settings, string id)
+    {
             loadingSettings = true; modelSession = id;
             ModelPicker.ItemsSource = settings.Models; ModelPicker.Text = settings.Model; ProviderText.Text = settings.Provider;
+            ModelPicker.IsEditable = !settings.RequireModelSelection;
+            ModelPicker.SelectedItem = settings.Models.FirstOrDefault(m => m.Id == settings.Model);
+            ReasoningLabel.Visibility = ReasoningPicker.Visibility = settings.CanChangeReasoning ? Visibility.Visible : Visibility.Collapsed;
+            UpdateReasoning(settings.ReasoningEffort);
+            UsageText.Text = settings.Usage ?? "此接入端暂不提供套餐限额。";
             ModePicker.SelectedIndex = settings.Mode == "plan" ? 1 : 0;
             ModelPicker.IsEnabled = settings.CanChangeModel; ProviderText.IsEnabled = settings.CanChangeModel && agent?.Id == "hermes";
             ModePicker.IsEnabled = settings.CanChangeMode; ModelHint.Text = settings.Detail;
-            ApplyModelButton.IsEnabled = settings.CanChangeModel || settings.CanChangeMode;
-        }
-        catch (Exception ex) { ModelError.Text = ex.Message; }
-        finally { loadingSettings = false; }
+            ApplyModelButton.IsEnabled = (settings.CanChangeModel || settings.CanChangeMode) && (!settings.RequireModelSelection || ModelPicker.SelectedItem is ModelOption);
+        loadingSettings = false;
     }
     private void ModelSelection_Changed(object sender, SelectionChangedEventArgs e)
-    { if (!loadingSettings && ModelPicker.SelectedItem is ModelOption model) ProviderText.Text = model.Provider; }
+    {
+        if (!loadingSettings && ModelPicker.SelectedItem is ModelOption model)
+        {
+            ProviderText.Text = model.Provider; UpdateReasoning(ReasoningPicker.SelectedItem as string);
+            ApplyModelButton.IsEnabled = true;
+        }
+    }
+    private void UpdateReasoning(string? preferred)
+    {
+        var model = ModelPicker.SelectedItem as ModelOption;
+        var efforts = model?.ReasoningEfforts ?? [];
+        ReasoningPicker.ItemsSource = efforts;
+        ReasoningPicker.SelectedItem = preferred is not null && efforts.Contains(preferred) ? preferred : model?.DefaultReasoningEffort;
+        if (ReasoningPicker.SelectedIndex < 0 && efforts.Count > 0) ReasoningPicker.SelectedIndex = 0;
+        ReasoningPicker.IsEnabled = efforts.Count > 0;
+    }
     private async void ApplyModel_Click(object sender, RoutedEventArgs e)
     {
         if (remote is null || current?.Id != modelSession || actionBusy) return;
@@ -713,7 +741,7 @@ public partial class MainWindow : Window
         {
             try
             {
-                await peer.CallAsync("configure", new { model = ModelPicker.Text.Trim(), provider = ProviderText.Text.Trim(), mode = (ModePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "default" });
+                await peer.CallAsync("configure", new { model = (ModelPicker.SelectedItem as ModelOption)?.Id ?? ModelPicker.Text.Trim(), provider = ProviderText.Text.Trim(), mode = (ModePicker.SelectedItem as ComboBoxItem)?.Tag?.ToString() ?? "default", reasoningEffort = ReasoningPicker.IsEnabled ? ReasoningPicker.SelectedItem as string : null });
                 ModelButton.Content = (ModePicker.SelectedIndex == 1 ? "Plan" : "Build") + " · " + ModelPicker.Text.Trim();
                 CloseOverlays();
             }

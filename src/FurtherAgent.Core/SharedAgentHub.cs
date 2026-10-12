@@ -134,6 +134,7 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         private Task Run(Func<Entry, Task> action, CancellationToken ct) => Run(async e => { await action(e); return true; }, ct);
         public Task<AgentSettings> SettingsAsync(CancellationToken ct) => Run(e => e.Adapter.SettingsAsync(ct), ct);
         public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => Run(e => e.Adapter.ConfigureAsync(model, provider, mode, ct), ct);
+        public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct) => Run(e => e.Adapter.ConfigureAsync(model, provider, mode, reasoningEffort, ct), ct);
         public Task ArchiveAsync(string id, bool archived, CancellationToken ct) => Run(e => e.Adapter.ArchiveAsync(id, archived, ct), ct);
         public Task SendAsync(string text, CancellationToken ct) => SendAsync(text, "auto", ct);
         public Task SendAsync(string text, string delivery, CancellationToken ct) => Run(e => e.Adapter.SendAsync(text, delivery, ct), ct);

@@ -256,13 +256,13 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public async Task<AgentSettings> GetSettingsAsync()
     {
         AgentSettings? settings = null;
-        await Run(async () => settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null)));
+        await Run(async () => settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null, responseTimeout: TimeSpan.FromMinutes(1))));
         return settings!;
     }
-    public Task ConfigureAsync(string model, string provider, string mode) => Run(async () =>
+    public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort = null) => Run(async () =>
     {
         if (Agent?.CanConfigure != true) throw new NotSupportedException("远端不支持设置。");
-        await Peer.CallAsync("configure", new { model, provider, mode });
+        await Peer.CallAsync("configure", new { model, provider, mode, reasoningEffort });
     });
     public Task ArchiveAsync() => Run(async () =>
     {

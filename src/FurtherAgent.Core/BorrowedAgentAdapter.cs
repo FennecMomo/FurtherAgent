@@ -22,6 +22,7 @@ public sealed class BorrowedAgentAdapter : IAgentAdapter
     public Task<WorkspaceInfo> AddWorkspaceAsync(string id, string path, string folder, CancellationToken ct) => inner.AddWorkspaceAsync(id, path, folder, ct);
     public Task<AgentSettings> SettingsAsync(CancellationToken ct) => inner.SettingsAsync(ct);
     public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => inner.ConfigureAsync(model, provider, mode, ct);
+    public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct) => inner.ConfigureAsync(model, provider, mode, reasoningEffort, ct);
     public Task ArchiveAsync(string id, bool archived, CancellationToken ct) => inner.ArchiveAsync(id, archived, ct);
     public Task SendAsync(string text, CancellationToken ct) => inner.SendAsync(text, ct);
     public Task SendAsync(string text, string delivery, CancellationToken ct) => inner.SendAsync(text, delivery, ct);

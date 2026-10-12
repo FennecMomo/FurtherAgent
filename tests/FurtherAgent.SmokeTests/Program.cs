@@ -15,6 +15,9 @@ void Check(bool condition, string name)
 }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
 if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
+if (args.Contains("--codex-settings-checks")) { await CodexSettingsChecks.Run(Check); return; }
+if (args.Contains("--codex-settings-configure-live")) { await CodexSettingsChecks.LiveConfigure(); return; }
+if (args.Length == 2 && args[0] == "--codex-settings-live") { await CodexSettingsChecks.Live(args[1]); return; }
 if (args.Contains("--question-submission-fixture"))
 {
     var view = new SessionView("contract-test", "", "C:/contract-test", "idle", "active-turn", [], []);
@@ -52,6 +55,7 @@ await TlsRetryChecks.Run(Check);
 await ConnectionProfileChecks.Run(Check);
 ConversationChecks.Run(Check);
 QuestionChecks.Run(Check);
+await CodexSettingsChecks.Run(Check);
 await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);
 await WorkspaceChecks.Run(Check);

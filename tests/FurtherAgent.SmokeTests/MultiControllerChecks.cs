@@ -45,6 +45,8 @@ internal static class MultiControllerChecks
         await a.Peer.CallAsync("configure", new { model = "shared-model", provider = "fixture", mode = "plan" });
         await Until(() => seenB.Any(v => v.Model == "shared-model"));
         check(true, "model changes synchronize across controllers");
+        await a.Peer.CallAsync("configure", new { model = "shared-model", provider = "fixture", mode = "plan", reasoningEffort = "ultra" });
+        check(state.Effort == "ultra", "reasoning effort reaches shared host adapter through configure RPC");
         await b.Peer.CallAsync("interrupt", null);
         await Until(() => seenA.Any(v => v.Status == "stopped"));
         check(state.Stops == 1, "either controller can stop the shared run");
@@ -86,6 +88,7 @@ internal static class MultiControllerChecks
     {
         public ConcurrentDictionary<string, List<ChatEntry>> Messages = new();
         public int Decisions, Stops, Disposed, Active, MaxConcurrent;
+        public string? Effort;
     }
     private sealed class Adapter(State state) : IAgentAdapter
     {
@@ -104,6 +107,8 @@ internal static class MultiControllerChecks
         }
         public Task InterruptAsync(CancellationToken ct) { state.Stops++; status = "stopped"; Changed?.Invoke(View()); return Task.CompletedTask; }
         public Task ConfigureAsync(string value, string provider, string mode, CancellationToken ct) { model = value; Changed?.Invoke(View()); return Task.CompletedTask; }
+        public Task ConfigureAsync(string value, string provider, string mode, string? reasoningEffort, CancellationToken ct)
+        { state.Effort = reasoningEffort; return ConfigureAsync(value, provider, mode, ct); }
         public Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct) { Interlocked.Increment(ref state.Decisions); return Task.CompletedTask; }
         public ValueTask DisposeAsync() { Interlocked.Increment(ref state.Disposed); return ValueTask.CompletedTask; }
     }

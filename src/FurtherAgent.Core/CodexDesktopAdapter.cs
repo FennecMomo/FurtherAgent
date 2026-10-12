@@ -174,35 +174,54 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         if (resync) { await FollowAsync(false, lifetime.Token); await FollowAsync(true, lifetime.Token); return; }
         if (view is not null) { snapshot?.TrySetResult(view); Changed?.Invoke(view); }
     }
-    public Task<AgentSettings> SettingsAsync(CancellationToken ct)
+    public async Task<AgentSettings> SettingsAsync(CancellationToken ct)
     {
+        JsonNode value;
         lock (gate)
-        {
-            var value = state ?? throw new IOException("请先打开会话。");
-            string model = Text(value["latestCollaborationMode"]?["settings"]?["model"] ?? value["latestModel"]);
-            return Task.FromResult(new AgentSettings(model, Text(value["modelProvider"]),
-                Text(value["latestCollaborationMode"]?["mode"]) is "plan" ? "plan" : "default", [], true, true,
-                "实验性桌面接口：填写远端可用的模型 ID；Build / Plan 使用 Codex 原生协作模式，权限仍由远端控制。空闲时修改，后续轮次生效。"));
-        }
+            value = (state ?? throw new IOException("请先打开会话。")).DeepClone();
+        string model = Text(value["latestCollaborationMode"]?["settings"]?["model"] ?? value["latestModel"]);
+        string provider = Text(value["modelProvider"]);
+        string effort = Text(value["latestCollaborationMode"]?["settings"]?["reasoning_effort"] ?? value["latestReasoningEffort"]);
+        await using var metadata = await CodexAppServer.OpenAsync(home, ct);
+        List<ModelOption> models = [];
+        string detail = "读取远端 Codex 模型目录。空闲时修改，后续轮次生效。", usage;
+        try { models = await CodexSettingsCatalog.ModelsAsync(metadata, provider, ct); }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException && !ct.IsCancellationRequested)
+        { detail = "模型列表读取失败，请刷新重试：" + ex.Message; }
+        try { usage = CodexSettingsCatalog.Usage(await metadata.CallAsync("account/rateLimits/read", new { }, ct)); }
+        catch (Exception ex) when (ex is IOException or OperationCanceledException && !ct.IsCancellationRequested)
+        { usage = "套餐限额暂不可用：" + ex.Message; }
+        return new(model, provider, Text(value["latestCollaborationMode"]?["mode"]) is "plan" ? "plan" : "default",
+            models, models.Count > 0, true, detail, effort, models.Any(m => m.ReasoningEfforts?.Count > 0), usage, true);
     }
-    public async Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct)
+    public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => ConfigureAsync(model, provider, mode, null, ct);
+    public async Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct)
     {
+        reasoningEffort = string.IsNullOrWhiteSpace(reasoningEffort) ? null : reasoningEffort.Trim();
+        await using var metadata = await CodexAppServer.OpenAsync(home, ct);
+        var models = await CodexSettingsCatalog.ModelsAsync(metadata, provider, ct);
+        var selected = models.SingleOrDefault(m => m.Id == model.Trim()) ?? throw new ArgumentException("该模型不在远端可用目录中，请刷新后选择。");
+        if (reasoningEffort is not null && selected.ReasoningEfforts?.Contains(reasoningEffort) != true)
+            throw new ArgumentException("该模型不支持所选思考强度，请刷新后选择。");
         JsonNode collaboration;
         string id;
         lock (gate)
         {
             var value = state ?? throw new IOException("请先选择会话。");
-            if (ToView(value).Status == "active") throw new IOException("请等待当前任务结束后修改模型或模式。");
+            if (ToView(value) is { } view && (view.Status == "active" || view.TurnId is not null)) throw new IOException("请等待当前任务结束后修改模型、模式或思考强度。");
             if (string.IsNullOrWhiteSpace(model) || mode is not ("default" or "plan")) throw new ArgumentException("模型或模式无效。");
             id = sessionId!;
             collaboration = value["latestCollaborationMode"]?.DeepClone() ?? throw new IOException("桌面快照缺少协作模式，请升级适配器。");
             collaboration["mode"] = mode;
             collaboration["settings"]!["model"] = model.Trim();
+            string previousEffort = Text(collaboration["settings"]!["reasoning_effort"]);
+            reasoningEffort = CodexSettingsCatalog.SelectEffort(selected, reasoningEffort, previousEffort);
+            collaboration["settings"]!["reasoning_effort"] = reasoningEffort;
             // Let Codex apply its native mode instructions, rather than copying instructions from a different mode.
             collaboration["settings"]!["developer_instructions"] = null;
         }
         var result = await RequestAsync("thread-follower-update-thread-settings", new { conversationId = id,
-            threadSettings = new { model = model.Trim(), collaborationMode = collaboration }, activeTurnId = (string?)null }, 2, ct);
+            threadSettings = new { model = model.Trim(), effort = reasoningEffort, collaborationMode = collaboration }, activeTurnId = (string?)null }, 2, ct);
         if (result["result"]?["applied"]?.GetValue<bool>() != true) throw new IOException("桌面未应用会话设置。");
     }
     public Task SendAsync(string text, CancellationToken ct) => SendMessageAsync(text, false, ct);

@@ -85,7 +85,7 @@ internal sealed class CodexAppServer : ICodexMetadata
         {
             var reply = JsonNode.Parse(line);
             if (reply?["id"]?.ToString() != id.ToString()) continue;
-            if (reply["error"] is { } error) throw new IOException($"Codex {method}：{error["message"]}。请确认远端 Codex 支持工作空间接口。");
+            if (reply["error"] is { } error) throw new IOException($"Codex {method}：{error["message"]}。请确认远端 Codex 版本和账号支持此接口。");
             return reply["result"] ?? throw new IOException("Codex 返回了空结果。");
         }
         throw new IOException("Codex 元数据接口已断开。");
