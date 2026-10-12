@@ -10,19 +10,24 @@ namespace FurtherAgent.Client;
 // Native WPF text only: no HTML renderer, remote image fetches or embedded scripts.
 public sealed class MarkdownView : RichTextBox
 {
+    static MarkdownView() => VisualTheme.IsCodexProperty.OverrideMetadata(typeof(MarkdownView),
+        new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits, (d, _) => ((MarkdownView)d).Refresh()));
     public Func<string, FrameworkElement?>? AttachmentFactory { get; init; }
     public static readonly DependencyProperty MarkdownProperty = DependencyProperty.Register(nameof(Markdown), typeof(string), typeof(MarkdownView),
         new PropertyMetadata("", (d, _) => ((MarkdownView)d).Refresh()));
     public string Markdown { get => (string)GetValue(MarkdownProperty); set => SetValue(MarkdownProperty, value); }
     public MarkdownView()
     {
+        Loaded += (_, _) => Refresh();
         IsReadOnly = true; IsDocumentEnabled = true; BorderThickness = new Thickness(0); Background = Brushes.Transparent;
         Padding = new Thickness(0); VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
     }
     private void Refresh()
     {
-        var doc = new FlowDocument { PagePadding = new Thickness(0), FontFamily = new FontFamily("Microsoft YaHei UI"), FontSize = 13 };
+        bool codex = VisualTheme.GetIsCodex(this);
+        var doc = new FlowDocument { PagePadding = new Thickness(0), FontFamily = new FontFamily("Microsoft YaHei UI"), FontSize = codex ? 17 : 13,
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(codex ? "#202123" : "#202C32")), LineHeight = codex ? 27 : double.NaN };
         string text = Markdown ?? "";
         if (text.Length > 30000) text = text[..30000] + "\n[显示已截断]";
         string[] lines = text.Replace("\r", "").Split('\n');
@@ -49,7 +54,7 @@ public sealed class MarkdownView : RichTextBox
             }
             if (fenced) { code.AppendLine(line); continue; }
             if (line.Trim().Length == 0) continue;
-            var p = new Paragraph { Margin = new Thickness(0, 2, 0, 6) };
+            var p = new Paragraph { Margin = codex ? new Thickness(0, 3, 0, 10) : new Thickness(0, 2, 0, 6) };
             string value = line;
             var heading = Regex.Match(line, @"^(#{1,6})\s+(.+)$");
             if (heading.Success) { p.FontSize = 23 - heading.Groups[1].Length * 1.5; p.FontWeight = FontWeights.SemiBold; value = heading.Groups[2].Value; }

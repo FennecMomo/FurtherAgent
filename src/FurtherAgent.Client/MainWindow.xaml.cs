@@ -78,6 +78,10 @@ public partial class MainWindow : Window
             }
         }
         catch { StatusBar.Text = "保存的地址无法读取，请在设置中重新保存。"; }
+        try { uiTheme = File.Exists(SettingsFile) ? VisualTheme.Normalize(JsonNode.Parse(File.ReadAllText(SettingsFile))?["uiTheme"]?.ToString()) : VisualTheme.Codex; }
+        catch { uiTheme = VisualTheme.Codex; }
+        ApplyTheme(uiTheme);
+        Height = Math.Min(Height, Math.Max(MinHeight, SystemParameters.WorkArea.Height));
         ServerUrl.Text = Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER") ?? ServerUrl.Text;
         try
         {
@@ -113,7 +117,7 @@ public partial class MainWindow : Window
         if (command == "status") return new { success = true, processId = Environment.ProcessId,
             executable = Environment.ProcessPath, version = typeof(App).Assembly.GetName().Version?.ToString(3),
             ready = true, connected = remote?.IsConnected == true, device = remote?.Device?.Name,
-            stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection,
+            stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection, uiTheme,
             connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt,
             relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text,
             receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes };
@@ -767,7 +771,10 @@ public partial class MainWindow : Window
     {
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile)!);
         string temporary = SettingsFile + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(new { serverUrl = server, localBackend = LocalBackend.SelectedIndex, dshExecutable = DshExecutable.Text.Trim() }));
+        var saved = File.Exists(SettingsFile) ? JsonNode.Parse(File.ReadAllText(SettingsFile))!.AsObject() : new JsonObject();
+        saved["serverUrl"] = server; saved["localBackend"] = LocalBackend.SelectedIndex;
+        saved["dshExecutable"] = DshExecutable.Text.Trim(); saved["uiTheme"] = uiTheme;
+        File.WriteAllText(temporary, saved.ToJsonString(Json.Options));
         File.Move(temporary, SettingsFile, true);
     }
     private async void PasteImage_Click(object sender, RoutedEventArgs e)
@@ -864,6 +871,9 @@ public partial class MainWindow : Window
             panel.Children.Add(picker); var error = new TextBlock { TextWrapping = TextWrapping.Wrap }; panel.Children.Add(error);
             var button = new Button { Content = "恢复会话" }; panel.Children.Add(button);
             var dialog = new Window { Owner = this, Title = "恢复归档", Width = 600, SizeToContent = SizeToContent.Height, Content = panel };
+            VisualTheme.Apply(dialog, uiTheme);
+            dialog.SetResourceReference(FontFamilyProperty, "UIFont");
+            dialog.SetResourceReference(FontSizeProperty, "UIFontSize");
             button.Click += async (_, _) =>
             {
                 string id = picker.Text.Trim(); if (id.Length == 0 || remote is null || actionBusy) return;
