@@ -14,4 +14,4 @@
 
 日常使用时，远端负责接入 Codex 的 Windows 客户端也需要更新到 0.12.2 或以后；只更新控制端，旧接入端仍不会投影异步问题。上述实测不覆盖手机交互或所有同步提问类型。
 
-真实验证辅助入口：`FurtherAgent.SmokeTests --question-watch <thread-id> <private-output-path>`，创建临时本机 Codex 接入端，经公网中继订阅指定会话并记录问题/答案，10 分钟后释放。配对码写入输出路径附加 `.code` 的私有文件，不提交到仓库。这个辅助入口只观察，不自动回答。
+真实验证辅助入口：`FurtherAgent.SmokeTests --question-watch <thread-id> <private-output-path> [minutes]`，创建临时本机 Codex 接入端，经公网中继订阅指定会话并记录问题/答案，默认 10 分钟后释放；人工联调可传入 120 延长至两小时（范围 1–1440 分钟），需向测试者明确有效期。配对码写入输出路径附加 `.code` 的私有文件，不提交到仓库。这个辅助入口只观察，不自动回答。

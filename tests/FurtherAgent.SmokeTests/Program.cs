@@ -15,7 +15,7 @@ void Check(bool condition, string name)
 }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
 if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
-if (args.Length == 3 && args[0] == "--question-watch") { await QuestionChecks.Watch(args[1], args[2]); return; }
+if (args.Length is 3 or 4 && args[0] == "--question-watch") { await QuestionChecks.Watch(args[1], args[2], args.Length == 4 ? int.Parse(args[3]) : 10); return; }
 if (args.Contains("--codex-activation-checks")) { await CodexActivationChecks.Run(Check); return; }
 if (args.Contains("--codex-activation-live")) { await CodexActivationChecks.RunLive(Check); return; }
 if (args.Length == 2 && args[0] == "--codex-history-live") { await CodexHistoryChecks.RunLive(args[1], Check); return; }

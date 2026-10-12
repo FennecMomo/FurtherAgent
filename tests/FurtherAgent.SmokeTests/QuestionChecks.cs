@@ -27,15 +27,16 @@ internal static class QuestionChecks
         try { CodexQuestions.Reply(prompt, new JsonObject()); } catch (ArgumentException) { rejected = true; }
         check(rejected, "empty answers are rejected before sending");
     }
-    public static async Task Watch(string id, string output)
+    public static async Task Watch(string id, string output, int minutes = 10)
     {
+        if (minutes is < 1 or > 1440) throw new ArgumentOutOfRangeException(nameof(minutes), "测试连接时长必须为 1 到 1440 分钟。");
         using var registry = new RegistryClient("https://furtheragent.fennecmomo.top");
         await using var host = new DeviceHost(registry, () => new CodexDesktopAdapter());
         await host.StartAsync("Question 本机验证");
         await File.WriteAllTextAsync(output + ".code", host.Lease!.Code);
         await using var remote = new RemoteDevice();
         await remote.ConnectAsync(registry, host.Lease.Code);
-        using var stop = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        using var stop = new CancellationTokenSource(TimeSpan.FromMinutes(minutes));
         bool saw = false;
         void Record(SessionView view)
         {
