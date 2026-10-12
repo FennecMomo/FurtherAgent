@@ -28,9 +28,14 @@ static class FileChecks
         var workspace = await client.ListAsync("test");
         check(workspace.Files.Single().Name == "附件 sample.bin" && uploaded.Sha256 == Convert.ToHexString(SHA256.HashData(content)), "multi-chunk upload preserves Unicode filename and SHA256");
         await client.SendAsync("test", "请读取", [uploaded.Id]);
-        check(adapter.Text.Contains(Json.Node(workspace.Outbox).ToJsonString()) && adapter.Text.Contains("文件工作区") && !adapter.Text.Contains(source), "shared send gives Agent host-local paths and output directory");
+        check(adapter.Text.Contains("用户上传的文件：") && adapter.Text.Contains("inbox") && !adapter.Text.Contains("文件工作区") && !adapter.Text.Contains(workspace.Outbox) && !adapter.Text.Contains(source), "attachment send includes only host-local input paths without output instructions");
+        string legacy = "请读取\n\n[FurtherAgent 文件工作区]\n用户上传的文件已存到此机器，可按任务需要读取：\n" +
+            Json.Node(Path.Combine(Path.GetDirectoryName(workspace.Outbox)!, uploaded.Id.Replace('/', Path.DirectorySeparatorChar))).ToJsonString() + "\n" +
+            FileTransferStore.OutputInstruction + Json.Node(workspace.Outbox).ToJsonString();
         foreach (string role in new[] { "user", "补充指令", "你" })
-            check(ChatPresentation.Display(new(role, adapter.Text)).Text == "请读取\n\n附件：附件 sample.bin", "workspace metadata hidden for " + role);
+            check(ChatPresentation.Display(new(role, legacy)).Text == "请读取\n\n附件：附件 sample.bin", "legacy workspace metadata hidden for " + role);
+        await client.SendAsync("test", "原文\n保留换行", []);
+        check(adapter.Text == "原文\n保留换行", "plain message reaches Agent unchanged without workspace instructions");
         check(ChatPresentation.Display(new("assistant", adapter.Text)).Text == adapter.Text, "assistant content stays intact");
         check(ChatPresentation.Display(new("你", "说明\n\n[FurtherAgent 文件工作区]\n用户原文")).Text.EndsWith("用户原文"), "user-authored workspace marker is preserved");
         string generated = Path.Combine(workspace.Outbox, "result.txt");

@@ -168,9 +168,8 @@ public sealed class FileTransferStore : IDisposable
     {
         var paths = ids.Take(21).Select(id => Resolve(session, id)).ToArray();
         if (paths.Length > 20) throw new ArgumentException("每条消息最多附加 20 个文件。");
-        return text + "\n\n[FurtherAgent 文件工作区]\n" +
-            (paths.Length == 0 ? "" : "用户上传的文件已存到此机器，可按任务需要读取：\n" + string.Join("\n", paths.Select(p => Json.Node(p).ToJsonString())) + "\n") +
-            OutputInstruction + Json.Node(ListCore(session).Outbox).ToJsonString();
+        return paths.Length == 0 ? text : text + "\n\n用户上传的文件：\n" +
+            string.Join("\n", paths.Select(p => Json.Node(p).ToJsonString()));
     }
     public void Dispose()
     { foreach (var item in uploads.Values) { try { NoLink(item.Part); File.Delete(item.Part); } catch { } } uploads.Clear(); }
