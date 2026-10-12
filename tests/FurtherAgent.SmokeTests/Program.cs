@@ -41,6 +41,7 @@ if (args.Contains("--dsh-live"))
     return;
 }
 await TlsRetryChecks.Run(Check);
+await ConnectionProfileChecks.Run(Check);
 ConversationChecks.Run(Check);
 await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);

@@ -57,6 +57,8 @@ internal static class MobileChecks
         string demo = Transcript.Render(Transcript.Preview);
         string attachment = Transcript.Render(Transcript.Preview with { Messages = [new("assistant", "[package](attachment:app.apk)")] });
         check(attachment.Contains("href=\"attachment:app.apk\""), "mobile attachment links reach native download handler");
+        var fileCard = Transcript.Render(Transcript.Preview with { OutputFiles = [new("outbox/资料 #1.txt", "资料 #1.txt", 4096)] });
+        check(fileCard.Contains("会话文件") && fileCard.Contains("attachment:" + Uri.EscapeDataString("资料 #1.txt")), "mobile renders downloadable file cards with encoded Unicode filenames");
         check(demo.Contains("离线界面预览") && !demo.Contains("<details>"), "mobile preview retains conversation and omits tool records");
         Directory.Delete(filesRoot, true);
     }

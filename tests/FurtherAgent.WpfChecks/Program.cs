@@ -58,11 +58,17 @@ static class Program
             var store = new SavedConnectionStore(stateFile);
             store.Save(new("https://relay.example", "test-only-pairing-code", "test device", true));
             Require(!System.IO.File.ReadAllText(stateFile).Contains("test-only-pairing-code"), "saved authorization code is encrypted on disk");
+            var oldFormat = System.Text.Json.Nodes.JsonNode.Parse(System.IO.File.ReadAllText(stateFile))!.AsArray()[0]!.ToJsonString();
+            System.IO.File.WriteAllText(stateFile, oldFormat);
             var restored = new SavedConnectionStore(stateFile).Load("https://relay.example/")!;
             Require(restored.Code == "test-only-pairing-code" && restored.AutoConnect && restored.Name == "test device", "new process store restores canonical endpoint and encrypted connection");
             Require(store.Load("https://different.example") is null, "saved credentials are never restored for another server");
             store.Save(restored with { AutoConnect = false });
             Require(store.Load(restored.Server) is { AutoConnect: false, Code: "test-only-pairing-code" }, "manual disconnect preference persists without forgetting code");
+            store.Save(new(restored.Server, "second-test-code", "second device", true));
+            Require(store.List().Count == 2 && store.Load(restored.Server)?.Code == "second-test-code", "multiple desktop connections on the same relay persist");
+            store.Forget(store.List().Single(p => p.Code == "second-test-code"));
+            Require(store.List().Single().Code == restored.Code, "desktop removes only selected connection");
             store.Forget(); Require(store.Load(restored.Server) is null, "forget removes persistent connection");
         }
         finally { System.IO.Directory.Delete(System.IO.Path.GetDirectoryName(stateFile)!, true); }

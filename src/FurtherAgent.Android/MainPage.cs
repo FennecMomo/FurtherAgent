@@ -25,6 +25,8 @@ public sealed class MainPage : ContentPage
     private CancellationTokenSource? speechCancel, speechStop;
     private bool recordingSpeech, suspended;
     private bool rendering, prependHistory;
+    private CancellationTokenSource? downloadCancel;
+    private string? downloadStatus;
 
     public MainPage()
     {
@@ -36,7 +38,7 @@ public sealed class MainPage : ContentPage
         var logo = Ui.Text("F", 24, true); logo.TextColor = Colors.White; logo.HorizontalTextAlignment = TextAlignment.Center; logo.VerticalTextAlignment = TextAlignment.Center;
         var badge = new Border { Content = logo, BackgroundColor = Ui.Green, WidthRequest = 42, HeightRequest = 42,
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 }, StrokeThickness = 0 };
-        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.9.8", 9) } };
+        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.10.0", 9) } };
         foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
         var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
             ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
@@ -118,7 +120,7 @@ public sealed class MainPage : ContentPage
         title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
         subtitle.Text = preview ? "离线预览 · 不会执行任务" : session.View is { } v
             ? $"{session.Agent?.Name} · {StateName(v)}\n{v.Cwd}" : session.Agent?.Name ?? "尚未连接";
-        status.Text = session.Status;
+        status.Text = downloadStatus ?? session.Status;
         RefreshButtons(); QueueRender();
     }
     private static string StateName(SessionView view) => view.Prompts.Count > 0 ? "等待确认" : view.Status switch
@@ -134,7 +136,8 @@ public sealed class MainPage : ContentPage
         send.IsEnabled = ready && session.View!.CanSend && (!string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0);
         Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑", true);
         stop.IsEnabled = ready && session.View!.CanStop == true;
-        files.IsEnabled = ready && session.Agent?.CanFiles == true;
+        files.IsEnabled = downloadCancel is not null || ready && session.Agent?.CanFiles == true;
+        Ui.SetAction(files, downloadCancel is null ? "附件" : "取消下载");
         models.IsEnabled = ready && session.Agent?.CanConfigure == true;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
         Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"确认 {session.View.Prompts.Count}" : "待确认");
@@ -169,6 +172,7 @@ public sealed class MainPage : ContentPage
     {
         closed = true;
         speechCancel?.Cancel();
+        downloadCancel?.Cancel();
         SaveDraft(); timer.Stop(); session.Changed -= OnChanged;
         try { await session.DisposeAsync(); } catch { /* Window is already closing. */ }
     }
@@ -176,8 +180,7 @@ public sealed class MainPage : ContentPage
     {
         string message = ex is TimeoutException ? "等待确认超时。请先检查远端历史，不要重复发送。" : ex.Message;
         // Never echo a pairing code that a transport exception might contain.
-        string? code = null; try { code = await SecureStorage.GetAsync("pairing-code"); } catch { }
-        if (!string.IsNullOrEmpty(code)) message = message.Replace(code, "[授权码]", StringComparison.Ordinal);
+        try { foreach (var p in (await SavedConnections.LoadAsync()).Connections) message = message.Replace(p.Code, "[授权码]", StringComparison.Ordinal); } catch { }
         await DisplayAlertAsync("操作未完成", message, "知道了");
     }
     private async Task Act(Func<Task> action)
@@ -189,13 +192,14 @@ public sealed class MainPage : ContentPage
     }
     private Task OpenConnectionAsync() => interactionBusy || session.Busy ? Task.CompletedTask : Navigation.PushAsync(new ConnectionPage(this, session));
     private Task OpenSessionsAsync() => Navigation.PushAsync(new SessionsPage(this, session));
-    public async Task ConnectAsync(string url, string code)
+    public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null)
     {
         SaveDraft();
         await session.ConnectAsync(url, code);
         scope = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
         Preferences.Set("server-url", url.Trim());
-        await SecureStorage.SetAsync("pairing-code", code.Trim());
+        await SavedConnections.LoadAsync();
+        await SavedConnections.Store.SaveAsync(name ?? session.DeviceName, url, code, replaceId);
         preview = false; OnChanged();
     }
     public async Task SelectAsync(string id) { SaveDraft(); await session.SelectAsync(id); OnChanged(); }
@@ -294,6 +298,7 @@ public sealed class MainPage : ContentPage
     }
     private async Task FileMenuAsync()
     {
+        if (downloadCancel is not null) { downloadCancel.Cancel(); return; }
         string choice = await DisplayActionSheetAsync("会话附件", "取消", null, "选择并上传文件", "查看远端输出", "清除待发送附件");
         if (choice == "清除待发送附件") { uploads.Remove(draftKey); RefreshButtons(); return; }
         if (choice == "选择并上传文件") await Act(async () =>
@@ -333,8 +338,27 @@ public sealed class MainPage : ContentPage
         string dir = Path.Combine(FileSystem.CacheDirectory, "downloads", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
         string name = Path.GetFileName(file.Name.Replace('\\', '/'));
         string path = Path.Combine(dir, string.IsNullOrWhiteSpace(name) ? "output" : name);
-        await session.DownloadAsync(file, path, Progress("下载"));
-        await Share.Default.RequestAsync(new ShareFileRequest { Title = "保存或分享文件", File = new ShareFile(path) });
+        using var cancel = new CancellationTokenSource();
+        downloadCancel = cancel;
+        downloadStatus = status.Text = "正在读取文件信息 · 点击附件按钮可取消下载";
+        RefreshButtons();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            await session.DownloadAsync(file, path, new Progress<FileProgress>(p =>
+            {
+                if (downloadCancel != cancel) return;
+                double percent = p.Total == 0 ? 100 : p.Completed * 100d / p.Total;
+                downloadStatus = status.Text = $"下载 {percent:N1}% · {p.Completed / 1024d:N0}/{p.Total / 1024d:N0} KB · {p.Completed / 1024d / Math.Max(1, elapsed.Elapsed.TotalSeconds):N1} KB/s";
+            }), cancel.Token);
+        }
+        catch (OperationCanceledException) when (cancel.IsCancellationRequested)
+        { status.Text = "下载已取消，未完成的文件已清理。"; return; }
+        finally { downloadCancel = null; downloadStatus = null; RefreshButtons(); }
+        status.Text = "下载完成并已校验：" + name;
+        string choice = await DisplayActionSheetAsync("下载完成：" + name, "稍后", null, "打开文件", "保存或分享");
+        if (choice == "打开文件") await Launcher.Default.OpenAsync(new OpenFileRequest { File = new ReadOnlyFile(path) });
+        else if (choice == "保存或分享") await Share.Default.RequestAsync(new ShareFileRequest { Title = "保存或分享文件", File = new ShareFile(path) });
     }
     private IProgress<FileProgress> Progress(string action) => new Progress<FileProgress>(p => status.Text = $"{action} {p.Completed / 1024d:N0} / {p.Total / 1024d:N0} KB");
     private async Task SettingsAsync() => await Act(async () =>

@@ -83,6 +83,7 @@ public partial class MainWindow : Window
             if (saved is not null)
             {
                 RemoteCode.Text = saved.Code;
+                ConnectionName.Text = saved.Name;
                 RemoteStatus.Text = "已记住设备 · " + saved.Name;
                 startSavedConnection = saved.AutoConnect;
             }
@@ -220,7 +221,7 @@ public partial class MainWindow : Window
             try
             {
                 SaveServerAddress(server);
-                connectionStore.Save(new(server, code, remote.Device!.Name, true));
+                connectionStore.Save(new(server, code, string.IsNullOrWhiteSpace(ConnectionName.Text) ? remote.Device!.Name : ConnectionName.Text.Trim(), true));
             }
             catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
         }
@@ -561,7 +562,34 @@ public partial class MainWindow : Window
     private void CloseOverlays() { ConnectOverlay.Visibility = NewOverlay.Visibility = ModelOverlay.Visibility = FilesOverlay.Visibility = Visibility.Collapsed; }
     private void CloseOverlay_Click(object sender, RoutedEventArgs e) { if (!actionBusy) CloseOverlays(); }
     private void OpenConnect_Click(object sender, RoutedEventArgs e)
-    { CloseOverlays(); ConnectServer.Text = "中继：" + ServerUrl.Text.Trim(); ConnectError.Text = ""; ConnectOverlay.Visibility = Visibility.Visible; RemoteCode.Focus(); }
+    {
+        CloseOverlays(); ConnectServer.Text = "中继：" + ServerUrl.Text.Trim(); ConnectError.Text = "";
+        try { SavedConnectionsList.ItemsSource = connectionStore.List(); } catch (Exception ex) { Error(ex); }
+        ConnectOverlay.Visibility = Visibility.Visible; RemoteCode.Focus();
+    }
+    private void SavedConnection_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (SavedConnectionsList.SelectedItem is not SavedConnection saved) return;
+        ServerUrl.Text = saved.Server; RemoteCode.Text = saved.Code; ConnectionName.Text = saved.Name;
+        ConnectServer.Text = "中继：" + saved.Server;
+    }
+    private void SaveConnection_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            using var validation = new RegistryClient(ServerUrl.Text.Trim());
+            if (string.IsNullOrWhiteSpace(RemoteCode.Text)) throw new ArgumentException("请输入授权码。");
+            connectionStore.Save(new(ServerUrl.Text.Trim(), RemoteCode.Text.Trim(), string.IsNullOrWhiteSpace(ConnectionName.Text) ? new Uri(ServerUrl.Text.Trim()).Host : ConnectionName.Text.Trim(), false));
+            SavedConnectionsList.ItemsSource = connectionStore.List(); ConnectError.Text = "连接已保存。";
+        }
+        catch (Exception ex) { Error(ex); }
+    }
+    private void DeleteConnection_Click(object sender, RoutedEventArgs e)
+    {
+        if (SavedConnectionsList.SelectedItem is not SavedConnection selected) return;
+        try { connectionStore.Forget(selected); SavedConnectionsList.ItemsSource = connectionStore.List(); RemoteCode.Clear(); ConnectionName.Clear(); }
+        catch (Exception ex) { Error(ex); }
+    }
     private void SaveSettings_Click(object sender, RoutedEventArgs e)
     {
         try

@@ -15,6 +15,9 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private static IReadOnlyList<SessionInfo> Sorted(JsonNode? node) => Json.Read<SessionInfo[]>(node).OrderByDescending(s => s.SortTime).ThenBy(s => s.Id).ToArray();
     private void Accept(SessionView incoming, bool reset = false)
     {
+        // Older Codex hosts omit files in snapshots. Preserve the separately queried list.
+        if (incoming.OutputFiles is null && View?.Id == incoming.Id)
+            incoming = incoming with { OutputFiles = View.OutputFiles };
         // Even a legacy host must not hand megabytes of history to the WebView.
         if (incoming.History is null) incoming = HistoryPaging.Latest(incoming) with { History = null };
         latest = incoming;
@@ -126,6 +129,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             SessionView? view = id is null ? null : Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));
             if (remote != owner || revision != generation) return;
             Agent = agent; Sessions = sessions; if (view is not null) Accept(view, true); Status = "已恢复连接 · 未重发任何操作";
+            await RefreshFilesCoreAsync();
         }
         catch (Exception ex) { if (remote == owner) Status = "恢复读取失败：" + ex.Message; }
         finally { operation.Release(); Notify(); }
@@ -135,6 +139,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     {
         Sessions = Sorted(await Peer.CallAsync("sessions", null));
         if (selected is { } id) Accept(Json.Read<SessionView>(await Peer.CallAsync("attach", new { id })), true);
+        await RefreshFilesCoreAsync();
     });
 
     public Task SelectAsync(string id) => Run(async () =>
@@ -150,6 +155,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             var view = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id }));
             if (revision != generation) return;
             selected = id; Accept(view, true); Status = "已同步最新记录";
+            await RefreshFilesCoreAsync();
         }
         catch { View = oldView; throw; }
         finally { selecting = null; }
@@ -219,15 +225,32 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             if (Agent?.CanFiles != true || View is null) throw new IOException("请先打开支持附件的会话。");
             var workspace = Json.Read<FileWorkspace>(await Peer.CallAsync("files/list", new { session = View.Id }));
             output = workspace.Files.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).ToList();
-            View = View with { OutputFiles = output };
+            SetOutputFiles(output);
         });
         return output;
     }
 
-    public Task DownloadAsync(RemoteFile file, string destination, IProgress<FileProgress> progress) => Run(async () =>
+    private void SetOutputFiles(List<RemoteFile> output)
+    {
+        if (View is not null) View = View with { OutputFiles = output };
+        if (latest is not null && latest.Id == View?.Id) latest = latest with { OutputFiles = output };
+    }
+    private async Task RefreshFilesCoreAsync()
+    {
+        if (Agent?.CanFiles != true || View is null) return;
+        try
+        {
+            var workspace = await new FileTransferClient(Peer).ListAsync(View.Id);
+            SetOutputFiles(workspace.Files.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).ToList());
+        }
+        catch (IOException) { Status += " · 文件列表暂不可用，可点附件重试"; }
+        catch (TimeoutException) { Status += " · 文件列表读取超时，可点附件重试"; }
+    }
+
+    public Task DownloadAsync(RemoteFile file, string destination, IProgress<FileProgress> progress, CancellationToken ct = default) => Run(async () =>
     {
         if (View is null) throw new IOException("请先打开会话。");
-        await new FileTransferClient(Peer).DownloadAsync(View.Id, file.Id, destination, progress);
+        await new FileTransferClient(Peer).DownloadAsync(View.Id, file.Id, destination, progress, ct);
     });
 
     public async Task<AgentSettings> GetSettingsAsync()

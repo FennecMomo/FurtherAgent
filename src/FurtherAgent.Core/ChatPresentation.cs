@@ -8,7 +8,7 @@ public static class ChatPresentation
 {
     public static ChatEntry Display(ChatEntry entry)
     {
-        if (entry.Role is not ("user" or "补充指令")) return entry;
+        if (entry.Role is not ("user" or "补充指令" or "你")) return entry;
         const string marker = "\n\n[FurtherAgent 文件工作区]\n";
         int start = entry.Text.LastIndexOf(marker, StringComparison.Ordinal);
         if (start < 0) return entry;

@@ -22,7 +22,7 @@ internal static class Ui
         {
             "会话" => "chats", "连接" or "连接并查看会话" => "link", "发送 ↑" => "send",
             "停止" or "结束" => "stop", "附件" => "attach", "模型" => "model", "语音" => "mic",
-            "核对" => "check", "等待…" => "clock", "取消" => "close", "刷新" => "refresh",
+            "核对" => "check", "等待…" => "clock", "取消" or "取消下载" => "close", "刷新" => "refresh",
             "新建会话" => "plus", "归档当前" => "archive", "保存" or "应用到此会话" => "save",
             "语音设置" => "settings", "清理会话缓存" => "broom", "查看离线界面预览" => "eye",
             "断开当前连接" => "unlink", "忘记保存的连接" or "删除语音密钥" => "trash",

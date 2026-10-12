@@ -23,6 +23,7 @@ New-Item -ItemType Directory -Force (Join-Path $releaseDir 'docs') | Out-Null
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes.md'), (Join-Path $repoRoot 'docs/Session-UI-0.3.0.md'), (Join-Path $repoRoot 'docs/File-Transfer.md'), (Join-Path $repoRoot 'docs/Features-0.5.0-Validation.md'), (Join-Path $repoRoot 'docs/Hermes-0.8.1-Validation.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/DSH.md'), (Join-Path $repoRoot 'docs/CLI.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Controller-0.9.1.md') -Destination (Join-Path $releaseDir 'docs') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Connections-0.10.0.md') -Destination (Join-Path $releaseDir 'docs') -Force
 $zip = Join-Path $repoRoot "artifacts/release/FurtherAgent-$version.zip"
 Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath $zip -Force
 Get-FileHash -LiteralPath $zip -Algorithm SHA256

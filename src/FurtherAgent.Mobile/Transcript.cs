@@ -65,6 +65,13 @@ public static class Transcript
             html.Append("</section>");
         }
         if (readingOlder) html.Append("<p class='history'><a href='fa-history://latest'>回到最新记录</a></p>");
+        if (view.OutputFiles is { Count: > 0 })
+        {
+            html.Append("<aside class='files'><b>会话文件</b>");
+            foreach (var file in view.OutputFiles)
+                html.Append($"<p><a href='attachment:{Uri.EscapeDataString(file.Name)}'>{E(file.Name)} · {file.Size / 1024d:N0} KB · 下载</a></p>");
+            html.Append("</aside>");
+        }
         if (view.Messages.Count == 0) html.Append("<div class='empty'><b>从这里继续工作</b><p>发送一条消息，远端 Agent 会在原会话中回复。</p></div>");
         return html.ToString();
     }

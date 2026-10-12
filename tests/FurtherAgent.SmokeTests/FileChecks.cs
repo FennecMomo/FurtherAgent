@@ -29,10 +29,16 @@ static class FileChecks
         check(workspace.Files.Single().Name == "附件 sample.bin" && uploaded.Sha256 == Convert.ToHexString(SHA256.HashData(content)), "multi-chunk upload preserves Unicode filename and SHA256");
         await client.SendAsync("test", "请读取", [uploaded.Id]);
         check(adapter.Text.Contains(Json.Node(workspace.Outbox).ToJsonString()) && adapter.Text.Contains("文件工作区") && !adapter.Text.Contains(source), "shared send gives Agent host-local paths and output directory");
+        foreach (string role in new[] { "user", "补充指令", "你" })
+            check(ChatPresentation.Display(new(role, adapter.Text)).Text == "请读取\n\n附件：附件 sample.bin", "workspace metadata hidden for " + role);
+        check(ChatPresentation.Display(new("assistant", adapter.Text)).Text == adapter.Text, "assistant content stays intact");
+        check(ChatPresentation.Display(new("你", "说明\n\n[FurtherAgent 文件工作区]\n用户原文")).Text.EndsWith("用户原文"), "user-authored workspace marker is preserved");
         string generated = Path.Combine(workspace.Outbox, "result.txt");
         await File.WriteAllTextAsync(generated, "Agent fixture output 中文");
         workspace = await client.ListAsync("test");
         var output = workspace.Files.Single(f => f.Id == "outbox/result.txt");
+        var refreshed = Json.Read<SessionView>(await peer.CallAsync("attach", new { id = "test" }));
+        check(refreshed.OutputFiles?.Any(f => f.Id == output.Id) == true, "non-Hermes agents include output files in session snapshots");
         string destination = Path.Combine(root, "download.txt"); await client.DownloadAsync("test", output.Id, destination);
         check(await File.ReadAllTextAsync(destination) == "Agent fixture output 中文", "Agent-produced file lists and downloads through relay");
         await Reject(async () => await client.DownloadAsync("test", output.Id, destination), "download never overwrites existing local file");

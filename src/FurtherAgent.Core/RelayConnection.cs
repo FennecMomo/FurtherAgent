@@ -124,7 +124,7 @@ public sealed class DeviceHost : IAsyncDisposable
             string? attachedSession = null;
             SessionView WithFiles(SessionView view)
             {
-                if (adapter.Info.Id != "hermes") return view;
+                if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) return view;
                 try { return view with { OutputFiles = files.Value.List(view.Id).Files.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).ToList() }; }
                 catch (IOException) { return view with { StatusDetail = view.StatusDetail + " · 输出文件列表暂不可用，请打开会话文件查看。" }; }
             }
