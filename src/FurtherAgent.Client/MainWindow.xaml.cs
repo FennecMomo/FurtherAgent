@@ -573,6 +573,14 @@ public partial class MainWindow : Window
         ServerUrl.Text = saved.Server; RemoteCode.Text = saved.Code; ConnectionName.Text = saved.Name;
         ConnectServer.Text = "中继：" + saved.Server;
     }
+    private void NewConnection_Click(object sender, RoutedEventArgs e)
+    {
+        SavedConnectionsList.SelectedIndex = -1;
+        ConnectionName.Clear(); RemoteCode.Clear();
+        ConnectServer.Text = "中继：" + ServerUrl.Text.Trim();
+        ConnectError.Text = "正在新增连接。填写名称和授权码后保存，已有连接会保留。";
+        ConnectionName.Focus();
+    }
     private void SaveConnection_Click(object sender, RoutedEventArgs e)
     {
         try
