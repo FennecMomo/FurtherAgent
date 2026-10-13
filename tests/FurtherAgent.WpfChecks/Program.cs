@@ -14,6 +14,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--connections") { ConnectionUiChecks.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--questions") { QuestionUiChecks.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--settings") { SettingsUiChecks.Run(args[1]); return; }
         if (args.Length == 3 && args[0] == "--themes") { ThemePreview.Run(args[1], args[2]); return; }

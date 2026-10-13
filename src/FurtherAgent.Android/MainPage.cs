@@ -9,7 +9,17 @@ namespace FurtherAgent.AndroidApp;
 
 public sealed class MainPage : ContentPage
 {
-    private readonly MobileSession session = new(action => MainThread.BeginInvokeOnMainThread(action), new HistoryCache(Path.Combine(FileSystem.AppDataDirectory, "history-cache-v1")));
+    private readonly DeviceConnectionPool<MobileSession> connections = new();
+    private readonly Dictionary<string, string> connectionNames = [];
+    private readonly Dictionary<string, string> legacyDraftScopes = [];
+    private MobileSession session = NewSession();
+    public MobileSession CurrentSession => session;
+    private static MobileSession NewSession() => new(action => MainThread.BeginInvokeOnMainThread(action), new HistoryCache(Path.Combine(FileSystem.AppDataDirectory, "history-cache-v1")));
+    private string? activeConnection;
+    private readonly Picker devicePicker = new() { Title = "切换已连接设备", FontSize = 12 };
+    private bool updatingDevices, connectingDevice;
+    private string devicesSignature = "";
+    private sealed record DeviceChoice(string Id, string Label);
     private readonly WebView transcript = new();
     private readonly Label title = Ui.Text("工作，随时接续", 21, true);
     private readonly Label subtitle = Ui.Text("离线预览 · 不会执行任务", 11);
@@ -50,7 +60,14 @@ public sealed class MainPage : ContentPage
         Ui.TextTheme(connectionLabel);
         var connection = new HorizontalStackLayout { Spacing = 7, Children = { connectionDot, connectionLabel } };
         SemanticProperties.SetDescription(connection, "远端连接与 Agent 状态");
-        var heading = new VerticalStackLayout { ZIndex = 1, Padding = new Thickness(20, 4, 20, 8), Spacing = 5, Children = { title, connection, subtitle } };
+        devicePicker.ItemDisplayBinding = new Binding(nameof(DeviceChoice.Label));
+        devicePicker.SelectedIndexChanged += (_, _) =>
+        {
+            if (updatingDevices || devicePicker.SelectedItem is not DeviceChoice choice) return;
+            if (interactionBusy || session.Busy || connectingDevice) { devicesSignature = ""; UpdateDevices(); return; }
+            if (connections.Entries.TryGetValue(choice.Id, out var target)) ActivateConnection(choice.Id, target);
+        };
+        var heading = new VerticalStackLayout { ZIndex = 1, Padding = new Thickness(20, 4, 20, 8), Spacing = 5, Children = { devicePicker, title, connection, subtitle } };
         transcript.Source = new HtmlWebViewSource { Html = Transcript.Shell };
         transcript.Navigated += (_, _) => { webReady = true; QueueRender(); };
         transcript.Navigating += OnNavigating;
@@ -73,7 +90,6 @@ public sealed class MainPage : ContentPage
         var layout = new Grid { RowDefinitions = [new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
         layout.Add(header); layout.Add(heading, 0, 1); layout.Add(transcript, 0, 2); layout.Add(footer, 0, 3); Content = layout;
         composer.TextChanged += (_, _) => { SaveDraft(); RefreshButtons(); };
-        session.Changed += OnChanged;
         timer = Dispatcher.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(400);
         timer.Tick += async (_, _) =>
         {
@@ -119,7 +135,9 @@ public sealed class MainPage : ContentPage
 
     private void OnChanged()
     {
-        if (!session.HasConnection && !session.Busy) ConnectionService.Stop();
+        if (closed) return;
+        if (connections.Entries.Count == 0 && !connectingDevice) ConnectionService.Stop();
+        UpdateDevices();
         var indicator = session.Indicator;
         connectionLabel.Text = indicator.Label;
         connectionDot.Fill = new SolidColorBrush(Color.FromArgb(indicator.Color));
@@ -128,6 +146,12 @@ public sealed class MainPage : ContentPage
         if (nextKey != draftKey)
         {
             SaveDraft(); loadingDraft = true; draftKey = nextKey;
+            if (nextKey.Length > 0 && !Preferences.ContainsKey(nextKey) && legacyDraftScopes.TryGetValue(scope, out var legacy))
+            {
+                string oldKey = nextKey.Replace("draft." + scope + ".", "draft." + legacy + ".", StringComparison.Ordinal);
+                if (oldKey != nextKey && Preferences.ContainsKey(oldKey))
+                { Preferences.Set(nextKey, Preferences.Get(oldKey, "")); Preferences.Remove(oldKey); }
+            }
             composer.Text = nextKey.Length > 0 ? Preferences.Get(nextKey, "") : ""; loadingDraft = false;
         }
         title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
@@ -181,10 +205,11 @@ public sealed class MainPage : ContentPage
         rendering = true;
         try
         {
+            var renderingSession = session; bool renderingPreview = preview;
             var view = preview ? Transcript.Preview : session.View ?? new SessionView("empty", "", "", "idle", null, [], []);
             bool hasOlder = session.HasOlder, older = session.ReadingOlder;
             string html = await Task.Run(() => Transcript.Render(view, hasOlder, older));
-            if (!preview && session.View is not null && !ReferenceEquals(view, session.View)) { pendingRender = true; return; }
+            if (!ReferenceEquals(renderingSession, session) || renderingPreview != preview || !preview && session.View is not null && !ReferenceEquals(view, session.View)) { pendingRender = true; return; }
             if (lastHtml == html && lastSession == view.Id) { prependHistory = false; return; }
             bool reset = lastSession != view.Id;
             bool prepend = prependHistory; prependHistory = false;
@@ -204,8 +229,8 @@ public sealed class MainPage : ContentPage
         ConnectionService.Stop();
         speechCancel?.Cancel();
         downloadCancel?.Cancel();
-        SaveDraft(); timer.Stop(); session.Changed -= OnChanged;
-        try { await session.DisposeAsync(); } catch { /* Window is already closing. */ }
+        SaveDraft(); timer.Stop();
+        try { await connections.DisposeAsync(); await session.DisposeAsync(); } catch { /* Window is already closing. */ }
     }
     private async Task ErrorAsync(Exception ex)
     {
@@ -221,31 +246,75 @@ public sealed class MainPage : ContentPage
         try { await action(); } catch (Exception ex) { await ErrorAsync(ex); }
         finally { interactionBusy = false; RefreshButtons(); }
     }
-    private Task OpenConnectionAsync() => interactionBusy || session.Busy ? Task.CompletedTask : Navigation.PushAsync(new ConnectionPage(this, session));
+    private Task OpenConnectionAsync() => interactionBusy || session.Busy || connectingDevice ? Task.CompletedTask : Navigation.PushAsync(new ConnectionPage(this));
     private Task OpenSessionsAsync() => Navigation.PushAsync(new SessionsPage(this, session));
     public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null)
     {
+        if (connectingDevice || interactionBusy || session.Busy) throw new IOException("请等待当前操作结束再切换设备。");
+        SaveDraft(); connectingDevice = true; StartConnectionService();
+        try
+        {
+            string id = DeviceConnectionPool<MobileSession>.Identity(url, code);
+            var target = await connections.OpenAsync(url, code, async () =>
+            {
+                var added = NewSession();
+                try { await added.ConnectAsync(url, code); }
+                catch { await added.DisposeAsync(); throw; }
+                added.Changed += () => { if (closed) return; if (ReferenceEquals(session, added)) OnChanged(); else UpdateDevices(); };
+                return added;
+            });
+            if (closed) throw new OperationCanceledException("应用正在退出。");
+            connectionNames[id] = string.IsNullOrWhiteSpace(name) ? target.DeviceName : name.Trim();
+            legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
+            ActivateConnection(id, target);
+            Preferences.Set("server-url", url.Trim());
+            await SavedConnections.LoadAsync();
+            await SavedConnections.Store.SaveAsync(name ?? target.DeviceName, url, code, replaceId);
+        }
+        finally { connectingDevice = false; OnChanged(); }
+    }
+    private void UpdateDevices()
+    {
+        var choices = connections.Entries.Select(p => new DeviceChoice(p.Key, $"{connectionNames.GetValueOrDefault(p.Key, p.Value.DeviceName)} · {p.Value.Indicator.Label}")).ToList();
+        string signature = string.Join("|", choices.Select(c => c.Id + c.Label)) + "|" + activeConnection;
+        if (signature == devicesSignature) return;
+        devicesSignature = signature;
+        updatingDevices = true;
+        try
+        {
+            devicePicker.ItemsSource = choices;
+            devicePicker.SelectedItem = choices.FirstOrDefault(c => c.Id == activeConnection);
+            devicePicker.IsVisible = choices.Count > 0;
+        }
+        finally { updatingDevices = false; }
+    }
+    private void ActivateConnection(string id, MobileSession target)
+    {
+        SaveDraft(); session = target; activeConnection = id; scope = id;
+        preview = false; lastHtml = lastSession = ""; prependHistory = false; OnChanged();
+    }
+    public async Task DisconnectCurrentAsync()
+    {
+        if (session.Busy || interactionBusy || connectingDevice) throw new IOException("请等待当前操作结束再断开。");
         SaveDraft();
-        StartConnectionService();
-        await session.ConnectAsync(url, code);
-        scope = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
-        Preferences.Set("server-url", url.Trim());
-        await SavedConnections.LoadAsync();
-        await SavedConnections.Store.SaveAsync(name ?? session.DeviceName, url, code, replaceId);
-        preview = false; OnChanged();
+        if (activeConnection is { } id) await connections.CloseAsync(id);
+        var next = connections.Entries.LastOrDefault();
+        if (next.Value is not null) ActivateConnection(next.Key, next.Value);
+        else { session = NewSession(); activeConnection = null; scope = ""; OnChanged(); }
     }
     public async Task SelectAsync(string id) { SaveDraft(); await session.SelectAsync(id); OnChanged(); }
-    public async Task PreviewAsync()
+    public Task PreviewAsync()
     {
-        if (session.HasConnection) await session.DisconnectAsync();
+        SaveDraft(); session = NewSession(); activeConnection = null; scope = "";
         preview = true; OnChanged();
+        return Task.CompletedTask;
     }
     public async Task ResumeAsync()
     {
         suspended = false;
         SaveDraft();
-        if (session.HasConnection) StartConnectionService();
-        if (!interactionBusy) await session.ResumeAsync();
+        if (connections.Entries.Count > 0) StartConnectionService();
+        if (!interactionBusy) await Task.WhenAll(connections.Entries.Values.Select(s => s.ResumeAsync()));
     }
     private async Task SendAsync()
     {

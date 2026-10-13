@@ -38,11 +38,11 @@ public partial class MainWindow : Window
     private int modelSettingsGeneration;
     private string transcriptText = "";
     private CancellationTokenSource? transferCancellation;
-    private readonly List<RemoteFile> attachedFiles = [];
+    private List<RemoteFile> attachedFiles = [];
     private string? filesSession;
     private void ClearAttachments() { attachedFiles.Clear(); AttachmentSummary.Text = ""; }
 
-    private readonly Dictionary<string, string> drafts = [];
+    private Dictionary<string, string> drafts = [];
     private static string SettingsFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "settings.json");
     private readonly SavedConnectionStore connectionStore = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "connection.json"));
     public MainWindow()
@@ -123,7 +123,8 @@ public partial class MainWindow : Window
             relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text,
             receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
-        if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t)))
+        if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t))
+            || deviceConnections.Entries.Values.Any(d => d.Attachments.Count > 0 || d.Drafts.Values.Any(t => !string.IsNullOrEmpty(t))))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
         startupRetry?.Cancel();
         _ = Task.Delay(200).ContinueWith(_ => Dispatcher.BeginInvoke(() => { exitRequested = true; Close(); }));
@@ -192,48 +193,24 @@ public partial class MainWindow : Window
     }
     private async Task ConnectAsync()
     {
-        if (!ConnectButton.IsEnabled) return;
+        if (!ConnectButton.IsEnabled || !CanSwitchDevice) return;
         string server = ServerUrl.Text.Trim(), code = RemoteCode.Text.Trim();
         ConnectButton.IsEnabled = false; ConnectError.Text = ""; connectionFailure = null;
         try
         {
-            await DisconnectAsync();
-            remoteRegistry = new RegistryClient(server);
-            remote = new RemoteDevice();
             RemoteStatus.Text = "正在通过授权码建立中继连接…";
-            await remote.ConnectAsync(remoteRegistry, code);
-            heartbeat = new ConnectionHeartbeat(remoteRegistry, remote); heartbeat.Start();
-            var connected = remote;
-            remote.Notification += (method, node) =>
-            {
-                if (method == "session" && node is not null)
-                { var view = Json.Read<SessionView>(node); lock (snapshotGate) pendingSnapshot = (connected, view); }
-            };
-            remote.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
-            {
-                if (remote != connected) return;
-                if (!online) current = null;
-                RemoteStatus.Text = message; SetSessionEnabled(false); RefreshButton.IsEnabled = online;
-                StatusBar.Text = message + " 重连会恢复会话显示；不会自动重发消息或确认操作。";
-            });
-            remote.Reconnected += () => Dispatcher.BeginInvoke(async () => await RestoreSessionAsync(connected));
-            var agents = Json.Read<AgentInfo[]>(await remote.Peer.CallAsync("agents", null));
-            agent = agents.FirstOrDefault(a => a.Available) ?? throw new IOException("远端没有可用适配器。");
-            WorkspaceButton.Visibility = agent.CanWorkspaces ? Visibility.Visible : Visibility.Collapsed;
-            AgentPicker.Items.Clear(); AgentPicker.Items.Add(agent.Name); AgentPicker.SelectedIndex = 0;
-            RemoteStatus.Text = $"已通过服务端连接 · {remote.Device!.Name}";
-            DisconnectButton.IsEnabled = RefreshButton.IsEnabled = true;
-            await RefreshAsync();
-            EmptyTitle.Text = "选择会话，继续工作"; EmptyDescription.Text = "从左侧打开已有会话，或点击「新建会话」。"; EmptyConnect.Visibility = Visibility.Collapsed;
-            StatusBar.Text = agent.Detail; ConnectOverlay.Visibility = Visibility.Collapsed; ShowConversations();
+            var device = await OpenDeviceAsync(server, code);
+            if (exitRequested) return;
+            if (!string.IsNullOrWhiteSpace(ConnectionName.Text)) device.Name = ConnectionName.Text.Trim();
+            ActivateDevice(device); UpdateDevicePicker();
             try
             {
                 SaveServerAddress(server);
-                connectionStore.Save(new(server, code, string.IsNullOrWhiteSpace(ConnectionName.Text) ? remote.Device!.Name : ConnectionName.Text.Trim(), true));
+                connectionStore.Save(new(server, code, device.Name, true));
             }
             catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
         }
-        catch (Exception ex) { await DisconnectAsync(); Error(ex); connectionFailure = ex.GetType().Name + ": " + (code.Length == 0 ? ex.Message : ex.Message.Replace(code, "[REDACTED]")); ConnectError.Text = ex.Message; RemoteStatus.Text = "连接失败。请检查中继服务地址、授权码及 B 是否已开启共享。"; }
+        catch (Exception ex) { Error(ex); connectionFailure = ex.GetType().Name + ": " + (code.Length == 0 ? ex.Message : ex.Message.Replace(code, "[REDACTED]")); ConnectError.Text = ex.Message; RemoteStatus.Text = "新连接失败，已有连接保持。请检查地址、授权码及远端共享状态。"; }
         finally { ConnectButton.IsEnabled = true; }
     }
     private void CopyCode_Click(object sender, RoutedEventArgs e)
@@ -251,44 +228,33 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Error(ex); }
     }
-    private async Task RestoreSessionAsync(RemoteDevice connection)
-    {
-        if (remote != connection) return;
-        int version = selectionVersion;
-        string? id = selectedId;
-        try
-        {
-            await RefreshAsync();
-            if (id is not null)
-            {
-                var view = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id }));
-                if (remote == connection && version == selectionVersion) Render(view);
-            }
-        }
-        catch (Exception ex) { if (remote == connection) Error(ex); }
-    }
     private async Task DisconnectAsync()
     {
-        if (heartbeat is not null) { await heartbeat.DisposeAsync(); heartbeat = null; }
+        var disconnected = activeDevice;
+        SaveActiveDevice(); activeDevice = null; heartbeat = null;
         transferCancellation?.Cancel(); ClearAttachments();
         SaveDraft(); agent = null; ModelOverlay.Visibility = Visibility.Collapsed;
         selectionVersion++; selectedId = null; current = null; promptSignature = null;
-        var previous = remote; remote = null;
-        if (previous is not null) await previous.DisposeAsync();
-        remoteRegistry?.Dispose(); remoteRegistry = null;
+        remote = null;
+        if (disconnected is not null) await deviceConnections.CloseAsync(DeviceConnectionPool<DeviceContext>.Identity(disconnected.Server, disconnected.Code));
+        remoteRegistry = null; drafts = []; attachedFiles = [];
         sessions = []; workspaces = []; workspaceGroups = []; SessionList.ItemsSource = null; WorkspaceButton.Visibility = Visibility.Collapsed;
         DisconnectButton.IsEnabled = RefreshButton.IsEnabled = false; SetSessionEnabled(false);
         PromptBorder.Visibility = Visibility.Collapsed;
         EmptyTitle.Text = "你的 Agent，随时继续。"; EmptyDescription.Text = "连接设备，选择已有会话或新建会话。"; EmptyConnect.Visibility = Visibility.Visible;
         RemoteStatus.Text = "尚未连接"; SessionTitle.Text = "选择远端会话，继续工作";
         SessionMeta.Text = "连接后显示远端会话历史与可用的运行状态"; Messages.ItemsSource = null; transcriptText = ""; OutputFilesPanel.Children.Clear(); outputFilesFingerprint = renderedOutputFilesFingerprint = ""; Composer.Clear(); EmptyState.Visibility = Visibility.Visible;
+        if (!exitRequested && deviceConnections.Entries.Values.LastOrDefault() is { } next) ActivateDevice(next);
+        UpdateDevicePicker();
     }
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
         startupRetry?.Cancel();
+        if (!CanSwitchDevice || !ConnectButton.IsEnabled) { StatusBar.Text = "请等待当前操作结束再断开设备。"; return; }
         try
         {
-            var saved = connectionStore.Load(remoteRegistry?.ServerIdentity ?? ServerUrl.Text);
+            var saved = activeDevice is null ? null : connectionStore.List().FirstOrDefault(s =>
+                DeviceConnectionPool<DeviceContext>.Identity(s.Server, s.Code) == DeviceConnectionPool<DeviceContext>.Identity(activeDevice.Server, activeDevice.Code));
             if (saved is not null) connectionStore.Save(saved with { AutoConnect = false });
         }
         catch { StatusBar.Text = "无法保存自动连接设置，请使用忘记已保存连接。"; }
@@ -325,6 +291,7 @@ public partial class MainWindow : Window
     private async void Session_Changed(object sender, RoutedPropertyChangedEventArgs<object> e)
     {
         if (remote is null || SessionList.SelectedItem is not WorkspaceSession row || row.Info.Id == selectedId) return;
+        var connection = remote; var device = activeDevice;
         var session = row.Info;
         ClearAttachments(); SaveDraft(); ShowConversations(); ModelOverlay.Visibility = Visibility.Collapsed;
         int version = ++selectionVersion;
@@ -332,8 +299,13 @@ public partial class MainWindow : Window
         PromptBorder.Visibility = Visibility.Collapsed; SessionTitle.Text = session.Title; SessionMeta.Text = "正在读取远端会话…";
         try
         {
-            var view = Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = session.Id }));
-            if (version != selectionVersion) return;
+            var view = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = session.Id }));
+            if (version != selectionVersion)
+            {
+                if (device is not null && device != activeDevice && device.SelectedId == session.Id) device.View = view;
+                else if (remote == connection && selectedId == session.Id) Render(view);
+                return;
+            }
             Render(view); StatusBar.Text = view.StatusDetail ?? "已接入原桌面会话。发送指令会在 B 的原项目中执行。";
         }
         catch (Exception ex)
@@ -344,6 +316,8 @@ public partial class MainWindow : Window
     }
     private void RenderConnectionHealth()
     {
+        if (activeDevice is not null) activeDevice.View = current;
+        UpdateDevicePicker();
         var indicator = AgentIndicator.From(remote?.IsConnected == true,
             !ConnectButton.IsEnabled || remote?.IsReconnecting == true, current);
         ConnectionStateLabel.Text = indicator.Label;
@@ -955,7 +929,8 @@ public partial class MainWindow : Window
         try
         {
             transferCancellation?.Cancel();
-            await DisconnectAsync();
+            try { await DisconnectAsync(); }
+            finally { await deviceConnections.DisposeAsync(); }
             if (host is not null) await host.DisposeAsync();
             await DisposeLocalAdapterAsync();
             hostRegistry?.Dispose();

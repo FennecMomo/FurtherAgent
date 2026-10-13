@@ -12,7 +12,7 @@ internal sealed class ConnectionPage : ContentPage
     private readonly Label message = Ui.Text("", 12);
     private string? editing;
     private bool busy;
-    public ConnectionPage(MainPage home, MobileSession session)
+    public ConnectionPage(MainPage home)
     {
         Title = "连接设备"; Ui.Theme(this);
         server.Text = Preferences.Get("server-url", "https://furtheragent.fennecmomo.top");
@@ -44,7 +44,8 @@ internal sealed class ConnectionPage : ContentPage
             {
                 message.Text = "正在配对…";
                 await home.ConnectAsync(server.Text?.Trim() ?? "", code.Text?.Trim() ?? "", name.Text, editing);
-                await Navigation.PopAsync(); await home.Navigation.PushAsync(new SessionsPage(home, session));
+                await Navigation.PopAsync();
+                if (home.CurrentSession.View is null) await home.Navigation.PushAsync(new SessionsPage(home, home.CurrentSession));
             }),
             Action("删除所选连接", async () =>
             {
@@ -53,10 +54,10 @@ internal sealed class ConnectionPage : ContentPage
                 await SavedConnections.Store.RemoveAsync(editing); editing = null; code.Text = name.Text = "";
                 await ReloadAsync(); message.Text = "所选连接已删除。";
             }),
-            message, Ui.Text("可保存多个设备，一次选择一个设备查看会话。切换后远端任务继续运行，草稿按设备和会话分别保留。", 12),
+            message, Ui.Text("支持同时连接多个设备，在主页上方切换。切换不会断开其他设备，草稿按设备和会话分别保留。手动断开或退出程序才会关闭连接，远端任务不受影响。", 12),
             Action("语音设置", () => Navigation.PushAsync(new SpeechSettingsPage())),
-            Action("清理会话缓存", async () => { await session.ClearCacheAsync(); message.Text = "会话缓存已清理，草稿、附件和连接保留。"; }),
-            Action("断开当前连接", async () => { await session.DisconnectAsync(); message.Text = "已断开，远端任务继续执行。"; }),
+            Action("清理会话缓存", async () => { await home.CurrentSession.ClearCacheAsync(); message.Text = "会话缓存已清理，草稿、附件和连接保留。"; }),
+            Action("断开当前查看的设备", async () => { await home.DisconnectCurrentAsync(); message.Text = "已断开该设备，其他连接与远端任务继续。"; }),
             Action("查看离线界面预览", async () => { await home.PreviewAsync(); await Navigation.PopAsync(); })
         } };
         foreach (var label in stack.Children.OfType<Label>()) Ui.TextTheme(label);

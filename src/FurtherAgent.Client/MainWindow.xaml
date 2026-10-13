@@ -40,6 +40,7 @@
       <Button DockPanel.Dock="Right" Style="{StaticResource HeaderIcon}" Click="OpenConnect_Click" ToolTip="切换连接" AutomationProperties.Name="切换连接"><TextBlock FontFamily="Segoe Fluent Icons" Text="&#xE8F2;"/></Button>
       <TextBlock Text="Codex" FontSize="21" FontWeight="SemiBold" VerticalAlignment="Center" ToolTip="FurtherAgent · Codex 风格"/>
      </DockPanel>
+     <ComboBox x:Name="ConnectedDevices" DisplayMemberPath="Label" SelectionChanged="ConnectedDevice_Changed" Visibility="Collapsed" Margin="4,0,4,8" ToolTip="切换已连接设备，其他连接继续保持" AutomationProperties.Name="切换已连接设备"/>
      <Button x:Name="NewButton" Content="{DynamicResource NewChatLabel}" Style="{StaticResource SidebarPrimary}" Click="New_Click" ToolTip="连接远端后新建会话"/>
      <Button x:Name="WorkspaceButton" Style="{StaticResource SidebarAction}" Content="＋  添加工作空间" Click="Workspace_Click" ToolTip="选择远端已有目录，或在远端创建文件夹" Visibility="Collapsed"/>
      <Button Content="{DynamicResource ArchiveLabel}" Click="RestoreArchive_Click" Style="{StaticResource SidebarAction}"/><Button Content="会话" Click="Conversations_Click" HorizontalContentAlignment="Left" Visibility="{DynamicResource OriginalOnly}"/>
