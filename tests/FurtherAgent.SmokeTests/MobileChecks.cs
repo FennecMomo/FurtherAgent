@@ -15,6 +15,17 @@ internal static class MobileChecks
         check(mobile.Connected && mobile.Sessions.Count == 2, "mobile pairs and lists sessions through real relay");
         await mobile.SelectAsync("one");
         check(mobile.View?.Id == "one", "mobile opens remote session");
+        await mobile.ResumeAsync();
+        check(mobile.Connected && mobile.View?.Id == "one" && adapter.Sends == 0,
+            "foreground resume retains selected session without submitting a message");
+        var running = mobile.View! with { Prompts = [] };
+        check(AgentIndicator.From(false, false, running) is { Label: "已断连", Color: "#DC2626" }
+            && AgentIndicator.From(false, true, running).Label == "连接中", "connection state overrides stale executing snapshot");
+        check(AgentIndicator.From(true, false, running).Label == "执行中"
+            && AgentIndicator.From(true, false, running with { Status = "idle" }).Label == "空闲"
+            && AgentIndicator.From(true, false, mobile.View).Label == "等待确认"
+            && AgentIndicator.From(true, false, running with { Status = "unknown" }).Label == "状态未知",
+            "both clients distinguish executing, idle, approval and unknown agent states");
         using (var files = new FileTransferStore(filesRoot))
         {
             string output = Path.Combine(files.List("one").Outbox, "new-output.txt");
@@ -36,6 +47,16 @@ internal static class MobileChecks
         adapter.FailAfterAccept = true;
         try { await mobile.SendAsync("accepted but lost response", []); } catch { }
         check(mobile.SendUncertain && adapter.Sends == 2, "mobile retains uncertain send state");
+        await mobile.ResumeAsync();
+        check(mobile.SendUncertain && adapter.Sends == 2, "foreground resume never replays an uncertain submission");
+        var transport = (RemoteDevice)typeof(MobileSession).GetField("remote", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(mobile)!;
+        int attachedBeforeDisconnect = adapter.Attaches;
+        await transport.Peer.DisposeAsync();
+        await mobile.ResumeAsync();
+        for (int i = 0; i < 100 && (!mobile.Connected || adapter.Attaches == attachedBeforeDisconnect); i++) await Task.Delay(100);
+        check(mobile.Connected && mobile.View?.Id == "one" && adapter.Attaches > attachedBeforeDisconnect
+            && mobile.SendUncertain && adapter.Sends == 2,
+            "foreground resume recovers a broken relay connection and original session without replaying uncertain send");
         await mobile.RefreshAsync();
         try { await mobile.SendAsync("no replay", []); } catch { }
         check(adapter.Sends == 2 && mobile.SendUncertain, "refresh does not replay and uncertain send blocks duplicate submit");
@@ -51,6 +72,8 @@ internal static class MobileChecks
         await mobile.ArchiveAsync(); check(mobile.View is null && adapter.Archives == 1, "mobile archives without deleting history");
         await mobile.DisconnectAsync();
         check(!mobile.Connected && mobile.View is null, "mobile explicit disconnect clears active view");
+        await mobile.ResumeAsync();
+        check(!mobile.HasConnection && !mobile.Connected, "foreground resume respects explicit disconnect");
         string html = Transcript.Render(Transcript.Preview with { Messages = [new("assistant", "<script>alert(1)</script>\n\n[bad](javascript:alert(1)) [copy](fa-copy://0) [good](https://example.com)\n\n![remote](https://example.com/tracker.png)\n\n<javascript:alert(1)>\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n```cs\nConsole.WriteLine(1);\n```")] });
         check(!html.Contains("<script>") && !html.Contains("href=\"javascript:") && !html.Contains("href=\"fa-copy://0\">copy") && !html.Contains("<img"), "mobile Markdown blocks HTML, executable links, injected copy links and remote images");
         check(html.Contains("<table>") && html.Contains("<pre><code") && html.Contains("href=\"https://example.com\""), "mobile Markdown retains tables, code and safe external links");
@@ -66,7 +89,7 @@ internal static class MobileChecks
     {
         private string selected = "one";
         private string last = "initial";
-        public int Sends, Stops, Decisions, Archives;
+        public int Sends, Stops, Decisions, Archives, Attaches;
         public bool FailAfterAccept;
         public AgentInfo Info => new("mobile-test", "Mobile test", true, "isolated fixture", true, true, CanArchive: true);
         public event Action<SessionView>? Changed;
@@ -75,7 +98,7 @@ internal static class MobileChecks
         private SessionView View(string id, string text) => new(id, id, "", "active", "run", [new("assistant", text)], [new("approve", "hermes/approval", "Test", "", null)], CanStop: true);
         public void Emit(string id, string text) => Changed?.Invoke(View(id, text));
         public Task<SessionView> AttachAsync(string id, CancellationToken ct)
-        { if (id == "locked") throw new IOException("running elsewhere"); selected = id; return Task.FromResult(View(id, last)); }
+        { if (id == "locked") throw new IOException("running elsewhere"); Attaches++; selected = id; return Task.FromResult(View(id, last)); }
         public Task SendAsync(string text, CancellationToken ct)
         { Sends++; last = text; Emit(selected, text); if (FailAfterAccept) throw new IOException("simulated lost acknowledgement"); return Task.CompletedTask; }
         public Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct) => Task.FromResult(new SessionInfo("created", title, ""));

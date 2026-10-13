@@ -65,6 +65,9 @@
    <Grid x:Name="ConversationPage">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel Margin="{DynamicResource HeaderMargin}">
+     <Border DockPanel.Dock="Right" VerticalAlignment="Top" Margin="12,0,12,0" Padding="10,6" CornerRadius="12" BorderThickness="1" BorderBrush="{DynamicResource BrushCFD9CF}" ToolTip="当前远端连接与所选 Agent 会话状态">
+      <StackPanel Orientation="Horizontal"><Ellipse x:Name="ConnectionStateDot" Width="11" Height="11" Fill="#DC2626" Margin="0,0,7,0"/><TextBlock x:Name="ConnectionStateLabel" Text="已断连" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
+     </Border>
      <Button x:Name="ArchiveButton" DockPanel.Dock="Right" Style="{StaticResource Compact}" VerticalAlignment="Top" Content="归档" Click="Archive_Click" IsEnabled="False"/><Button DockPanel.Dock="Right" Content="复制对话" Click="CopyChat_Click" Style="{StaticResource Compact}" VerticalAlignment="Top"/>
      <StackPanel ToolTip="{Binding Text, ElementName=SessionMeta}"><TextBlock x:Name="SessionTitle" Text="从一段对话开始" FontSize="{DynamicResource HeaderSize}" FontWeight="SemiBold"/><TextBlock x:Name="SessionMeta" Visibility="{DynamicResource OriginalOnly}" Text="连接设备，选择已有会话或新建会话。" TextWrapping="Wrap" Foreground="{DynamicResource Brush748078}" Margin="0,8,0,0"/></StackPanel>
     </DockPanel>

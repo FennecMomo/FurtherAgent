@@ -223,6 +223,32 @@ public sealed class DeviceHost : IAsyncDisposable
 
 public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
 {
+    private readonly SemaphoreSlim reconnectWake = new(0, 1);
+    public bool IsReconnecting { get; private set; }
+    public void WakeReconnect()
+    {
+        if (lifetime.IsCancellationRequested) return;
+        try { reconnectWake.Release(); } catch (SemaphoreFullException) { }
+    }
+    public async Task<bool> CheckConnectionAsync()
+    {
+        if (!IsConnected) { WakeReconnect(); return false; }
+        var checkedPeer = Peer;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+        try
+        {
+            await checkedPeer.CallAsync("agents", null, timeout.Token);
+            return ReferenceEquals(checkedPeer, Peer) && IsConnected;
+        }
+        catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException
+            or System.Net.WebSockets.WebSocketException or ObjectDisposedException)
+        {
+            if (!lifetime.IsCancellationRequested && ReferenceEquals(checkedPeer, Peer))
+            { socket?.Abort(); WakeReconnect(); }
+            return false;
+        }
+    }
     public DateTimeOffset? ConnectedAt { get; private set; }
     public DateTimeOffset? DisconnectedAt { get; private set; }
     public int ReconnectCount { get; private set; }
@@ -239,7 +265,9 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     public event Action? Reconnected;
     public async Task ConnectAsync(RegistryClient registry, string code, CancellationToken ct = default)
     {
-        await OpenAsync(registry, code, ct);
+        IsReconnecting = true;
+        try { await OpenAsync(registry, code, ct); }
+        finally { IsReconnecting = false; }
         supervisor = SuperviseAsync(registry, code);
     }
     private async Task OpenAsync(RegistryClient registry, string code, CancellationToken ct)
@@ -281,6 +309,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             if (lifetime.IsCancellationRequested) return;
             DisconnectedAt = DateTimeOffset.UtcNow;
             await Peer.DisposeAsync();
+            IsReconnecting = autoReconnect;
             ConnectionChanged?.Invoke(false, autoReconnect ? "中继连接已断开，正在重连…" : "中继连接已断开。");
             if (!autoReconnect) return;
             int attempt = 0;
@@ -288,9 +317,10 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             {
                 try
                 {
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(15, Math.Pow(2, Math.Min(attempt++, 4)))), lifetime.Token);
+                    await reconnectWake.WaitAsync(TimeSpan.FromSeconds(Math.Min(15, Math.Pow(2, Math.Min(attempt++, 4)))), lifetime.Token);
                     await OpenAsync(registry, code, lifetime.Token);
                     ReconnectCount++;
+                    IsReconnecting = false;
                     ConnectionChanged?.Invoke(true, "中继连接已恢复。");
                     Reconnected?.Invoke();
                     break;
@@ -298,6 +328,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
                 catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
+                    IsReconnecting = false;
                     ConnectionChanged?.Invoke(false, "授权码已失效，请获取 B 的新授权码后重新连接。"); return;
                 }
                 catch (Exception ex) { ConnectionChanged?.Invoke(false, "正在重连：" + ex.Message); }
@@ -306,6 +337,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
+        IsReconnecting = false;
         lifetime.Cancel(); socket?.Abort();
         if (supervisor is not null) await supervisor;
         if (Peer is not null) await Peer.DisposeAsync();

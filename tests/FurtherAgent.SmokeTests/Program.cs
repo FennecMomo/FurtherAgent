@@ -106,6 +106,7 @@ try
     await WaitForServer();
     using var registry = new RegistryClient($"http://127.0.0.1:{serverPort}");
     await MobileChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
+    if (args.Contains("--mobile-connection-checks")) { Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }
     await FileChecks.RunAsync(registry, Check);
     await HermesChecks.RunAsync(registry, Check);
     await CliChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);

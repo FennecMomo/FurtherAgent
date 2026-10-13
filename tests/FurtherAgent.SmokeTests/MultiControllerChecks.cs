@@ -16,6 +16,9 @@ internal static class MultiControllerChecks
         await using var c = new RemoteDevice(false);
         await Task.WhenAll(a.ConnectAsync(registry, host.Lease!.Code), b.ConnectAsync(registry, DeviceIdentity.DisplayCode(host.Lease.Code).ToLowerInvariant()), c.ConnectAsync(registry, host.Lease.Code));
         check(a.IsConnected && b.IsConnected && c.IsConnected, "three controllers pair concurrently, formatted short code accepted");
+        var originalPeer = a.Peer;
+        check(await a.CheckConnectionAsync() && ReferenceEquals(originalPeer, a.Peer) && a.ReconnectCount == 0,
+            "foreground liveness probe reuses healthy transport without reconnecting");
         var seenA = new ConcurrentQueue<SessionView>(); var seenB = new ConcurrentQueue<SessionView>();
         a.Notification += (method, node) => { if (method == "session") seenA.Enqueue(Json.Read<SessionView>(node)); };
         b.Notification += (method, node) => { if (method == "session") seenB.Enqueue(Json.Read<SessionView>(node)); };
@@ -65,6 +68,7 @@ internal static class MultiControllerChecks
         int sent = state.Messages["one"].Count;
         var restored = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         a.Reconnected += () => restored.TrySetResult(); await a.Peer.DisposeAsync();
+        a.WakeReconnect();
         await restored.Task.WaitAsync(TimeSpan.FromSeconds(12));
         var recovered = Json.Read<SessionView>(await a.Peer.CallAsync("attach", new { id = "one" }));
         check(recovered.Messages.Count == sent && c.IsConnected, "reconnect preserves shared run state, never replays send or disrupts another controller");

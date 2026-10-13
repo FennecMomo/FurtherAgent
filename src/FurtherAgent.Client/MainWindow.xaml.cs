@@ -344,6 +344,10 @@ public partial class MainWindow : Window
     }
     private void RenderConnectionHealth()
     {
+        var indicator = AgentIndicator.From(remote?.IsConnected == true,
+            !ConnectButton.IsEnabled || remote?.IsReconnecting == true, current);
+        ConnectionStateLabel.Text = indicator.Label;
+        ConnectionStateDot.Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(indicator.Color)!;
         static string Describe(string label, HeartbeatState state)
         {
             string age = state.LastSuccess is { } last ? $" · {(int)Math.Max(0, (DateTimeOffset.UtcNow - last).TotalSeconds)} 秒前确认" : " · 尚无确认";

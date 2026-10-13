@@ -15,6 +15,10 @@ public sealed class MainPage : ContentPage
     private readonly Label subtitle = Ui.Text("离线预览 · 不会执行任务", 11);
     private readonly Label status = Ui.Text("连接远端设备，继续你的会话", 11);
     private readonly Label attachments = Ui.Text("", 11);
+    private readonly Label connectionLabel = Ui.Text("已断连", 12, true);
+    private readonly Microsoft.Maui.Controls.Shapes.Ellipse connectionDot = new() { WidthRequest = 11, HeightRequest = 11, Fill = new SolidColorBrush(Color.FromArgb("#DC2626")), VerticalOptions = LayoutOptions.Center };
+    private readonly Label filesCaption = ActionCaption("附件"), promptsCaption = ActionCaption("确认");
+    private string? backgroundServiceError;
     private readonly Editor composer = new() { Placeholder = "连接设备后，在这里发送消息…", AutoSize = EditorAutoSizeOption.TextChanges,
         MinimumHeightRequest = 54, MaximumHeightRequest = 140, FontSize = 15, BackgroundColor = Colors.Transparent };
     private readonly Button send, stop, files, models, prompts, conversations, voice;
@@ -38,12 +42,15 @@ public sealed class MainPage : ContentPage
         var logo = Ui.Text("F", 24, true); logo.TextColor = Colors.White; logo.HorizontalTextAlignment = TextAlignment.Center; logo.VerticalTextAlignment = TextAlignment.Center;
         var badge = new Border { Content = logo, BackgroundColor = Ui.Green, WidthRequest = 42, HeightRequest = 42,
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 }, StrokeThickness = 0 };
-        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · 0.10.0", 9) } };
+        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · " + AppInfo.Current.VersionString, 9) } };
         foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
         var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
             ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
         header.Add(badge); header.Add(brand, 1); header.Add(conversations, 2); header.Add(connect, 3);
-        var heading = new VerticalStackLayout { ZIndex = 1, Padding = new Thickness(20, 4, 20, 8), Spacing = 5, Children = { title, subtitle } };
+        Ui.TextTheme(connectionLabel);
+        var connection = new HorizontalStackLayout { Spacing = 7, Children = { connectionDot, connectionLabel } };
+        SemanticProperties.SetDescription(connection, "远端连接与 Agent 状态");
+        var heading = new VerticalStackLayout { ZIndex = 1, Padding = new Thickness(20, 4, 20, 8), Spacing = 5, Children = { title, connection, subtitle } };
         transcript.Source = new HtmlWebViewSource { Html = Transcript.Shell };
         transcript.Navigated += (_, _) => { webReady = true; QueueRender(); };
         transcript.Navigating += OnNavigating;
@@ -52,7 +59,9 @@ public sealed class MainPage : ContentPage
         files = Ui.Button("附件", FileMenuAsync);
         models = Ui.Button("模型", SettingsAsync);
         prompts = Ui.Button("待确认", RespondAsync);
-        var toolbar = new HorizontalStackLayout { Spacing = 6, Children = { files, models, stop, prompts } };
+        var toolbar = new HorizontalStackLayout { Spacing = 6, Children = {
+            LabeledAction(files, filesCaption), LabeledAction(models, ActionCaption("模型")),
+            LabeledAction(stop, ActionCaption("停止")), LabeledAction(prompts, promptsCaption) } };
         voice = Ui.Button("语音", VoiceInputAsync);
         voice.AutomationId = "voice-input";
         SemanticProperties.SetDescription(voice, "实时语音输入，点击结束后可编辑，不会自动发送");
@@ -68,7 +77,7 @@ public sealed class MainPage : ContentPage
         timer = Dispatcher.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(400);
         timer.Tick += async (_, _) =>
         {
-            if (pendingRender && webReady && !rendering) { pendingRender = false; await RenderAsync(); }
+            if (!suspended && pendingRender && webReady && !rendering) { pendingRender = false; await RenderAsync(); }
         };
         timer.Start(); RefreshButtons();
     }
@@ -110,6 +119,10 @@ public sealed class MainPage : ContentPage
 
     private void OnChanged()
     {
+        if (!session.HasConnection && !session.Busy) ConnectionService.Stop();
+        var indicator = session.Indicator;
+        connectionLabel.Text = indicator.Label;
+        connectionDot.Fill = new SolidColorBrush(Color.FromArgb(indicator.Color));
         if (session.Connected) preview = false;
         string nextKey = session.View is { } view ? $"draft.{scope}.{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(view.Id)))}" : "";
         if (nextKey != draftKey)
@@ -120,7 +133,7 @@ public sealed class MainPage : ContentPage
         title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
         subtitle.Text = preview ? "离线预览 · 不会执行任务" : session.View is { } v
             ? $"{session.Agent?.Name} · {StateName(v)}\n{v.Cwd}" : session.Agent?.Name ?? "尚未连接";
-        status.Text = downloadStatus ?? session.Status;
+        status.Text = downloadStatus ?? (session.Status + (backgroundServiceError is null ? "" : " · " + backgroundServiceError));
         RefreshButtons(); QueueRender();
     }
     private static string StateName(SessionView view) => view.Prompts.Count > 0 ? "等待确认" : view.Status switch
@@ -138,15 +151,31 @@ public sealed class MainPage : ContentPage
         stop.IsEnabled = ready && session.View!.CanStop == true;
         files.IsEnabled = downloadCancel is not null || ready && session.Agent?.CanFiles == true;
         Ui.SetAction(files, downloadCancel is null ? "附件" : "取消下载");
+        filesCaption.Text = downloadCancel is null ? "附件" : "取消下载";
         models.IsEnabled = ready && session.Agent?.CanConfigure == true;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
         bool hasQuestion = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true;
         Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"{(hasQuestion ? "回答问题" : "确认")} {session.View.Prompts.Count}" : "待确认", hasQuestion);
+        promptsCaption.Text = session.View?.Prompts.Count > 0 ? $"{(hasQuestion ? "回答" : "确认")} {session.View.Prompts.Count}" : "确认";
         conversations.IsEnabled = session.Connected && !session.Busy && !interactionBusy;
         attachments.Text = PendingFiles.Count == 0 ? "" : "待发送：" + string.Join("、", PendingFiles.Select(f => f.Name));
         attachments.IsVisible = PendingFiles.Count > 0;
     }
     private void QueueRender() => pendingRender = true;
+    private static Label ActionCaption(string text)
+    {
+        var label = Ui.Text(text, 10);
+        label.HorizontalTextAlignment = TextAlignment.Center;
+        Ui.TextTheme(label);
+        return label;
+    }
+    private static View LabeledAction(Button button, Label caption) => new VerticalStackLayout
+    { Spacing = 1, MinimumWidthRequest = 48, Children = { button, caption } };
+    private void StartConnectionService()
+    {
+        try { ConnectionService.Start(); backgroundServiceError = null; }
+        catch { backgroundServiceError = "后台连接服务未启动，返回应用后会检查并恢复连接"; }
+    }
     private async Task RenderAsync()
     {
         rendering = true;
@@ -172,6 +201,7 @@ public sealed class MainPage : ContentPage
     public async Task CloseAsync()
     {
         closed = true;
+        ConnectionService.Stop();
         speechCancel?.Cancel();
         downloadCancel?.Cancel();
         SaveDraft(); timer.Stop(); session.Changed -= OnChanged;
@@ -196,6 +226,7 @@ public sealed class MainPage : ContentPage
     public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null)
     {
         SaveDraft();
+        StartConnectionService();
         await session.ConnectAsync(url, code);
         scope = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
         Preferences.Set("server-url", url.Trim());
@@ -206,15 +237,15 @@ public sealed class MainPage : ContentPage
     public async Task SelectAsync(string id) { SaveDraft(); await session.SelectAsync(id); OnChanged(); }
     public async Task PreviewAsync()
     {
-        if (session.Connected) await session.DisconnectAsync();
+        if (session.HasConnection) await session.DisconnectAsync();
         preview = true; OnChanged();
     }
     public async Task ResumeAsync()
     {
         suspended = false;
         SaveDraft();
-        if (session.Connected && !session.Busy && !interactionBusy)
-        { try { await session.RefreshAsync(); } catch { status.Text = "恢复读取中，请稍后刷新"; } }
+        if (session.HasConnection) StartConnectionService();
+        if (!interactionBusy) await session.ResumeAsync();
     }
     private async Task SendAsync()
     {

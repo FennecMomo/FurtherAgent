@@ -62,6 +62,9 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public string Status { get; private set; } = "尚未连接";
     public string DeviceName => remote?.Device?.Name ?? "远程设备";
     public bool Connected => remote?.IsConnected == true;
+    public bool Connecting => remote?.IsReconnecting == true || Busy && remote is not null && !Connected;
+    public bool HasConnection => remote is not null;
+    public AgentIndicator Indicator => AgentIndicator.From(Connected, Connecting, View);
     public bool Busy { get; private set; }
     public bool SendUncertain { get; private set; }
     public string Heartbeat => heartbeat is null ? Status : $"中继 {heartbeat.Relay.State} · 设备 {heartbeat.Host.State}";
@@ -141,6 +144,26 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         if (selected is { } id) Accept(Json.Read<SessionView>(await Peer.CallAsync("attach", new { id })), true);
         await RefreshFilesCoreAsync();
     });
+
+    public async Task ResumeAsync()
+    {
+        var owner = remote;
+        if (owner is null) return; // Explicit disconnect must never be undone.
+        if (!Connected) owner.WakeReconnect();
+        if (!await operation.WaitAsync(0)) return; // Do not disturb an uncertain send or file transfer.
+        Busy = true; Notify();
+        try
+        {
+            if (remote != owner || !await owner.CheckConnectionAsync()) return;
+            if (selected is { } id)
+            {
+                var view = Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));
+                if (remote == owner && selected == id) Accept(view);
+            }
+        }
+        catch (Exception ex) { if (remote == owner) Status = "恢复读取中：" + ex.Message; }
+        finally { Busy = false; operation.Release(); Notify(); }
+    }
 
     public Task SelectAsync(string id) => Run(async () =>
     {
