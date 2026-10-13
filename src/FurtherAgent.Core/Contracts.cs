@@ -55,6 +55,7 @@ public interface IAgentAdapter : IAsyncDisposable
     AgentInfo Info { get; }
     event Action<SessionView>? Changed;
     event Action<string>? Faulted;
+    event Action<SessionCompletion>? Completed { add { } remove { } }
     Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct);
     Task<SessionView> AttachAsync(string id, CancellationToken ct);
     Task SetFileWorkspaceAsync(string outbox, CancellationToken ct) => Task.CompletedTask;

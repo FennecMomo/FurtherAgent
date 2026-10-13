@@ -16,6 +16,7 @@ void Check(bool condition, string name)
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
 if (args.Contains("--hermes-upgrade-checks")) { await HermesUpgradeChecks.Run(Check); Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }
 if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
+if (args.Contains("--completion-state-checks")) { CompletionChecks.States(Check); Console.WriteLine($"ALL {passed} COMPLETION STATE CHECKS PASSED"); return; }
 if (args.Contains("--codex-settings-checks")) { await CodexSettingsChecks.Run(Check); return; }
 if (args.Contains("--codex-settings-configure-live")) { await CodexSettingsChecks.LiveConfigure(); return; }
 if (args.Length == 2 && args[0] == "--codex-settings-live") { await CodexSettingsChecks.Live(args[1]); return; }
@@ -53,6 +54,7 @@ if (args.Contains("--dsh-live"))
     return;
 }
 await TlsRetryChecks.Run(Check);
+CompletionChecks.States(Check);
 await ConnectionProfileChecks.Run(Check);
 ConversationChecks.Run(Check);
 QuestionChecks.Run(Check);
@@ -245,6 +247,7 @@ try
     finally { Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_DIR", previousIdentityDir); Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", previousIdentityFile); }
     // Run after the restart checks so separate suites do not exhaust the real per-IP pairing limiter.
     await MultiControllerChecks.RunAsync(registry, Check);
+    await CompletionChecks.Relay(registry, Check);
     string? thread = null;
     for (int i = 0; i + 1 < args.Length; i++) if (args[i] == "--codex-thread") thread = args[i + 1];
     if (thread is not null)

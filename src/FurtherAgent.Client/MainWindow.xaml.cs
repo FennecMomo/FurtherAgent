@@ -45,8 +45,10 @@ public partial class MainWindow : Window
     private Dictionary<string, string> drafts = [];
     private static string SettingsFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "settings.json");
     private readonly SavedConnectionStore connectionStore = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "connection.json"));
-    public MainWindow()
+    public MainWindow() : this(null) { }
+    public MainWindow(CompletionNotificationServices? notificationServices)
     {
+        completionServices = notificationServices;
         InitializeComponent();
         string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
         Title = "FurtherAgent · " + version; VersionLabel.Text = version + " · 远程工作空间";
@@ -916,6 +918,7 @@ public partial class MainWindow : Window
     }
     private void DisposeTray()
     {
+        CloseCompletionToasts();
         if (tray is null) return;
         tray.Visible = false; tray.ContextMenuStrip?.Dispose(); tray.Icon?.Dispose(); tray.Dispose(); tray = null;
     }

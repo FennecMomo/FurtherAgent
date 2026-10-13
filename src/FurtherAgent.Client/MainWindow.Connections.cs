@@ -57,6 +57,11 @@ public partial class MainWindow
                 added.Name = added.Remote.Device!.Name;
                 added.Remote.Notification += (method, node) =>
                 {
+                    if (method == "session-completed" && node is not null)
+                    {
+                        var completion = Json.Read<SessionCompletion>(node);
+                        Dispatcher.BeginInvoke(() => HandleCompletion(added, completion)); return;
+                    }
                     if (method != "session" || node is null) return;
                     var view = Json.Read<SessionView>(node);
                     Dispatcher.BeginInvoke(() =>

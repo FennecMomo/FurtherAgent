@@ -11,6 +11,7 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
     private readonly Lazy<IAgentAdapter> catalog = new(factory);
     private readonly SemaphoreSlim catalogGate = new(1, 1);
     private bool disposed;
+    private event Action<SessionCompletion>? Completed;
     public async Task<IAgentAdapter> ConnectAsync(CancellationToken ct)
     {
         await Catalog(async a => { await Probe(a, ct); return true; }, ct);
@@ -30,7 +31,9 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
             if (sessions.TryGetValue(id, out var entry)) return entry;
             // Never evict a running/uncertain adapter merely because a viewer leaves.
             if (sessions.Count >= 128) throw new IOException("接入端已保留 128 个会话，请在任务结束后重启接入端释放资源。");
-            entry = new Entry(factory, id); sessions.Add(id, entry); return entry;
+            entry = new Entry(factory, id);
+            entry.Completed += completion => Completed?.Invoke(completion);
+            sessions.Add(id, entry); return entry;
         }
     }
     private async Task<T> Catalog<T>(Func<IAgentAdapter, Task<T>> action, CancellationToken ct)
@@ -53,6 +56,8 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         public bool Initialized;
         public event Action<SessionView>? Changed;
         public event Action<string>? Faulted;
+        public event Action<SessionCompletion>? Completed;
+        public SessionCompletionTracker CompletionTracker { get; } = new();
         private readonly object stateGate = new();
         private readonly HashSet<string> answered = [];
         private readonly Func<IAgentAdapter> factory;
@@ -86,6 +91,8 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
             lock (stateGate)
             {
                 View = view with { Prompts = view.Prompts.Where(p => !answered.Contains(p.Id)).ToList() };
+                var completion = CompletionTracker.Observe(view);
+                if (completion is not null) Completed?.Invoke(completion);
                 Changed?.Invoke(View); return View;
             }
         }
@@ -99,8 +106,12 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
             }
         }
     }
-    private sealed class Controller(SharedAgentHub hub) : IAgentAdapter
+    private sealed class Controller : IAgentAdapter
     {
+        private readonly SharedAgentHub hub;
+        public Controller(SharedAgentHub hub) { this.hub = hub; hub.Completed += OnCompleted; }
+        public event Action<SessionCompletion>? Completed;
+        private void OnCompleted(SessionCompletion completion) => Completed?.Invoke(completion);
         private Entry? selected;
         public AgentInfo Info => selected?.Adapter.Info ?? hub.catalog.Value.Info;
         public event Action<SessionView>? Changed;
@@ -146,8 +157,10 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         public Task ArchiveAsync(string id, bool archived, CancellationToken ct) => Run(e => e.Adapter.ArchiveAsync(id, archived, ct), ct);
         public Task SendAsync(string text, CancellationToken ct) => SendAsync(text, "auto", ct);
         public Task SendAsync(string text, string delivery, CancellationToken ct) => Run(e => e.Adapter.SendAsync(text, delivery, ct), ct);
-        public Task InterruptAndSendAsync(string turnId, string text, CancellationToken ct) => Run(e => e.Adapter.InterruptAndSendAsync(turnId, text, ct), ct);
-        public Task InterruptAsync(CancellationToken ct) => Run(e => e.Adapter.InterruptAsync(ct), ct);
+        public Task InterruptAndSendAsync(string turnId, string text, CancellationToken ct) => Run(e =>
+        { e.CompletionTracker.SuppressStoppedRun(); return e.Adapter.InterruptAndSendAsync(turnId, text, ct); }, ct);
+        public Task InterruptAsync(CancellationToken ct) => Run(e =>
+        { e.CompletionTracker.SuppressStoppedRun(); return e.Adapter.InterruptAsync(ct); }, ct);
         public Task RespondAsync(string id, string decision, JsonNode? response, CancellationToken ct) => Run(async e =>
         {
             // Reserve before I/O: an uncertain acknowledgement must not cause double approval.
@@ -158,6 +171,6 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         {
             if (selected is not null) { selected.Changed -= OnChanged; selected.Faulted -= OnFaulted; selected.Observe(false); selected = null; }
         }
-        public ValueTask DisposeAsync() { Unsubscribe(); selected = null; return ValueTask.CompletedTask; }
+        public ValueTask DisposeAsync() { hub.Completed -= OnCompleted; Unsubscribe(); selected = null; return ValueTask.CompletedTask; }
     }
 }

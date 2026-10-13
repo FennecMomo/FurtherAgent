@@ -119,6 +119,8 @@ public sealed class DeviceHost : IAsyncDisposable
             bool lastIncremental = false;
             var sync = new SessionSyncEncoder();
             var updates = Channel.CreateBounded<SessionView>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
+            var completions = Channel.CreateBounded<SessionCompletion>(new BoundedChannelOptions(128) { FullMode = BoundedChannelFullMode.Wait });
+            adapter.Completed += completion => { if (!completions.Writer.TryWrite(completion)) socket.Abort(); };
             adapter.Changed += view => updates.Writer.TryWrite(view);
             adapter.Faulted += message => { Status?.Invoke(message); socket.Abort(); };
             string? attachedSession = null;
@@ -181,6 +183,15 @@ public sealed class DeviceHost : IAsyncDisposable
                 _ => throw new IOException("未知操作。")
             };
             peer.Start();
+            var completionPump = Task.Run(async () =>
+            {
+                try
+                {
+                    await foreach (var completion in completions.Reader.ReadAllAsync(pumping.Token))
+                        await peer.NotifyAsync("session-completed", completion);
+                }
+                catch (Exception) { socket.Abort(); }
+            });
             Status?.Invoke("远程端已通过服务端中继连接。");
             var pump = Task.Run(async () =>
             {
@@ -203,7 +214,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 catch (Exception) { socket.Abort(); }
             });
             await peer.Completion!;
-            updates.Writer.TryComplete(); pumping.Cancel(); await pump;
+            updates.Writer.TryComplete(); completions.Writer.TryComplete(); pumping.Cancel(); await Task.WhenAll(pump, completionPump);
             Status?.Invoke("远程端已断开，授权码仍可用于连接。");
         }
         catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("远程会话连接结束：" + ex.Message); }
