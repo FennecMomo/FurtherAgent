@@ -10,6 +10,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes.md'), (Join-Path $repoR
 $archive = "$releaseDir.tar.gz"
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Controller-0.9.1.md') -Destination $releaseDir -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Hermes-Compatibility-Update.md') -Destination $releaseDir -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Completion-Notifications.md') -Destination $releaseDir -Force
 tar -czf $archive -C $releaseDir .
 if ($LASTEXITCODE -ne 0) { throw 'Archive creation failed.' }
 Get-FileHash -LiteralPath $archive -Algorithm SHA256
