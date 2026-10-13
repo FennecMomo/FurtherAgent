@@ -7,9 +7,9 @@
     <SingleProject>true</SingleProject>
     <ApplicationTitle>FurtherAgent</ApplicationTitle>
     <ApplicationId>top.fennecmomo.furtheragent</ApplicationId>
-    <ApplicationDisplayVersion>0.11.0</ApplicationDisplayVersion>
-    <Version>0.10.1</Version>
-    <ApplicationVersion>1100</ApplicationVersion>
+    <ApplicationDisplayVersion>0.12.0</ApplicationDisplayVersion>
+    <Version>0.12.0</Version>
+    <ApplicationVersion>1200</ApplicationVersion>
     <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
     <PublishTrimmed>false</PublishTrimmed>
