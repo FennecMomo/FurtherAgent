@@ -5,8 +5,8 @@ using System.Text.Json.Nodes;
 
 namespace FurtherAgent.Core;
 
-/// <summary>Hermes native API bridge. Ownership is limited to runs submitted by this process.</summary>
-public sealed class HermesAdapter : IAgentAdapter
+/// <summary>Hermes native API bridge. Controls runs submitted by this host, including its persisted runs.</summary>
+public sealed partial class HermesAdapter : IAgentAdapter
 {
     private readonly HttpClient http;
     private readonly SemaphoreSlim gate = new(1);
@@ -14,6 +14,24 @@ public sealed class HermesAdapter : IAgentAdapter
     private readonly Task monitor;
     private readonly List<Task> streams = [];
     private JsonNode? features;
+    private readonly HermesRunStore? runStore;
+    private JsonObject? pendingBody;
+    private DateTimeOffset? pendingAt;
+    private string? reasoningEffort, usage;
+    private bool replaySupported;
+    private bool replayGap;
+    private long lastSequence = -1;
+    private string? lastSavedState;
+    private DateTimeOffset nextHistoryRead;
+    private string? outbox;
+    private List<ModelOption> modelCatalog = [];
+    private string? historyFingerprint;
+    private bool historyLimited;
+    private string? historyScope;
+    private List<ChatEntry>? historyCache;
+    private bool recoveryReady;
+    private volatile bool observed = true;
+    public void SetObserved(bool value) => observed = value;
     private string? session, run, pendingText, pendingKey;
     private string modelName = "";
     private string title = "", status = "unknown", notice = "";
@@ -21,12 +39,13 @@ public sealed class HermesAdapter : IAgentAdapter
     private int disposed;
     private List<ChatEntry> history = [], progress = [];
     private readonly Dictionary<string, PendingPrompt> prompts = [];
+    private PendingPrompt? unsupportedQuestion;
     public AgentInfo Info => new("hermes", "Hermes Agent", true,
         "原生 HTTP API；可继续既有会话，只能控制本接入端发起的运行。其他入口状态不可见。", true, true, CanArchive: true);
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted { add { } remove { } }
 
-    public HermesAdapter(string address, string key, HttpMessageHandler? handler = null)
+    public HermesAdapter(string address, string key, HttpMessageHandler? handler = null, string? stateDirectory = null)
     {
         var uri = new Uri(address.TrimEnd('/') + "/");
         if (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback))
@@ -37,6 +56,7 @@ public sealed class HermesAdapter : IAgentAdapter
         http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
         { BaseAddress = uri, Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key.Trim());
+        if (stateDirectory is not null) runStore = new HermesRunStore(stateDirectory, uri.AbsoluteUri, key.Trim());
         monitor = MonitorAsync();
     }
     private bool Supports(string name) => features?[name]?.GetValue<bool>() == true;
@@ -99,7 +119,7 @@ public sealed class HermesAdapter : IAgentAdapter
     }
     private void EnsureIdle()
     {
-        if (Busy || pendingKey is not null || unavailable) throw new IOException("请先处理当前运行或结果未知的提交，再新建会话或修改模型。");
+        if (Busy || pendingKey is not null || unavailable || session is not null && !recoveryReady) throw new IOException("请先处理当前运行或结果未知的提交，再新建会话或修改模型。");
     }
     public async Task ArchiveAsync(string id, bool archived, CancellationToken ct)
     {
@@ -130,7 +150,14 @@ public sealed class HermesAdapter : IAgentAdapter
                 foreach (var m in provider?["models"]?.AsArray() ?? [])
                 {
                     string name = m is JsonObject ? m["id"]?.ToString() ?? "" : m?.ToString() ?? "";
-                    if (name.Length > 0 && !excluded.Contains(name)) models.Add(new(name, slug, $"{slug} / {name}"));
+                    if (name.Length > 0 && !excluded.Contains(name))
+                    {
+                        var capability = provider?["capabilities"]?[name];
+                        List<string>? efforts = capability?["reasoning"]?.GetValue<bool>() == true
+                            ? ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"] : null;
+                        if (capability?["can_disable_reasoning"]?.GetValue<bool>() == true) efforts?.Insert(0, "none");
+                        models.Add(new(name, slug, $"{slug} / {name}", efforts));
+                    }
                 }
             }
             var meta = session is null ? null : await RequestAsync(HttpMethod.Get, $"api/sessions/{Segment(session)}", null, ct);
@@ -138,14 +165,23 @@ public sealed class HermesAdapter : IAgentAdapter
             JsonNode? config = row?["model_config"];
             if (config is JsonValue && config.ToString().StartsWith('{')) config = JsonNode.Parse(config.ToString());
             var locked = config?["browser_model_lock"];
+            modelCatalog = models;
+            reasoningEffort = locked?["model_options"]?["reasoning"]?["enabled"]?.GetValue<bool>() == false ? "none"
+                : locked?["model_options"]?["reasoning"]?["effort"]?.ToString()
+                ?? locked?["model_options"]?["reasoning_effort"]?.ToString();
             return new(locked?["model"]?.ToString() ?? row?["model"]?.ToString() ?? options?["model"]?.ToString() ?? "",
                 locked?["provider"]?.ToString() ?? options?["provider"]?.ToString() ?? "", "default", models,
-                Supports("session_model_lock"), false, "模型修改作用于后续运行。Hermes 此接口未提供原生 Plan 模式；执行权限沿用服务器配置。");
+                Supports("session_model_lock") && models.Count > 0, false,
+                "模型和思考设置作用于后续运行。思考档位由 Hermes 转换为模型支持的参数；此接口未提供原生 Plan 或普通 Question 回答接口。",
+                reasoningEffort, models.Any(m => m.ReasoningEfforts?.Count > 0),
+                (usage ?? "尚无本接入端运行的用量记录。") + "\n套餐余额：当前 Hermes 接入未提供统一余额接口。", RequireModelSelection: true);
         }
         finally { gate.Release(); }
     }
-    public async Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct)
+    public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => ConfigureAsync(model, provider, mode, null, ct);
+    public async Task ConfigureAsync(string model, string provider, string mode, string? effort, CancellationToken ct)
     {
+        await SettingsAsync(ct);
         await gate.WaitAsync(ct);
         try
         {
@@ -153,14 +189,63 @@ public sealed class HermesAdapter : IAgentAdapter
             if (session is null) throw new IOException("请先选择会话。");
             if (!Supports("session_model_lock") || mode != "default") throw new NotSupportedException("Hermes 不支持此设置或执行模式。");
             if (string.IsNullOrWhiteSpace(model) || string.IsNullOrWhiteSpace(provider)) throw new ArgumentException("请选择模型和提供商。");
-            await RequestAsync(HttpMethod.Post, $"api/sessions/{Segment(session)}/model", new { model, provider }, ct);
-            modelName = model; Publish();
+            var selectedModel = modelCatalog.FirstOrDefault(m => m.Id == model && m.Provider == provider)
+                ?? throw new ArgumentException("模型不在远端可用目录中，请刷新后选择。");
+            if (effort is not null && selectedModel.ReasoningEfforts?.Contains(effort) != true)
+                throw new ArgumentException("此模型未声明可用的思考设置。");
+            var body = new JsonObject { ["model"] = model, ["provider"] = provider };
+            if (effort is not null) body["model_options"] = new JsonObject { ["reasoning"] = new JsonObject { ["enabled"] = effort != "none", ["effort"] = effort } };
+            await RequestAsync(HttpMethod.Post, $"api/sessions/{Segment(session)}/model", body, ct);
+            if (effort is not null)
+            {
+                var metadata = await RequestAsync(HttpMethod.Get, $"api/sessions/{Segment(session)}", null, ct);
+                JsonNode? config = metadata["session"]?["model_config"];
+                if (config is JsonValue && config.ToString().StartsWith('{')) config = JsonNode.Parse(config.ToString());
+                var actual = config?["browser_model_lock"]?["model_options"]?["reasoning"];
+                if (effort == "none" ? actual?["enabled"]?.GetValue<bool>() != false : actual?["effort"]?.ToString() != effort)
+                    throw new IOException("Hermes 未确认思考设置已保存；模型可能已变更，请刷新核对。不会自动重试。");
+            }
+            modelName = model; reasoningEffort = effort; Publish();
         }
         finally { gate.Release(); }
     }
     private bool Busy => run is not null && !Terminal(status);
     private static bool Terminal(string value) => value is "completed" or "failed" or "cancelled" or "interrupted";
     private static string Segment(string value) => Uri.EscapeDataString(value);
+    public async Task SetFileWorkspaceAsync(string path, CancellationToken ct)
+    {
+        await gate.WaitAsync(ct);
+        try { outbox = Path.GetFullPath(path); }
+        finally { gate.Release(); }
+    }
+    private void SaveState()
+    {
+        if (runStore is null || session is null || !recoveryReady) return;
+        var state = new HermesRunState(session, run, status, pendingText, pendingKey, pendingBody, pendingAt, replaySupported, reasoningEffort, usage);
+        string fingerprint = Json.Node(state).ToJsonString();
+        if (fingerprint == lastSavedState) return;
+        runStore.Write(state); lastSavedState = fingerprint;
+    }
+    private async Task RestoreRunAsync(CancellationToken ct)
+    {
+        var saved = runStore?.Read(session!);
+        if (saved is null) return;
+        run = saved.Run; status = saved.Status; pendingText = saved.PendingText; pendingKey = saved.PendingKey;
+        pendingBody = saved.PendingBody; pendingAt = saved.PendingAt; replaySupported = saved.ReplaySupported;
+        reasoningEffort = saved.ReasoningEffort; usage = saved.Usage;
+        if (run is null || Terminal(status)) return;
+        try
+        {
+            var result = await RequestAsync(HttpMethod.Get, $"v1/runs/{Segment(run)}", null, ct);
+            status = result["status"]?.ToString() ?? "unknown";
+            ReadUsage(result);
+            if (status == "waiting_for_approval" && result["approval"] is { } approval) Approval(approval);
+            if (Busy && replaySupported && Supports("run_events_sse")) streams.Add(StreamAsync(run));
+            unavailable = false;
+        }
+        catch (Exception) when (!ct.IsCancellationRequested)
+        { unavailable = true; notice = "原运行暂时无法确认，已保留恢复记录；不会重新提交任务。"; }
+    }
     public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
@@ -170,22 +255,71 @@ public sealed class HermesAdapter : IAgentAdapter
                 throw new IOException("本接入端仍有运行或待确认提交，请先回到原会话处理，再切换会话。");
             var metadata = await RequestAsync(HttpMethod.Get, $"api/sessions/{Segment(id)}", null, ct);
             var messages = await ReadHistoryAsync(id, ct);
-            if (session != id)
-            { run = null; status = "unknown"; progress.Clear(); prompts.Clear(); notice = ""; streamLost = false; }
+            bool changedSession = session != id;
+            if (changedSession)
+            { run = null; status = "unknown"; progress.Clear(); prompts.Clear(); unsupportedQuestion = null; notice = ""; streamLost = unavailable = replaySupported = replayGap = false; lastSequence = -1; lastSavedState = null; recoveryReady = false; outbox = null; usage = null; reasoningEffort = null; }
             modelName = metadata["session"]?["model"]?.ToString() ?? "";
             session = id; title = metadata["session"]?["title"]?.ToString() ?? id;
-            if (!Busy) { history = messages; unavailable = false; }
+            if (!recoveryReady) { history = messages; await RestoreRunAsync(ct); recoveryReady = true; }
+            else if (!Busy) { history = messages; unavailable = false; if (Terminal(status)) replayGap = false; }
+            nextHistoryRead = DateTimeOffset.UtcNow.AddSeconds(15);
             return View();
         }
         finally { gate.Release(); }
     }
     private async Task<List<ChatEntry>> ReadHistoryAsync(string id, CancellationToken ct)
     {
-        var result = await RequestAsync(HttpMethod.Get, $"api/sessions/{Segment(id)}/messages?limit=250&order=latest&inline_images=false", null, ct);
-        return (result["data"]?.AsArray() ?? throw new IOException("Hermes 历史缺少 data。"))
-            .Where(m => m is not null).Select(m => new ChatEntry(m!["role"]?.ToString() ?? "message", Content(m["content"]),
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(TimeSpan.FromSeconds(30)); ct = budget.Token;
+        var result = new List<ChatEntry>();
+        var pages = new HashSet<string>();
+        string? newest = null;
+        int characters = 0;
+        bool limited = false;
+        // Backend offsets page beyond the former 250-row window. Bound source reads as well as UI pages.
+        for (int offset = 0; offset < 8000; offset += 250)
+        {
+            var page = await RequestAsync(HttpMethod.Get, $"api/sessions/{Segment(id)}/messages?limit=250&offset={offset}&order=latest&inline_images=false", null, ct);
+            var rows = page["data"]?.AsArray() ?? throw new IOException("Hermes 历史缺少 data。");
+            string fingerprint = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(rows.ToJsonString())));
+            if (offset == 0)
+            {
+                newest = fingerprint;
+                if (historyScope == id && newest == historyFingerprint && historyCache is not null) return historyCache.ToList();
+            }
+            if (rows.Count > 0 && !pages.Add(fingerprint)) throw new IOException("Hermes 未推进历史分页，已停止读取以避免重复记录。");
+            var entries = rows.Where(m => m is not null).Select(m => new ChatEntry(m!["role"]?.ToString() ?? "message", Content(m["content"]),
                 m["tool_calls"] is not null || m["role"]?.ToString() == "tool" ? Content(m) : null))
-            .Where(m => m.Text.Length != 0 || m.Detail is not null).ToList();
+                .Where(m => m.Text.Length != 0 || m.Detail is not null).ToList();
+            int pageCharacters = entries.Sum(m => m.Text.Length + (m.Detail?.Length ?? 0));
+            if (characters + pageCharacters > 2_000_000)
+            {
+                // Preserve the newest suffix even when the first page alone exceeds the display budget.
+                int start = entries.Count;
+                while (start > 0)
+                {
+                    var entry = entries[start - 1];
+                    int length = entry.Text.Length + (entry.Detail?.Length ?? 0);
+                    if (characters + length > 2_000_000) break;
+                    characters += length; start--;
+                }
+                result.InsertRange(0, entries.Skip(start)); limited = true; break;
+            }
+            characters += pageCharacters;
+            result.InsertRange(0, entries);
+            if (rows.Count < 250) break;
+            if (page["pagination"]?["offset"]?.GetValue<int>() != offset)
+            { limited = true; break; } // Old versions without a pagination contract retain their latest window.
+            limited = offset == 7750;
+        }
+        if (pages.Count > 1)
+        {
+            var verify = await RequestAsync(HttpMethod.Get, $"api/sessions/{Segment(id)}/messages?limit=250&offset=0&order=latest&inline_images=false", null, ct);
+            string fingerprint = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(verify["data"]!.ToJsonString())));
+            if (fingerprint != newest) throw new IOException("Hermes 历史在分页期间发生变化，请刷新后重试；未合并不一致记录。");
+        }
+        historyScope = id; historyFingerprint = newest; historyLimited = limited; historyCache = result.ToList();
+        return result;
     }
     private static string Content(JsonNode? node)
     {
@@ -199,6 +333,7 @@ public sealed class HermesAdapter : IAgentAdapter
         try
         {
             if (session is null) throw new IOException("请先选择会话。");
+            if (!recoveryReady) throw new IOException("运行记录尚未恢复，不能提交新任务。请先重新打开原会话核对记录。");
             if (unavailable) throw new IOException("Hermes 状态尚未恢复，不能提交新指令。");
             if (features is null) await ProbeAsync(ct);
             if (Busy)
@@ -210,13 +345,23 @@ public sealed class HermesAdapter : IAgentAdapter
             }
             if (pendingKey is not null && pendingText != text)
                 throw new IOException("上次提交结果未知。请原样重试上次消息，以同一幂等键找回运行。");
+            if (pendingAt is { } created && DateTimeOffset.UtcNow - created > TimeSpan.FromHours(24))
+                throw new IOException("待确认提交已超过幂等保留期限，请先在 Hermes 核对；不会用过期记录再次提交。");
             pendingKey ??= Guid.NewGuid().ToString("N"); pendingText = text;
+            pendingAt ??= DateTimeOffset.UtcNow;
+            if (pendingBody is null)
+            {
+                pendingBody = new JsonObject { ["session_id"] = session, ["input"] = text };
+                if (outbox is not null) pendingBody["instructions"] = FileTransferStore.OutputInstruction + Json.Node(outbox).ToJsonString();
+            }
+            SaveState(); // Durable intent must precede the only mutating request.
             try
             {
-                var result = await RequestAsync(HttpMethod.Post, "v1/runs", new { session_id = session, input = pendingText }, ct, pendingKey);
+                var result = await RequestAsync(HttpMethod.Post, "v1/runs", pendingBody, ct, pendingKey);
                 run = result["run_id"]?.ToString() ?? throw new IOException("Hermes 未返回 run_id。");
                 status = result["status"]?.ToString() ?? "queued";
-                pendingKey = pendingText = null; prompts.Clear(); progress = [new("user", text)];
+                pendingKey = pendingText = null; pendingBody = null; pendingAt = null; prompts.Clear(); unsupportedQuestion = null; progress = [new("user", text)];
+                lastSequence = -1; replaySupported = false; replayGap = false;
                 streamLost = false; unavailable = false; notice = "";
                 streams.RemoveAll(t => t.IsCompleted);
                 if (Supports("run_events_sse")) streams.Add(StreamAsync(run));
@@ -224,8 +369,10 @@ public sealed class HermesAdapter : IAgentAdapter
             }
             catch
             {
-                notice = "提交结果未确认；请原样重试，接入端将沿用同一幂等键，不要重启接入端。";
-                Publish(); throw;
+                notice = pendingKey is not null
+                    ? "提交结果未确认；请原样重试，接入端将沿用同一幂等键。"
+                    : "运行已接收，但本地状态未能保存或发布；请先核对当前运行，不要重复提交。";
+                Publish(false); throw;
             }
         }
         finally { gate.Release(); }
@@ -263,63 +410,92 @@ public sealed class HermesAdapter : IAgentAdapter
     }
     private async Task StreamAsync(string runId)
     {
-        // Stream remains alive across controller/relay disconnects. Never attempt an SSE replay on 0.21.0.
+        // Legacy streams without event sequence IDs remain poll-only after a disconnect.
         await Task.Yield();
-        try
+        for (int attempt = 0; attempt < 6 && !lifetime.IsCancellationRequested; attempt++)
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"v1/runs/{Segment(runId)}/events");
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, lifetime.Token);
-            response.EnsureSuccessStatusCode();
-            using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(lifetime.Token));
-            string eventName = ""; var data = new StringBuilder();
-            while (!lifetime.IsCancellationRequested)
+            try
             {
-                using var idle = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
-                idle.CancelAfter(TimeSpan.FromSeconds(75));
-                string? line = await reader.ReadLineAsync(idle.Token);
-                if (line is null) break;
-                if (line.Length == 0)
+                using var request = new HttpRequestMessage(HttpMethod.Get, $"v1/runs/{Segment(runId)}/events");
+                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+                if (replaySupported && lastSequence >= 0) request.Headers.TryAddWithoutValidation("Last-Event-ID", lastSequence.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, lifetime.Token);
+                response.EnsureSuccessStatusCode();
+                using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(lifetime.Token));
+                string eventName = "", eventId = ""; var data = new StringBuilder();
+                while (!lifetime.IsCancellationRequested)
                 {
-                    if (data.Length > 0)
+                    using var idle = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                    idle.CancelAfter(TimeSpan.FromSeconds(75));
+                    string? line = await reader.ReadLineAsync(idle.Token);
+                    if (line is null) break;
+                    if (line.Length == 0)
                     {
-                        var value = JsonNode.Parse(data.ToString())!;
-                        await gate.WaitAsync(lifetime.Token);
-                        try
+                        if (data.Length > 0)
                         {
-                            if (run != runId || Terminal(status)) return;
-                            string name = value["event"]?.ToString() ?? eventName;
-                            if (name == "message.delta")
+                            var value = JsonNode.Parse(data.ToString())!;
+                            await gate.WaitAsync(lifetime.Token);
+                            try
                             {
-                                string delta = value["delta"]?.ToString() ?? "";
-                                if (progress.LastOrDefault()?.Role == "Hermes · 增量")
-                                    progress[^1] = new("Hermes · 增量", Content(JsonValue.Create(progress[^1].Text + delta)));
-                                else progress.Add(new("Hermes · 增量", Content(JsonValue.Create(delta))));
+                                if (run != runId || Terminal(status)) return;
+                                string name = value["event"]?.ToString() ?? eventName;
+                                if (long.TryParse(value["seq"]?.ToString() ?? eventId, out long sequence) && sequence >= 0)
+                                {
+                                    replaySupported = true;
+                                    if (sequence <= lastSequence) { data.Clear(); eventName = eventId = ""; continue; }
+                                    lastSequence = sequence;
+                                }
+                                streamLost = false;
+                                if (name == "replay.truncated")
+                                { replayGap = true; }
+                                if (name == "message.delta")
+                                {
+                                    string delta = value["delta"]?.ToString() ?? "";
+                                    if (progress.LastOrDefault()?.Role == "Hermes · 增量")
+                                        progress[^1] = new("Hermes · 增量", Content(JsonValue.Create(progress[^1].Text + delta)));
+                                    else progress.Add(new("Hermes · 增量", Content(JsonValue.Create(delta))));
+                                }
+                                else if (name == "message.interim" && value["already_streamed"]?.GetValue<bool>() != true)
+                                    progress.Add(new("Hermes · 进度", Content(value["text"])));
+                                else if (name.StartsWith("tool.") || name.Contains("reasoning", StringComparison.OrdinalIgnoreCase))
+                                    progress.Add(new(name, Content(value["tool"] ?? value["name"]) + " " + Content(value["preview"] ?? value["text"]), Content(value)));
+                                else if (name == "approval.request") { Approval(value); status = "waiting_for_approval"; }
+                                else if (name == "approval.responded" && value["request_id"] is { } id) prompts.Remove(id.ToString());
+                                if (name is "run.completed" or "run.failed" or "run.cancelled" or "run.interrupted")
+                                { status = name[4..]; ReadUsage(value); nextHistoryRead = DateTimeOffset.MinValue; prompts.Clear(); unsupportedQuestion = null; }
+                                if ((value["tool"] ?? value["name"])?.ToString() == "clarify")
+                                {
+                                    if (name == "tool.started") unsupportedQuestion = new(runId + ":clarify", "hermes/clarify-unavailable",
+                                        "Hermes 正在请求澄清", Content(value["preview"]) + "\n当前 Hermes HTTP 接口未提供普通问题的回答通道，请在 Hermes 原入口处理。", null);
+                                    else if (name == "tool.completed") unsupportedQuestion = null;
+                                }
+                                if (progress.Count > 250) progress.RemoveRange(0, progress.Count - 250);
+                                Publish();
+                                if (name is "run.completed" or "run.failed" or "run.cancelled" or "run.interrupted") return;
                             }
-                            else if (name == "message.interim" && value["already_streamed"]?.GetValue<bool>() != true)
-                                progress.Add(new("Hermes · 进度", Content(value["text"])));
-                            else if (name.StartsWith("tool.") || name.Contains("reasoning", StringComparison.OrdinalIgnoreCase))
-                                progress.Add(new(name, Content(value["tool"] ?? value["name"]) + " " + Content(value["preview"] ?? value["text"]), Content(value)));
-                            else if (name == "approval.request") { Approval(value); status = "waiting_for_approval"; }
-                            else if (name == "approval.responded" && value["request_id"] is { } id) prompts.Remove(id.ToString());
-                            if (progress.Count > 250) progress.RemoveRange(0, progress.Count - 250);
-                            Publish();
-                            if (name is "run.completed" or "run.failed" or "run.cancelled" or "run.interrupted") return;
+                            finally { gate.Release(); }
                         }
-                        finally { gate.Release(); }
+                        data.Clear(); eventName = eventId = "";
                     }
-                    data.Clear(); eventName = "";
+                    else if (line.StartsWith("event:")) eventName = line[6..].Trim();
+                    else if (line.StartsWith("id:")) eventId = line[3..].Trim();
+                    else if (line.StartsWith("data:")) data.AppendLine(line[5..].TrimStart());
+                    if (data.Length > 1024 * 1024) throw new IOException("Hermes SSE 事件过大。");
                 }
-                else if (line.StartsWith("event:")) eventName = line[6..].Trim();
-                else if (line.StartsWith("data:")) data.AppendLine(line[5..].TrimStart());
-                if (data.Length > 1024 * 1024) throw new IOException("Hermes SSE 事件过大。");
             }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
+            catch (Exception) { /* Status polling below remains authoritative. Do not expose response bodies or credentials. */ }
+            await gate.WaitAsync(lifetime.Token);
+            try
+            {
+                if (run != runId || Terminal(status)) return;
+                streamLost = true; Publish();
+                if (!replaySupported) return;
+            }
+            finally { gate.Release(); }
+            try { await Task.Delay(TimeSpan.FromSeconds(Math.Min(8, Math.Pow(2, attempt))), lifetime.Token); }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
-        catch (Exception) { /* Status polling below remains authoritative. Do not expose response bodies or credentials. */ }
-        await gate.WaitAsync(lifetime.Token);
-        try { if (run == runId) { streamLost = true; Publish(); } }
-        finally { gate.Release(); }
     }
     private async Task MonitorAsync()
     {
@@ -331,16 +507,18 @@ public sealed class HermesAdapter : IAgentAdapter
                 await gate.WaitAsync(lifetime.Token);
                 try
                 {
-                    if (session is null) continue;
+                    if (session is null || !recoveryReady) continue;
                     if (Busy)
                     {
                         var result = await RequestAsync(HttpMethod.Get, $"v1/runs/{Segment(run!)}", null, lifetime.Token);
                         status = result["status"]?.ToString() ?? "unknown";
+                        ReadUsage(result);
+                        if (Terminal(status)) { nextHistoryRead = DateTimeOffset.MinValue; unsupportedQuestion = null; }
                         if (status == "waiting_for_approval" && result["approval"] is { } approval) Approval(approval);
                         else prompts.Clear();
                     }
-                    if (!Busy && pendingKey is null)
-                    { history = await ReadHistoryAsync(session, lifetime.Token); progress.RemoveAll(m => m.Detail is null || m.Role.StartsWith("tool.", StringComparison.Ordinal)); }
+                    if (!Busy && pendingKey is null && observed && DateTimeOffset.UtcNow >= nextHistoryRead)
+                    { history = await ReadHistoryAsync(session, lifetime.Token); nextHistoryRead = DateTimeOffset.UtcNow.AddSeconds(30); if (Terminal(status)) replayGap = false; progress.RemoveAll(m => m.Detail is null || m.Role.StartsWith("tool.", StringComparison.Ordinal)); }
                     unavailable = false; notice = ""; Publish();
                 }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
@@ -350,7 +528,7 @@ public sealed class HermesAdapter : IAgentAdapter
                     notice = ex is HttpRequestException { StatusCode: HttpStatusCode.NotFound }
                         ? "运行状态已丢失或过期，无法判定是否完成；不会重发消息，请在 Hermes 核实。"
                         : "Hermes 状态暂不可达；不会重发消息。";
-                    Publish();
+                    Publish(false);
                 }
                 finally { gate.Release(); }
             }
@@ -362,17 +540,27 @@ public sealed class HermesAdapter : IAgentAdapter
         string detail = run is null ? "仅查看历史；微信等其他入口是否正在执行不可见。发送会在原会话排队开启新一轮。"
             : $"FurtherAgent 发起的运行：{status}。其他入口的运行不可控制。";
         if (streamLost) detail += " 事件流已断，已降级状态轮询；增量可能缺失。";
+        if (replayGap) detail += " 部分事件已过期，实时输出可能缺失；完成后将用会话历史核对最终结果。";
         if (pendingKey is not null) detail += " 上次提交结果未知，请原样重试找回运行。";
         if (notice.Length != 0) detail += " " + notice;
-        return new(session!, title, "Hermes 网关工作目录（由服务器配置）", Busy ? "active" : "unknown", run,
-            history.Concat(progress).TakeLast(500).Select(ChatPresentation.Display).ToList(), prompts.Values.ToList(), detail,
-            !unavailable && (!Busy || status == "running" && Supports("run_steer")),
+        if (historyLimited) detail += " 历史达到本次读取上限，较早内容请在 Hermes 查看。";
+        string projected = unavailable || pendingKey is not null ? "unknown" : run is null ? "unknown" : status switch
+        {
+            "running" => "active", "started" or "queued" => "queued", "stopping" => "stopping",
+            "waiting_for_approval" => "waiting_for_approval", "completed" => "completed",
+            "failed" => "failed", "cancelled" or "interrupted" => "stopped", _ => "unknown"
+        };
+        return new(session!, title, "Hermes 网关工作目录（由服务器配置）", projected, run,
+            history.Concat(progress).Select(ChatPresentation.Display).ToList(),
+            unsupportedQuestion is null ? prompts.Values.ToList() : [.. prompts.Values, unsupportedQuestion], detail,
+            recoveryReady && !unavailable && (!Busy || status == "running" && Supports("run_steer")),
             !unavailable && Busy && Supports("run_stop") && status != "stopping", modelName, "default");
     }
     private string? lastPublished;
-    private void Publish()
+    private void Publish(bool persist = true)
     {
         if (session is null) return;
+        if (persist) SaveState();
         var view = View(); string fingerprint = Json.Node(view).ToJsonString();
         if (fingerprint == lastPublished) return;
         lastPublished = fingerprint; Changed?.Invoke(view);

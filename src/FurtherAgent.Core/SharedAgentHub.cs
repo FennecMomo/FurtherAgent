@@ -58,6 +58,11 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         private readonly Func<IAgentAdapter> factory;
         private readonly string id;
         private volatile bool failed;
+        private int observers;
+        public void Observe(bool add)
+        {
+            lock (stateGate) { observers += add ? 1 : -1; Adapter.SetObserved(observers > 0); }
+        }
         public Entry(Func<IAgentAdapter> factory, string id)
         {
             this.factory = factory; this.id = id; Open();
@@ -65,6 +70,7 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         private void Open()
         {
             var adapter = Adapter = factory(); failed = false;
+            adapter.SetObserved(observers > 0);
             adapter.Changed += view => { if (ReferenceEquals(Adapter, adapter) && view.Id == id) Publish(view); };
             adapter.Faulted += reason => { if (ReferenceEquals(Adapter, adapter)) { failed = true; Faulted?.Invoke(reason); } };
         }
@@ -119,6 +125,7 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
                 if (!ReferenceEquals(selected, next))
                 {
                     Unsubscribe(); selected = next;
+                    next.Observe(true);
                     next.Changed += OnChanged; next.Faulted += OnFaulted;
                 }
                 return view;
@@ -133,6 +140,7 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         }
         private Task Run(Func<Entry, Task> action, CancellationToken ct) => Run(async e => { await action(e); return true; }, ct);
         public Task<AgentSettings> SettingsAsync(CancellationToken ct) => Run(e => e.Adapter.SettingsAsync(ct), ct);
+        public Task SetFileWorkspaceAsync(string outbox, CancellationToken ct) => Run(e => e.Adapter.SetFileWorkspaceAsync(outbox, ct), ct);
         public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => Run(e => e.Adapter.ConfigureAsync(model, provider, mode, ct), ct);
         public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct) => Run(e => e.Adapter.ConfigureAsync(model, provider, mode, reasoningEffort, ct), ct);
         public Task ArchiveAsync(string id, bool archived, CancellationToken ct) => Run(e => e.Adapter.ArchiveAsync(id, archived, ct), ct);
@@ -148,7 +156,7 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         }, ct);
         private void Unsubscribe()
         {
-            if (selected is not null) { selected.Changed -= OnChanged; selected.Faulted -= OnFaulted; }
+            if (selected is not null) { selected.Changed -= OnChanged; selected.Faulted -= OnFaulted; selected.Observe(false); selected = null; }
         }
         public ValueTask DisposeAsync() { Unsubscribe(); selected = null; return ValueTask.CompletedTask; }
     }

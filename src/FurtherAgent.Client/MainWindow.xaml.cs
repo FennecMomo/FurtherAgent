@@ -581,7 +581,7 @@ public partial class MainWindow : Window
                 }
                 PromptPanel.Children.Add(buttons);
             }
-            else PromptPanel.Children.Add(new TextBlock { Text = "此类交互请在 B 的 Codex 桌面处理：" + prompt.Kind, TextWrapping = TextWrapping.Wrap });
+            else PromptPanel.Children.Add(new TextBlock { Text = prompt.Title + "\n" + prompt.Detail + "\n此类交互请在远端 Agent 的原入口处理。", TextWrapping = TextWrapping.Wrap });
         }
     }
     private void SaveDraft() { if (selectedId is not null) drafts[selectedId] = Composer.Text; }

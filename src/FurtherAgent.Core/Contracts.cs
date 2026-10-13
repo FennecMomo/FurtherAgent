@@ -57,6 +57,8 @@ public interface IAgentAdapter : IAsyncDisposable
     event Action<string>? Faulted;
     Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct);
     Task<SessionView> AttachAsync(string id, CancellationToken ct);
+    Task SetFileWorkspaceAsync(string outbox, CancellationToken ct) => Task.CompletedTask;
+    void SetObserved(bool observed) { }
     Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct) => throw new NotSupportedException("此适配器暂不支持远程新建会话，请先在远端创建后刷新。");
     Task<SessionInfo> CreateAsync(string id, string title, string cwd, CancellationToken ct) =>
         string.IsNullOrEmpty(cwd) ? CreateAsync(id, title, ct) : throw new NotSupportedException("此适配器不支持指定工作空间。");

@@ -15,6 +15,8 @@ public sealed class BorrowedAgentAdapter : IAgentAdapter
     private void OnFaulted(string message) => Faulted?.Invoke(message);
     public Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct) => inner.ListAsync(ct);
     public Task<SessionView> AttachAsync(string id, CancellationToken ct) => inner.AttachAsync(id, ct);
+    public Task SetFileWorkspaceAsync(string outbox, CancellationToken ct) => inner.SetFileWorkspaceAsync(outbox, ct);
+    public void SetObserved(bool observed) => inner.SetObserved(observed);
     public Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct) => inner.CreateAsync(id, title, ct);
     public Task<SessionInfo> CreateAsync(string id, string title, string cwd, CancellationToken ct) => inner.CreateAsync(id, title, cwd, ct);
     public Task<IReadOnlyList<WorkspaceInfo>> WorkspacesAsync(CancellationToken ct) => inner.WorkspacesAsync(ct);

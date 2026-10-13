@@ -8,7 +8,7 @@ WorkingDirectory=%h/.local/share/furtheragent
 ExecStart=%h/.local/share/furtheragent/FurtherAgent.Host
 EnvironmentFile=%h/.config/furtheragent/host.env
 Environment=FURTHERAGENT_IDENTITY_FILE=%h/.config/furtheragent/hermes-default.identity
-# First version keeps run ownership in memory. Do not silently restart during a run.
+# Run journals survive Host restarts; keep restart policy explicit until server acceptance.
 Restart=no
 TimeoutStopSec=30
 UMask=0077

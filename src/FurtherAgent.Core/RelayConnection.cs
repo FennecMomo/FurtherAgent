@@ -131,6 +131,7 @@ public sealed class DeviceHost : IAsyncDisposable
             async Task<JsonNode> Attach(string id, CancellationToken token)
             {
                 var view = WithFiles(await adapter.AttachAsync(id, token));
+                if (adapter.Info.Id == "hermes") await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
                 historySource = view; attachedSession = view.Id;
                 return Json.Node(Volatile.Read(ref paged) == 1 || adapter.Info.Id == "codex" ? HistoryPaging.Latest(view) : view);
             }

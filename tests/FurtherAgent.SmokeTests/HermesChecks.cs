@@ -76,7 +76,10 @@ static class HermesChecks
         view = await changed.Task.WaitAsync(ct);
         check(api.Submits == 2 && api.RunCount == 1 && api.LastBody?["session_id"]?.ToString() == "weixin-session",
             "same idempotency key recovers run after lost reply without duplicate execution");
-        check(api.LastBody?.AsObject().Count == 2, "Hermes submit inherits server model settings without overriding provider");
+        check(api.LastBody?["model"] is null && api.LastBody?["provider"] is null
+            && api.LastBody?["instructions"]?.ToString().Contains("outbox") == true
+            && api.LastBody?["input"]?.ToString().Contains("[FurtherAgent 文件工作区]") == false,
+            "Hermes inherits model routing and delivers output context separately from user message");
         check(view.Messages.Any(m => m.Text == "你好"), "SSE multiline JSON and UTF-8 deltas reach relay controller");
         check(view.Messages.Any(m => m.Role == "tool.completed" && m.Detail?.Contains("duration") == true && m.Detail.Contains("error")), "tool event duration and error survive relay projection");
         check(view.Messages.Any(m => m.Role == "reasoning.available" && m.Text.Contains("public summary")), "provided reasoning event is retained");

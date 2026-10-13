@@ -14,6 +14,7 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
+if (args.Contains("--hermes-upgrade-checks")) { await HermesUpgradeChecks.Run(Check); Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }
 if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
 if (args.Contains("--codex-settings-checks")) { await CodexSettingsChecks.Run(Check); return; }
 if (args.Contains("--codex-settings-configure-live")) { await CodexSettingsChecks.LiveConfigure(); return; }
@@ -109,6 +110,7 @@ try
     if (args.Contains("--mobile-connection-checks")) { Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }
     await FileChecks.RunAsync(registry, Check);
     await HermesChecks.RunAsync(registry, Check);
+    await HermesUpgradeChecks.Run(Check);
     await CliChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
     // Isolate the extra pagination requests from the per-IP production rate limit.
     server.Kill(true); await server.WaitForExitAsync(); server.Dispose(); server = StartServer(); await WaitForServer();
