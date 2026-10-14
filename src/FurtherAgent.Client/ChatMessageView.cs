@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using FurtherAgent.Core;
@@ -48,23 +48,8 @@ public sealed class ChatMessageView : Border
         }
         if (kind is "tool" or "reasoning" or "system")
         {
-            string label = kind == "tool" ? "工具调用" : kind == "reasoning" ? "思考记录（非正式回复）" : "运行记录";
-            string summary = entry.Text.Replace('\n', ' ').Replace('\r', ' ').Trim();
-            if (summary.Length > 72) summary = summary[..72] + "…";
-            if (kind == "tool" && (entry.Role is "tool" or "assistant")) summary = entry.Role == "tool" ? "返回结果" : "调用参数";
-            var details = new TextBox { Text = entry.Text + (entry.Detail is null ? "" : "\n\n原始字段\n" + entry.Detail),
-                IsReadOnly = true, TextWrapping = TextWrapping.Wrap, MaxHeight = 240,
-                VerticalScrollBarVisibility = ScrollBarVisibility.Auto, FontFamily = new FontFamily("Consolas"),
-                FontSize = 12, Margin = new Thickness(0, 8, 0, 0) };
-            object content = details;
-            if (kind == "reasoning")
-            {
-                var body = new StackPanel();
-                body.Children.Add(new MarkdownView { Markdown = entry.Text });
-                if (entry.Detail is not null) body.Children.Add(new Expander { Header = "原始字段", Content = details });
-                content = new ScrollViewer { Content = body, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-            }
-            Child = new Expander { Header = label + " · " + summary, IsExpanded = false, Content = content };
+            Child = new TextBlock { Text = OperationSummary.Display(entry).Text,
+                TextWrapping = TextWrapping.Wrap, FontSize = 13, Foreground = Brushes.Gray };
             return;
         }
         var panel = new StackPanel();

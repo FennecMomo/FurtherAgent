@@ -1,4 +1,4 @@
-using FurtherAgent.Core;
+﻿using FurtherAgent.Core;
 using FurtherAgent.Mobile;
 
 internal static class MobileLayoutChecks
@@ -26,7 +26,7 @@ internal static class MobileLayoutChecks
             "consecutive operations collapse without crossing assistant prose");
         check(html.IndexOf("第一段") > html.IndexOf("2 项操作记录") && html.IndexOf("第一段") < html.IndexOf("1 项操作记录"),
             "grouped operations retain chronological placement");
-        check(html.Contains("&lt;unsafe&gt;") && !html.Contains("已完成"), "tool detail is escaped and does not invent success");
+        check(!html.Contains("&lt;unsafe&gt;") && !html.Contains("已完成"), "tool detail is escaped and does not invent success");
         check(html.Contains("fa-copy://3") && html.Contains("fa-copy://5"), "copy links retain source message indices after grouping");
         var old = HistoryPaging.Page(view);
         var current = HistoryPaging.Page(view, includeOperations: true);

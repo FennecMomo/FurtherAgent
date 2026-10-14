@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using FurtherAgent.Core;
 using Markdig;
@@ -48,7 +48,7 @@ public static class Transcript
         if (hasOlder) html.Append("<p class='history'><a id='older' href='fa-history://older'>上滑或点此加载更早的记录</a></p>");
         else html.Append("<p class='history'>已到已加载历史的开头</p>");
         int renderCount = OperationGroups.TakeConversations(view.Messages, 32).Count;
-        bool operationGroup = false; int operationCharacters = 0; bool truncatedOperations = false;
+        bool operationGroup = false;
         for (int i = 0; i < renderCount; i++)
         {
             var entry = ChatPresentation.Display(view.Messages[i]);
@@ -58,9 +58,8 @@ public static class Transcript
                 html.Append($"<section id='m-{(view.History?.Start ?? 0) + i}'><details class='operations' id='ops-{(view.History?.Start ?? 0) + i}'><summary>{E(entry.Text)}</summary>");
                 for (int j = 0; j < operations.Count; j++)
                 {
-                    var op = operations[j];
-                    string title = op.Text.Split('\n')[0]; if (title.Length > 70) title = title[..70] + "…";
-                    html.Append($"<details class='operation' id='op-{(view.History?.Start ?? 0) + i}-{j}'><summary>{E(op.Role)} · {E(title)}</summary><pre class='plain'>{E(op.Text)}\n{E(op.Detail ?? "")}</pre></details>");
+                    var op = OperationSummary.Display(operations[j]);
+                    html.Append($"<p class='operation'>{E(op.Text)}</p>");
                 }
                 html.Append("</details></section>"); continue;
             }
@@ -77,16 +76,11 @@ public static class Transcript
                 while (i + count < renderCount && !HistoryPaging.IsConversation(view.Messages[i + count])) count++;
                 // A snapshot does not prove individual tools succeeded. Never invent a completion status.
                 html.Append($"<section id='m-{(view.History?.Start ?? 0) + i}'><details class='operations' id='ops-{(view.History?.Start ?? 0) + i}'><summary>{count} 项操作记录</summary>");
-                operationGroup = true; operationCharacters = 0; truncatedOperations = false;
+                operationGroup = true;
             }
             if (!operation && operationGroup) { html.Append("</details></section>"); operationGroup = false; }
-            if (operation && (operationCharacters += content.Length + Math.Min(entry.Detail?.Length ?? 0, 2000)) > 16000)
-            {
-                if (!truncatedOperations) html.Append("<p>其余操作详情已截断。</p>");
-                truncatedOperations = true; continue;
-            }
             if (operation)
-                html.Append($"<details class='operation' id='op-{(view.History?.Start ?? 0) + i}'><summary>{E(entry.Role)} · {E(entry.Text.Split('\n')[0] is { Length: > 70 } t ? t[..70] + "…" : entry.Text.Split('\n')[0])}</summary><div class='body'>{content}<pre>{E(entry.Detail is { Length: > 2000 } d ? d[..2000] + "\n[详情截断]" : entry.Detail ?? "")}</pre></div></details>");
+                html.Append($"<p class='operation'>{E(OperationSummary.Display(entry).Text)}</p>");
             else
                 html.Append($"<section id='m-{(view.History?.Start ?? 0) + i}'><article class='{kind}'><div class='body'>{content}</div><a class='copy' aria-label='复制消息' href='fa-copy://{i}'>复制</a></article></section>");
         }

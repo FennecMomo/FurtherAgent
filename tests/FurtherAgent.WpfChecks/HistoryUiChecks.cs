@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -119,7 +119,7 @@ internal static class HistoryUiChecks
             var grouped = Descendants(messages).OfType<Expander>().First(e => e.Header?.ToString()?.Contains("项操作记录") == true);
             Require(!grouped.IsExpanded, "desktop consecutive operations default to collapsed");
             grouped.IsExpanded = true; Layout();
-            Require(Descendants(grouped).OfType<Expander>().Count() >= 2, "expanded group contains individually expandable operation details");
+            Require(!Descendants(grouped).OfType<TextBox>().Any() && Descendants(grouped).OfType<TextBlock>().Any(t => t.Text == "执行了一项操作"), "expanded group shows action summaries without raw detail controls");
             var fileGroup = Find<StackPanel>("OutputFilesPanel").Children.OfType<Expander>().Single();
             Require(!fileGroup.IsExpanded && fileGroup.ActualHeight < 50, "thirty session files occupy one collapsed row");
             fileGroup.IsExpanded = true; Layout();

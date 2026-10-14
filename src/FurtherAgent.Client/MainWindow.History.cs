@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -58,7 +58,11 @@ public partial class MainWindow
         {
             if (reader.Latest?.History?.Revision != cursor.Revision)
                 throw new IOException("会话历史已更新，请点击「返回最新」后重新加载；当前阅读位置已保留。");
-            var page = Json.Read<HistoryPage>(await connection.Peer.CallAsync("history", new { session = view.Id, before = cursor.Start, revision = cursor.Revision }));
+            var page = await OperationGroups.LoadBatchAsync(view.Id, cursor, async before =>
+            {
+                if (remote != connection || version != selectionVersion || selectedId != view.Id) throw new OperationCanceledException();
+                return Json.Read<HistoryPage>(await connection.Peer.CallAsync("history", new { session = view.Id, before, revision = cursor.Revision }));
+            });
             if (remote != connection || version != selectionVersion || selectedId != view.Id || History != reader) return;
             PrependHistory(page);
         }

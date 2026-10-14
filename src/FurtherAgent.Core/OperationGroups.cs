@@ -1,6 +1,4 @@
-using System.Text.Json;
-
-namespace FurtherAgent.Core;
+﻿namespace FurtherAgent.Core;
 
 public static class OperationGroups
 {
@@ -8,30 +6,42 @@ public static class OperationGroups
     {
         var result = new List<ChatEntry>();
         var operations = new List<ChatEntry>();
-        int count = 0, bytes = 0;
         void Flush()
         {
-            if (count == 0) return;
-            string note = operations.Count < count ? $"（仅展示最近 {operations.Count} 项详情）" : "";
-            result.Add(new("工具", $"{count} 项操作记录{note}", Operations: operations));
-            operations = []; count = bytes = 0;
+            if (operations.Count == 0) return;
+            result.Add(new("工具", $"{operations.Count} 项操作记录", Operations: operations));
+            operations = [];
+        }
+        void Add(ChatEntry entry)
+        {
+            if (operations.Count == 256) Flush();
+            operations.Add(OperationSummary.Display(entry));
         }
         foreach (var entry in source)
         {
-            if (HistoryPaging.IsConversation(entry) || entry.Operations is not null)
-            { Flush(); result.Add(entry); continue; }
-            count++;
-            static string Clip(string text) => text.Length <= 1000 ? text : text[..1000] + "\n[操作详情截断]";
-            var detail = entry with { Text = Clip(entry.Text), Detail = entry.Detail is null ? null : Clip(entry.Detail) };
-            int size = JsonSerializer.SerializeToUtf8Bytes(detail, Json.Options).Length;
-            while (operations.Count > 0 && bytes + size > 16000)
-            {
-                bytes -= JsonSerializer.SerializeToUtf8Bytes(operations[0], Json.Options).Length;
-                operations.RemoveAt(0);
-            }
-            operations.Add(detail); bytes += size;
+            if (HistoryPaging.IsConversation(entry)) { Flush(); result.Add(entry); }
+            else if (entry.Operations is { } nested) { foreach (var operation in nested) Add(operation); }
+            else Add(entry);
         }
         Flush(); return result;
+    }
+
+    // A user-visible batch is eight prose entries even when an older host pages raw tools.
+    public static async Task<HistoryPage> LoadBatchAsync(string session, HistoryWindow cursor,
+        Func<int, Task<HistoryPage>> fetch)
+    {
+        var entries = new List<ChatEntry>(); int before = cursor.Start, count = 0;
+        do
+        {
+            var page = await fetch(before);
+            if (page.Session != session || page.Revision != cursor.Revision || page.End != before ||
+                page.Start < 0 || page.Start >= before || page.Start + page.Messages.Count != page.End || page.Total != cursor.Total)
+                throw new IOException("历史分页不匹配，请返回最新后重试。");
+            entries.InsertRange(0, page.Messages);
+            count += page.Messages.Count(HistoryPaging.IsConversation);
+            before = page.Start;
+        } while (before > 0 && count < HistoryPaging.BatchSize);
+        return new(session, cursor.Revision, before, cursor.Start, cursor.Total, entries);
     }
 
     public static List<ChatEntry> TakeConversations(IEnumerable<ChatEntry> source, int limit)

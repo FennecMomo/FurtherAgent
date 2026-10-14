@@ -1,4 +1,4 @@
-using FurtherAgent.Core;
+﻿using FurtherAgent.Core;
 using FurtherAgent.Mobile;
 using System.Text.Json;
 
@@ -37,6 +37,6 @@ internal static class ConversationChecks
         var previous = HistoryPaging.Page(source, latest.History!.Start, latest.History.Revision);
         check(previous.Messages.Count == 8 && previous.Messages[0].Text == "question 4", "filtered history paginates without losing conversation messages");
         var html = Transcript.Render(source);
-        check(html.Contains("private tool details") && html.Contains("reasoning payload") && html.Contains("class='operations'") && !html.Contains("extra process detail"), "process entries are available inside collapsed groups without leaking assistant detail");
+        check(!html.Contains("private tool details") && !html.Contains("reasoning payload") && html.Contains("分析任务与规划步骤") && html.Contains("class='operations'") && !html.Contains("extra process detail"), "process entries are available inside collapsed groups without leaking assistant detail");
     }
 }

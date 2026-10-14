@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using FurtherAgent.Core;
 using FurtherAgent.Mobile;
 
@@ -19,7 +19,7 @@ internal static class MobileChecks
         check(mobile.Settings?.ReasoningEffort == "high", "composer gets actual remote model and reasoning settings");
         await mobile.ConfigureAsync("other", "fixture", "default", "low");
         check(mobile.Settings is { Model: "other", ReasoningEffort: "low" }, "composer settings refresh after acknowledged configuration");
-        check(mobile.View!.Messages.Any(m => m.Operations?.Any(op => op.Role == "工具" && op.Detail == "fixture detail") == true), "v3 negotiation transports grouped operation details through the real relay");
+        check(mobile.View!.Messages.Any(m => m.Operations?.Any(op => op.Role == "工具" && op.Detail is null && op.Text == "执行了一项操作") == true), "v3 negotiation transports grouped operation details through the real relay");
         await mobile.ResumeAsync();
         check(mobile.Connected && mobile.View?.Id == "one" && adapter.Sends == 0,
             "foreground resume retains selected session without submitting a message");

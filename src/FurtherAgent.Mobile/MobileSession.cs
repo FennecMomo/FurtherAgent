@@ -1,4 +1,4 @@
-using System.Text.Json.Nodes;
+﻿using System.Text.Json.Nodes;
 using FurtherAgent.Core;
 
 namespace FurtherAgent.Mobile;
@@ -39,13 +39,17 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     {
         if (!paging || View is not { History: { Start: > 0 } h } view) return;
         if (latest?.History?.Revision != h.Revision) { ShowLatest(); Status = "历史已更新，已返回最新记录，请重新上滑加载。"; return; }
-        var page = cache is null ? null : await cache.ReadPageAsync(cacheScope, view.Id, h.Revision, h.Start);
-        if (page is null || page.Session != view.Id || page.Revision != h.Revision || page.End != h.Start || page.Start + page.Messages.Count != page.End)
+        var page = await OperationGroups.LoadBatchAsync(view.Id, h, async before =>
         {
-            page = Json.Read<HistoryPage>(await Peer.CallAsync("history", new { session = view.Id, revision = h.Revision, before = h.Start }));
-            if (page.Session != view.Id || page.Revision != h.Revision || page.End != h.Start || page.Start + page.Messages.Count != page.End) throw new IOException("历史分页不匹配，请刷新会话。");
-            if (cache is not null) await cache.SavePageAsync(cacheScope, page);
-        }
+            if (View?.Id != view.Id || latest?.History?.Revision != h.Revision) throw new IOException("历史已更新，请返回最新。");
+            var part = cache is null ? null : await cache.ReadPageAsync(cacheScope, view.Id, h.Revision, before);
+            if (part is null)
+            {
+                part = Json.Read<HistoryPage>(await Peer.CallAsync("history", new { session = view.Id, revision = h.Revision, before }));
+                if (cache is not null) await cache.SavePageAsync(cacheScope, part);
+            }
+            return part;
+        });
         if (View?.Id != view.Id || latest?.History?.Revision != h.Revision) { ShowLatest(); return; }
         readingOlder = true;
         View = view with { Messages = OperationGroups.TakeConversations(page.Messages.Concat(view.Messages), 32), History = h with { Start = page.Start } };
