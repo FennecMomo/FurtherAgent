@@ -26,9 +26,9 @@ public sealed class MarkdownView : RichTextBox
     private void Refresh()
     {
         bool codex = VisualTheme.GetIsCodex(this);
-        var doc = new FlowDocument { PagePadding = new Thickness(0), FontFamily = codex ? VisualTheme.CodexFont : new FontFamily("Microsoft YaHei UI"), FontSize = codex ? 15 : 13,
+        var doc = new FlowDocument { PagePadding = new Thickness(0), TextAlignment = codex ? TextAlignment.Left : TextAlignment.Justify, FontFamily = codex ? VisualTheme.CodexFont : new FontFamily("Microsoft YaHei UI"), FontSize = codex ? 14.5 : 13,
             Language = System.Windows.Markup.XmlLanguage.GetLanguage(codex ? "zh-CN" : Language.IetfLanguageTag),
-            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(codex ? "#202123" : "#202C32")), LineHeight = codex ? 23 : double.NaN };
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(codex ? "#202123" : "#202C32")), LineHeight = codex ? 22 : double.NaN };
         string text = Markdown ?? "";
         if (text.Length > 30000) text = text[..30000] + "\n[显示已截断]";
         string[] lines = text.Replace("\r", "").Split('\n');
@@ -55,7 +55,7 @@ public sealed class MarkdownView : RichTextBox
             }
             if (fenced) { code.AppendLine(line); continue; }
             if (line.Trim().Length == 0) continue;
-            var p = new Paragraph { Margin = codex ? new Thickness(0, 2, 0, 8) : new Thickness(0, 2, 0, 6) };
+            var p = new Paragraph { Margin = codex ? new Thickness(0, 2, 0, 12) : new Thickness(0, 2, 0, 6) };
             string value = line;
             var heading = Regex.Match(line, @"^(#{1,6})\s+(.+)$");
             if (heading.Success) { p.FontSize = 23 - heading.Groups[1].Length * 1.5; p.FontWeight = FontWeights.SemiBold; value = heading.Groups[2].Value; }

@@ -16,7 +16,7 @@ public partial class MainWindow
         VisualTheme.Apply(this, uiTheme);
         bool codex = uiTheme == VisualTheme.Codex;
         WindowStyle = codex ? WindowStyle.None : WindowStyle.SingleBorderWindow;
-        WindowChrome.SetWindowChrome(this, codex ? new WindowChrome { CaptionHeight = 50, ResizeBorderThickness = new Thickness(6), CornerRadius = new CornerRadius(10), GlassFrameThickness = new Thickness(0), UseAeroCaptionButtons = false } : null);
+        WindowChrome.SetWindowChrome(this, codex ? new WindowChrome { CaptionHeight = 42, ResizeBorderThickness = new Thickness(6), CornerRadius = new CornerRadius(10), GlassFrameThickness = new Thickness(0), UseAeroCaptionButtons = false } : null);
         ThemePicker.SelectedIndex = codex ? 0 : 1;
         sidebarHidden = false; SidebarSurface.Visibility = Visibility.Visible;
         applyingTheme = false;
@@ -33,7 +33,7 @@ public partial class MainWindow
     private void ToggleSidebar_Click(object sender, RoutedEventArgs e)
     {
         sidebarHidden = !sidebarHidden;
-        Resources["SidebarWidth"] = new GridLength(sidebarHidden ? 0 : uiTheme == VisualTheme.Codex ? 288 : 264);
+        Resources["SidebarWidth"] = new GridLength(sidebarHidden ? 0 : uiTheme == VisualTheme.Codex ? 240 : 264);
         SidebarSurface.Visibility = sidebarHidden ? Visibility.Collapsed : Visibility.Visible;
     }
     private void SearchFocus_Click(object sender, RoutedEventArgs e)

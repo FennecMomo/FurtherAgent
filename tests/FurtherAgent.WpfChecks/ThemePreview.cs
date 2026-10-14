@@ -50,15 +50,25 @@ internal static class ThemePreview
         var sessions = new[] { new SessionInfo("one", "拉取最新更新", "2026-10-12", @"E:\etc\FurtherAgent"), new SessionInfo("two", "分析并整理两个仓库触点", "2026-10-11", @"E:\etc\FurtherAgent"), new SessionInfo("three", "初始化 FurtherAgent 仓库", "2026-10-10", @"E:\etc\FurtherAgent"), new SessionInfo("four", "调整右臂右腿分组命名", "2026-10-09", @"E:\UnityProjects\AssemblyTrainingFramework") };
         var workspaces = new[] { new WorkspaceInfo("a", "FurtherAgent", @"E:\etc\FurtherAgent"), new WorkspaceInfo("b", "AssemblyTrainingFramework", @"E:\UnityProjects\AssemblyTrainingFramework"), new WorkspaceInfo("c", "DesktopHelper", @"E:\etc\DesktopHelper"), new WorkspaceInfo("d", "WorkManager", @"E:\etc\WorkManager"), new WorkspaceInfo("e", "RobotAssembly", @"E:\UnityProjects\RobotAssembly"), new WorkspaceInfo("f", "ResourceManager", @"E:\etc\ResourceManager") };
         Find<TreeView>("SessionList").ItemsSource = WorkspaceGroup.Build(sessions, workspaces, "", "one");
-        void Capture(string name, double width, double height)
+        void Capture(string name, double width, double height, double density = 1)
         {
             var content = (FrameworkElement)window.Content; content.Width = width; content.Height = height;
             content.Measure(new Size(width, height)); content.Arrange(new Rect(0, 0, width, height)); content.UpdateLayout();
-            var bitmap = new RenderTargetBitmap((int)width, (int)height, 96, 96, PixelFormats.Pbgra32); bitmap.Render(content);
+            var bitmap = new RenderTargetBitmap((int)(width * density), (int)(height * density), 96 * density, 96 * density, PixelFormats.Pbgra32); bitmap.Render(content);
             var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(Path.Combine(output, name + ".png")); png.Save(file);
         }
+        Find<ItemsControl>("Messages").ItemsSource = new[] { new ChatEntry("assistant", "1. **桌面端无法上翻加载历史**\n\n原因有两处：桌面只显示接入端返回的最新一页，没有接上历史分页请求；消息正文控件还会吞掉滚轮事件，让鼠标放在正文上时难以带动外层滚动。\n\n现在向上滚到顶部会自动加载更早记录，也加了“加载更早记录”和“返回最新”按钮。加载后会尽量保持当前阅读位置，实时状态刷新不会把旧记录挤回最新一页，切换会话后的旧请求也不会覆盖新会话。\n\n用独立本地中继和实际 WPF 控件完成了 **11 项历史专项检查**，现有 **27 项 WPF/持久化检查、5 项多设备检查**也通过了。\n\n2. **手机端输入文字和历史正文重叠**\n\n重构后的圆角输入面板确实已经有背景，但外围输入区域仍然透明，不能据此断定旧问题已经消失。这次给整个底部输入区和编辑器都加了不透明背景，同时明确输入区在前、正文在后的层级，并限制正文 WebView 绘制在自己的区域内；浅色、深色主题都处理了。\n\nAndroid 编译通过，**0 警告、0 错误**。目前没检测到连接的手机，所以我还不能保证键盘弹出后的实际问题已经彻底消失。\n\n已本地提交：`2806227` — 修复桌面历史上翻加载并加固手机输入区遮挡。\n\n**没有打包、安装、推送或更换服务器接入端**，你当前使用的版本不会受影响。") };
+        Capture("codex-reference", 940, 796, 1.5);
+        var fontUris = new HashSet<string>();
+        void DrawFonts(Drawing? d) { if(d is GlyphRunDrawing g) fontUris.Add(g.GlyphRun.GlyphTypeface.FontUri.ToString()); if(d is DrawingGroup group) foreach(var child in group.Children) DrawFonts(child); }
+        void VisualFonts(DependencyObject d) { if(d is Visual v) DrawFonts(VisualTreeHelper.GetDrawing(v)); for(int i=0; i<VisualTreeHelper.GetChildrenCount(d); i++) VisualFonts(VisualTreeHelper.GetChild(d,i)); }
+        VisualFonts(Find<ItemsControl>("Messages")); Console.WriteLine("Body glyph fonts: " + string.Join(", ",fontUris));
         Capture("codex", 1214, 984);
+        var devices = Find<ComboBox>("ConnectedDevices");
+        devices.ItemsSource = new[] { new { Label = "Codex-Home · 已连接 · 空闲" }, new { Label = "Hermes · 已连接 · 执行中" } };
+        devices.SelectedIndex = 0; devices.Visibility = Visibility.Visible;
+        Capture("codex-devices", 940, 796, 1.5);
         Console.WriteLine($"Font sizes: window={window.FontSize}, tree={Find<TreeView>("SessionList").FontSize}, new={Find<Button>("NewButton").FontSize}, composer={Find<TextBox>("Composer").FontSize}");
         var composer = Find<TextBox>("Composer"); composer.Text = "未发送的草稿";
         var messages = Find<ItemsControl>("Messages").ItemsSource;
