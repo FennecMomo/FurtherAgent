@@ -31,6 +31,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Codex-Settings-0.13.0.md') -De
 $zip = Join-Path $repoRoot "artifacts/release/FurtherAgent-$version.zip"
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Device-Connections.md'), (Join-Path $repoRoot 'docs/Hermes-Compatibility-Update.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Completion-Notifications.md') -Destination (Join-Path $releaseDir 'docs') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Codex-Interaction-And-Permissions-QA.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath $zip -Force
 Get-FileHash -LiteralPath $zip -Algorithm SHA256
 if (-not $SkipDesktopUpdate) {
