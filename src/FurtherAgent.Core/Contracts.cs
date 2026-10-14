@@ -39,7 +39,7 @@ public record SessionInfo(string Id, string Title, string UpdatedAt, string Cwd 
 }
 public record ModelOption(string Id, string Provider, string Label, List<string>? ReasoningEfforts = null, string? DefaultReasoningEffort = null);
 public record AgentSettings(string Model, string Provider, string Mode, List<ModelOption> Models, bool CanChangeModel, bool CanChangeMode, string Detail,
-    string? ReasoningEffort = null, bool CanChangeReasoning = false, string? Usage = null, bool RequireModelSelection = false);
+    string? ReasoningEffort = null, bool CanChangeReasoning = false, string? Usage = null, bool RequireModelSelection = false, string? Permission = null, bool CanChangePermissions = false);
 public record ChatEntry(string Role, string Text, string? Detail = null);
 public record PendingPrompt(string Id, string Kind, string Title, string Detail, JsonNode? Payload);
 public record SessionView(string Id, string Title, string Cwd, string Status, string? TurnId,
@@ -70,6 +70,7 @@ public interface IAgentAdapter : IAsyncDisposable
     Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => throw new NotSupportedException("此适配器不支持修改会话设置。");
     Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct) =>
         string.IsNullOrEmpty(reasoningEffort) ? ConfigureAsync(model, provider, mode, ct) : throw new NotSupportedException("请升级接入端以配置思考强度。");
+    Task ConfigurePermissionsAsync(string permission, CancellationToken ct) => throw new NotSupportedException("请升级 Codex 接入端以配置会话权限。");
     Task ArchiveAsync(string id, bool archived, CancellationToken ct) => throw new NotSupportedException("此适配器未接通原生归档。");
     Task SendAsync(string text, CancellationToken ct);
     Task SendAsync(string text, string delivery, CancellationToken ct) => delivery == "auto" ? SendAsync(text, ct) : throw new NotSupportedException("此适配器未开放发送方式选择。");

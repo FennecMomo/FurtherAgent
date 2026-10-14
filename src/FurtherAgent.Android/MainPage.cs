@@ -387,11 +387,13 @@ public sealed partial class MainPage : ContentPage
             return;
         }
         string text = composer.Text ?? ""; string key = draftKey;
+        var origin = session; var ids = PendingFiles.Select(f => f.Id).ToArray();
         await Act(async () =>
         {
-            await session.SendAsync(text, PendingFiles.Select(f => f.Id).ToArray());
-            if (draftKey == key) composer.Text = "";
-            Preferences.Remove(key); uploads.Remove(key);
+            await origin.SendAsync(text, ids);
+            if (draftKey == key && ReferenceEquals(origin, session) && composer.Text == text) composer.Text = "";
+            if (Preferences.Get(key, "") == text) Preferences.Remove(key);
+            if (uploads.TryGetValue(key, out var files)) { files.RemoveAll(f => ids.Contains(f.Id)); if (files.Count == 0) uploads.Remove(key); }
         });
     }
     public void Suspend()

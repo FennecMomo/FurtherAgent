@@ -484,6 +484,7 @@ public partial class MainWindow : Window
         string text = Composer.Text;
         if (string.IsNullOrWhiteSpace(text) && attachedFiles.Count == 0) return;
         var ids = attachedFiles.Select(f => f.Id).ToArray(); string id = current!.Id;
+        var connection = remote; var sentDrafts = drafts; var sentAttachments = attachedFiles;
         string delivery = DeliveryMode;
         await ActionAsync(async peer =>
         {
@@ -496,20 +497,33 @@ public partial class MainWindow : Window
             try { await submission; }
             catch (TimeoutException)
             { throw new IOException("远端确认超时，发送结果未知，不代表发送失败。原请求可能仍在处理；程序没有重发，请先查看会话结果，不要重复提交。"); }
-            if (Composer.Text == text) Composer.Clear(); ClearAttachments();
+            if (sentDrafts.GetValueOrDefault(id) == text) sentDrafts[id] = "";
+            sentAttachments.RemoveAll(f => ids.Contains(f.Id));
+            if (remote == connection && selectedId == id)
+            {
+                if (Composer.Text == text) { Composer.Clear(); SaveDraft(); }
+                AttachmentSummary.Text = attachedFiles.Count == 0 ? "" : "待发送：" + string.Join("、", attachedFiles.Select(f => f.Name));
+            }
         });
     }
     private async void InterruptSend_Click(object sender, RoutedEventArgs e)
     {
         if (current is null || agent is null) return;
         var target = current; var selectedAgent = agent; string text = Composer.Text;
+        var connection = remote; var sentDrafts = drafts; var sentAttachments = attachedFiles; string id = target.Id;
         var ids = attachedFiles.Select(f => f.Id).ToArray();
         if (string.IsNullOrWhiteSpace(text) && ids.Length == 0) return;
         await ActionAsync(async peer =>
         {
             await SessionActions.InterruptAndSendAsync(peer, selectedAgent, target, text, ids,
                 phase => { operationPhase = phase; StatusBar.Text = phase; RenderConnectionHealth(); });
-            if (Composer.Text == text) Composer.Clear(); ClearAttachments();
+            if (sentDrafts.GetValueOrDefault(id) == text) sentDrafts[id] = "";
+            sentAttachments.RemoveAll(f => ids.Contains(f.Id));
+            if (remote == connection && selectedId == id)
+            {
+                if (Composer.Text == text) { Composer.Clear(); SaveDraft(); }
+                AttachmentSummary.Text = attachedFiles.Count == 0 ? "" : "待发送：" + string.Join("、", attachedFiles.Select(f => f.Name));
+            }
         });
     }
     private async void Stop_Click(object sender, RoutedEventArgs e) => await ActionAsync(async peer => { await peer.CallAsync("interrupt", null); });
@@ -674,6 +688,7 @@ public partial class MainWindow : Window
         var connection = remote; string id = current.Id;
         int generation = ++modelSettingsGeneration;
         CloseOverlays(); ModelOverlay.Visibility = Visibility.Visible; ModelError.Text = ""; ModelHint.Text = "正在读取远端设置…";
+        ApplyPermissionsButton.IsEnabled = false; PermissionPanel.Visibility = Visibility.Collapsed;
         ApplyModelButton.IsEnabled = false; ModelPicker.IsEnabled = ProviderText.IsEnabled = ModePicker.IsEnabled = ReasoningPicker.IsEnabled = false;
         UsageText.Text = "正在读取远端套餐限额…";
         try
@@ -688,6 +703,11 @@ public partial class MainWindow : Window
     private void ApplyModelSettings(AgentSettings settings, string id)
     {
             loadingSettings = true; modelSession = id;
+            PermissionPanel.Visibility = settings.CanChangePermissions ? Visibility.Visible : Visibility.Collapsed;
+            PermissionPicker.ItemsSource = CodexPermissions.Labels;
+            PermissionPicker.SelectedIndex = Array.IndexOf(CodexPermissions.Values, settings.Permission);
+            PermissionHint.Text = "当前：" + (PermissionPicker.SelectedIndex >= 0 ? CodexPermissions.Labels[PermissionPicker.SelectedIndex] : settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。";
+            ApplyPermissionsButton.IsEnabled = settings.CanChangePermissions;
             ModelPicker.ItemsSource = settings.Models; ModelPicker.Text = settings.Model; ProviderText.Text = settings.Provider;
             ModelPicker.IsEditable = !settings.RequireModelSelection;
             ModelPicker.SelectedItem = settings.Models.FirstOrDefault(m => m.Id == settings.Model);
@@ -732,6 +752,17 @@ public partial class MainWindow : Window
             catch (Exception ex) { ModelError.Text = ex.Message; throw; }
         });
         ApplyModelButton.IsEnabled = true;
+    }
+    private async void ApplyPermissions_Click(object sender, RoutedEventArgs e)
+    {
+        if (remote is null || current?.Id != modelSession || actionBusy || PermissionPicker.SelectedIndex < 0) return;
+        string permission = CodexPermissions.Values[PermissionPicker.SelectedIndex];
+        ModelError.Text = "";
+        await ActionAsync(async peer =>
+        {
+            try { await peer.CallAsync("configure-permissions", new { permission }); CloseOverlays(); }
+            catch (Exception ex) { ModelError.Text = ex.Message; throw; }
+        });
     }
     private void ClearFiles_Click(object sender, RoutedEventArgs e) { if (!actionBusy) ClearAttachments(); }
     private void CancelTransfer_Click(object sender, RoutedEventArgs e) => transferCancellation?.Cancel();

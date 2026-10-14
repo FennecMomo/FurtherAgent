@@ -23,6 +23,7 @@ public sealed class BorrowedAgentAdapter : IAgentAdapter
     public Task<WorkspaceDirectories> BrowseDirectoriesAsync(string path, CancellationToken ct) => inner.BrowseDirectoriesAsync(path, ct);
     public Task<WorkspaceInfo> AddWorkspaceAsync(string id, string path, string folder, CancellationToken ct) => inner.AddWorkspaceAsync(id, path, folder, ct);
     public Task<AgentSettings> SettingsAsync(CancellationToken ct) => inner.SettingsAsync(ct);
+    public Task ConfigurePermissionsAsync(string permission, CancellationToken ct) => inner.ConfigurePermissionsAsync(permission, ct);
     public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => inner.ConfigureAsync(model, provider, mode, ct);
     public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct) => inner.ConfigureAsync(model, provider, mode, reasoningEffort, ct);
     public Task ArchiveAsync(string id, bool archived, CancellationToken ct) => inner.ArchiveAsync(id, archived, ct);

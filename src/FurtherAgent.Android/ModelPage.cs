@@ -7,7 +7,7 @@ internal sealed class ModelPage : ContentPage
 {
     public ModelPage(MobileSession session, AgentSettings settings)
     {
-        Title = "模型与模式"; Ui.Theme(this);
+        Title = "会话设置"; Ui.Theme(this);
         var model = new Entry { Text = settings.Model, Placeholder = "模型 ID", IsEnabled = settings.CanChangeModel };
         var provider = new Entry { Text = settings.Provider, Placeholder = "提供商（可选）", IsEnabled = settings.CanChangeModel };
         var mode = new Picker { Title = "执行模式", ItemsSource = new[] { "Build", "Plan" }, SelectedIndex = settings.Mode == "plan" ? 1 : 0, IsEnabled = settings.CanChangeMode };
@@ -57,6 +57,22 @@ internal sealed class ModelPage : ContentPage
                     }
                     catch (Exception ex) { await DisplayAlertAsync("读取失败", ex.Message, "知道了"); }
                 }), save } };
+        if (settings.CanChangePermissions)
+        {
+            var permissions = new Picker { Title = "会话权限", ItemsSource = CodexPermissions.Labels,
+                SelectedIndex = Array.IndexOf(CodexPermissions.Values, settings.Permission) };
+            var permissionNote = Ui.Text("当前权限：" + (permissions.SelectedIndex >= 0 ? CodexPermissions.Labels[permissions.SelectedIndex] : settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。", 13);
+            Button? applyPermissions = null;
+            applyPermissions = Ui.Button("应用权限", async () =>
+            {
+                if (permissions.SelectedIndex < 0) return;
+                applyPermissions!.IsEnabled = false;
+                try { await session.ConfigurePermissionsAsync(CodexPermissions.Values[permissions.SelectedIndex]); await Navigation.PopAsync(); }
+                catch (Exception ex) { await DisplayAlertAsync("权限未修改", ex.Message, "知道了"); }
+                finally { applyPermissions.IsEnabled = true; }
+            });
+            stack.Children.Insert(8, permissions); stack.Children.Insert(9, permissionNote); stack.Children.Insert(10, applyPermissions);
+        }
         foreach (var label in stack.Children.OfType<Label>()) Ui.TextTheme(label);
         Content = new ScrollView { Content = stack };
     }

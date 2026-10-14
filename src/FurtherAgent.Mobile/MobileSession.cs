@@ -291,6 +291,12 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         await Peer.CallAsync("configure", new { model, provider, mode, reasoningEffort });
         if (Settings is { } current) Settings = current with { Model = model, Provider = provider, Mode = mode, ReasoningEffort = reasoningEffort };
     });
+    public Task ConfigurePermissionsAsync(string permission) => Run(async () =>
+    {
+        if (Settings?.CanChangePermissions != true) throw new NotSupportedException("请升级 Codex 接入端以配置会话权限。");
+        await Peer.CallAsync("configure-permissions", new { permission });
+        if (Settings is { } current) Settings = current with { Permission = permission };
+    });
     public Task ArchiveAsync() => Run(async () =>
     {
         if (Agent?.CanArchive != true || View is null) throw new NotSupportedException("当前不支持归档。");

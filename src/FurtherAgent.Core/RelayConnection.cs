@@ -175,6 +175,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 "workspaces/add" => Json.Node(await adapter.AddWorkspaceAsync(args!["id"]!.GetValue<string>(), args["path"]!.GetValue<string>(), args["folder"]?.ToString() ?? "", token)),
                 "settings" => Json.Node(await adapter.SettingsAsync(token)),
                 "archive" => await Execute(() => adapter.ArchiveAsync(FileSession(args), args!["archived"]!.GetValue<bool>(), token)),
+                "configure-permissions" => await Execute(() => adapter.ConfigurePermissionsAsync(args?["permission"]?.ToString() ?? "", token)),
                 "configure" => await Execute(() => adapter.ConfigureAsync(args!["model"]?.ToString() ?? "", args["provider"]?.ToString() ?? "", args["mode"]?.ToString() ?? "default", args["reasoningEffort"]?.ToString(), token)),
                 "send" => await Execute(() => adapter.SendAsync(args!["text"]!.GetValue<string>(), args["delivery"]?.ToString() ?? "auto", token)),
                 "interrupt-send" => await Execute(() => adapter.InterruptAndSendAsync(args!["turnId"]!.GetValue<string>(), args["text"]!.GetValue<string>(), token)),

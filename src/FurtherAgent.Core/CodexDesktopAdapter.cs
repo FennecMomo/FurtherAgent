@@ -192,7 +192,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         catch (Exception ex) when (ex is IOException or OperationCanceledException && !ct.IsCancellationRequested)
         { usage = "套餐限额暂不可用：" + ex.Message; }
         return new(model, provider, Text(value["latestCollaborationMode"]?["mode"]) is "plan" ? "plan" : "default",
-            models, models.Count > 0, true, detail, effort, models.Any(m => m.ReasoningEfforts?.Count > 0), usage, true);
+            models, models.Count > 0, true, detail, effort, models.Any(m => m.ReasoningEfforts?.Count > 0), usage, true, CodexPermissions.Current(value), true);
     }
     public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => ConfigureAsync(model, provider, mode, null, ct);
     public async Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct)
@@ -224,6 +224,20 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             threadSettings = new { model = model.Trim(), effort = reasoningEffort, collaborationMode = collaboration }, activeTurnId = (string?)null }, 2, ct);
         if (result["result"]?["applied"]?.GetValue<bool>() != true) throw new IOException("桌面未应用会话设置。");
     }
+    public async Task ConfigurePermissionsAsync(string permission, CancellationToken ct)
+    {
+        var settings = CodexPermissions.Build(permission);
+        string id;
+        lock (gate)
+        {
+            var view = ToView(state ?? throw new IOException("请先选择会话。"));
+            if (view.Status == "active" || view.TurnId is not null) throw new IOException("请等待当前任务结束后修改权限。");
+            id = sessionId!;
+        }
+        var result = await RequestAsync("thread-follower-update-thread-settings", new { conversationId = id,
+            threadSettings = settings, activeTurnId = (string?)null }, 2, ct);
+        if (result["result"]?["applied"]?.GetValue<bool>() != true) throw new IOException("桌面未应用会话权限。");
+    }
     public Task SendAsync(string text, CancellationToken ct) => SendMessageAsync(text, false, ct);
     private async Task SendMessageAsync(string text, bool questionReply, CancellationToken ct)
     {
@@ -231,7 +245,10 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         SessionView view;
         lock (gate) view = ToView(state ?? throw new IOException("请先选择会话。"));
         var request = CodexMessageSubmission.Build(view, text, questionReply);
-        await RequestAsync(request.Method, request.Parameters, request.Version, ct);
+        string messageId = Text(request.Parameters["clientUserMessageId"] ?? request.Parameters["turnStart"]?["request"]?["clientUserMessageId"]);
+        await CodexSubmissionReceipt.WaitAsync(
+            RequestAsync(request.Method, request.Parameters, request.Version, ct),
+            () => { lock (gate) return sessionId == view.Id && CodexSubmissionReceipt.Contains(state, messageId); }, ct);
     }
     public async Task InterruptAsync(CancellationToken ct)
     {
@@ -282,15 +299,20 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             ? entities.Select(p => p.Value!).OrderBy(t => t["turnStartedAtMs"]?.GetValue<double>() ?? 0).ToArray()
             : s["turns"]?.AsArray().Select(t => t!).ToArray() ?? [];
         var messages = new List<ChatEntry>();
+        var ordinaryIds = turns.SelectMany(t => t["items"]?.AsArray() ?? []).Where(i => Text(i?["type"]) == "userMessage")
+            .SelectMany(i => new[] { Text(i?["id"]), Text(i?["clientId"]), Text(i?["clientUserMessageId"]) }).Where(id => id.Length > 0).ToHashSet();
         // Keep projected history on the host. Controllers receive bounded pages.
         foreach (var t in turns.Reverse())
         {
             foreach (var item in (t["items"]?.AsArray() ?? []).Reverse())
             {
                 string kind = Text(item?["type"]);
+                if (kind == "steeringUserMessage" && (Text(item?["status"]) != "accepted"
+                    || ordinaryIds.Contains(Text(item?["serverUserMessageId"])) || ordinaryIds.Contains(Text(item?["clientUserMessageId"])))) continue;
                 string content = kind switch
                 {
                     "userMessage" => CodexQuestions.DisplayReply(string.Join("\n", item?["content"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? [])),
+                    "steeringUserMessage" => CodexQuestions.DisplayReply(string.Join("\n", item?["input"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? [])),
                     "agentMessage" => Text(item?["text"]),
                     "reasoning" => Text(item?["summary"] ?? item?["text"] ?? item?["content"]),
                     "commandExecution" => Text(item?["command"]) + "\n" + Text(item?["aggregatedOutput"]),
@@ -301,9 +323,9 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                 };
                 if (!string.IsNullOrWhiteSpace(content))
                 {
-                    string? detail = kind is "userMessage" or "agentMessage" or "contextCompaction" ? null : item?.ToJsonString();
+                    string? detail = kind is "userMessage" or "steeringUserMessage" or "agentMessage" or "contextCompaction" ? null : item?.ToJsonString();
                     if (detail?.Length > 20000) detail = detail[..20000] + "\n[详情截断]";
-                    var entry = new ChatEntry(kind == "userMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : kind == "contextCompaction" ? "系统" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail);
+                    var entry = new ChatEntry(kind is "userMessage" or "steeringUserMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : kind == "contextCompaction" ? "系统" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail);
                     messages.Add(entry);
                 }
             }
