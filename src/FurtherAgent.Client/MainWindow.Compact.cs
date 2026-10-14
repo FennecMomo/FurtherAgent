@@ -25,6 +25,9 @@ public partial class MainWindow
     private ResizeMode expandedResizeMode;
     private System.Windows.Point ballPress;
     private bool ballDragged;
+    private bool compactDragging;
+    private double compactDragY, compactDragOffset;
+    private string? compactContextSession;
     private Rect fullBounds;
     private WindowState fullState;
     private WindowStyle fullStyle;
@@ -87,6 +90,23 @@ public partial class MainWindow
         header.Children.Add(grip); compactSurface.Children.Add(header);
         compactContext = new TextBlock { FontSize = 13, LineHeight = 21, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.DimGray, Padding = new Thickness(4,0,4,0) };
         compactScroll = new ScrollViewer { Content = compactContext, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden };
+        compactScroll.Background = Brushes.Transparent;
+        compactScroll.Cursor = Cursors.Hand;
+        compactScroll.CanContentScroll = false;
+        compactScroll.PreviewMouseWheel += (_, e) => e.Handled = true;
+        compactScroll.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            BeginCompactDrag(e.GetPosition(compactScroll).Y);
+            compactScroll.CaptureMouse(); e.Handled = true;
+        };
+        compactScroll.PreviewMouseMove += (_, e) =>
+        {
+            if (!compactDragging) return;
+            if (e.LeftButton != MouseButtonState.Pressed) { EndCompactDrag(); return; }
+            MoveCompactDrag(e.GetPosition(compactScroll).Y); e.Handled = true;
+        };
+        compactScroll.PreviewMouseLeftButtonUp += (_, e) => { if (compactDragging) { EndCompactDrag(); e.Handled = true; } };
+        compactScroll.LostMouseCapture += (_, _) => compactDragging = false;
         Grid.SetRow(compactScroll, 1); compactSurface.Children.Add(compactScroll);
         var splitter = new GridSplitter { Height = 5, HorizontalAlignment = HorizontalAlignment.Stretch, Background = Brushes.Transparent, ResizeDirection = GridResizeDirection.Rows, ResizeBehavior = GridResizeBehavior.PreviousAndNext };
         Grid.SetRow(splitter, 2); compactSurface.Children.Add(splitter);
@@ -129,6 +149,7 @@ public partial class MainWindow
     private void ToggleCompactContext()
     {
         if (!compactMode) return;
+        EndCompactDrag();
         double right = Left + Width, bottom = Top + Height;
         if (!compactContextHidden)
         {
@@ -166,6 +187,7 @@ public partial class MainWindow
     private void RestoreCompact()
     {
         if (!compactMode) return;
+        EndCompactDrag();
         SaveCompactPosition();
         if (compactContextHidden) { SetCompactBallRegion(false); ResizeMode = expandedResizeMode; compactContextHidden = false; }
         compactBall.Visibility = Visibility.Collapsed;
@@ -193,8 +215,22 @@ public partial class MainWindow
     {
         if (!compactMode) return;
         var view = History.Latest ?? current;
+        bool changedSession = compactContextSession != view?.Id;
+        if (changedSession) EndCompactDrag();
+        // Hold the current text while the user reads or drags. Even a new six-message
+        // suffix must not replace the lines under the pointer or pull the view down.
+        if (!changedSession && (compactDragging || compactScroll.ScrollableHeight - compactScroll.VerticalOffset > 2)) return;
         string text = view is null ? "" : string.Join("\n", view.Messages.Where(HistoryPaging.IsConversation).TakeLast(6).Select(m => (ChatPresentation.Kind(m) == "user" ? "你：" : "") + ChatPresentation.Display(m).Text));
         if (text.Length > 6000) text = text[^6000..];
+        compactContextSession = view?.Id;
         if (compactContext.Text != text) { compactContext.Text = text; compactScroll.ScrollToEnd(); }
     }
+    private void BeginCompactDrag(double y)
+    { compactDragging = true; compactDragY = y; compactDragOffset = compactScroll.VerticalOffset; }
+    private void MoveCompactDrag(double y)
+    {
+        if (compactDragging) compactScroll.ScrollToVerticalOffset(Math.Clamp(compactDragOffset + compactDragY - y, 0, compactScroll.ScrollableHeight));
+    }
+    private void EndCompactDrag()
+    { compactDragging = false; if (compactScroll.IsMouseCaptured) compactScroll.ReleaseMouseCapture(); }
 }

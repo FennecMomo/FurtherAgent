@@ -47,6 +47,25 @@ internal static class CompactUiChecks
             var surface = Field<Grid>("compactSurface");
             var bitmap = new RenderTargetBitmap(420,210,96,96,PixelFormats.Pbgra32); bitmap.Render((Visual)window.Content);
             var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using (var file = File.Create(output)) png.Save(file);
+            var scroll = Field<ScrollViewer>("compactScroll");
+            string longReply = string.Join("\n", Enumerable.Range(0, 60).Select(i => "稳定阅读行 " + i));
+            history.Accept(new("drag-test", "", "", "idle", null, [new("Codex", longReply)], []));
+            Call("RefreshCompact"); Layout(420,210); scroll.ScrollToVerticalOffset(300); Layout(420,210);
+            double beforeDrag = scroll.VerticalOffset;
+            Call("BeginCompactDrag", 50.0); Call("MoveCompactDrag", 80.0); Layout(420,210);
+            Check(Math.Abs(scroll.VerticalOffset - (beforeDrag - 30)) < 1, "drag follows pointer by exact pixel distance");
+            double readingOffset = scroll.VerticalOffset;
+            history.Accept(new("drag-test", "", "", "active", "run", [new("Codex", longReply + "\n新增回复")], []));
+            Call("RefreshCompact"); Layout(420,210);
+            Check(scroll.VerticalOffset == readingOffset && !Field<TextBlock>("compactContext").Text.Contains("新增回复"), "stream updates cannot move text during drag");
+            Call("EndCompactDrag"); Call("RefreshCompact"); Layout(420,210);
+            Check(scroll.VerticalOffset == readingOffset, "reading old lines stays stable after releasing pointer");
+            var wheel = new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, -120)
+                { RoutedEvent = System.Windows.Input.Mouse.PreviewMouseWheelEvent };
+            scroll.RaiseEvent(wheel); Layout(420,210);
+            Check(wheel.Handled && scroll.VerticalOffset == readingOffset, "context consumes wheel without scrolling");
+            scroll.ScrollToEnd(); Layout(420,210); Call("RefreshCompact"); Layout(420,210);
+            Check(Field<TextBlock>("compactContext").Text.Contains("新增回复"), "returning to bottom resumes new content");
             window.Left = 120; window.Top = 140;
             for (int i = 0; i < 25; i++)
             {
