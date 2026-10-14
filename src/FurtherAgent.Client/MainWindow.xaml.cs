@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     {
         completionServices = notificationServices;
         InitializeComponent();
+        InitializeCompact();
         InitializeHistory();
         string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
         Title = "FurtherAgent · " + version; VersionLabel.Text = version + " · 远程工作空间";
@@ -57,6 +58,7 @@ public partial class MainWindow : Window
         snapshotTimer.Tick += (_, _) =>
         {
             RenderConnectionHealth();
+            RefreshCompact();
             (RemoteDevice Connection, SessionView View)? next;
             lock (snapshotGate) { next = pendingSnapshot; pendingSnapshot = null; }
             if (next is { } update && remote == update.Connection && selectedId == update.View.Id) { Render(update.View); lastRenderedAt = DateTimeOffset.UtcNow; }

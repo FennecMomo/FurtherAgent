@@ -132,6 +132,18 @@ internal static class InteractionUiChecks
             await Until(() => !Busy());
             Require(composer.Text == "超时后新写的草稿" && drafts["history"] == composer.Text,
                 "late receipt after native timeout preserves newly edited draft");
+            adapter.Accepted = false;
+            adapter.Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Invoke("Compact_Click", window, new RoutedEventArgs());
+            var miniComposer = (TextBox)typeof(MainWindow).GetField("compactComposer", Private)!.GetValue(window)!;
+            miniComposer.Text = "迷你窗口发送";
+            var miniSurface = (Grid)typeof(MainWindow).GetField("compactSurface", Private)!.GetValue(window)!;
+            miniSurface.Children.OfType<Grid>().Last().Children.OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            await Until(() => adapter.Sends == 7);
+            adapter.Acknowledgement.SetResult();
+            await Until(() => !Busy());
+            Require(miniComposer.Text == "" && composer.Text == "", "compact send traverses real relay and clears both composers after acknowledgement");
+            Invoke("RestoreCompact");
             var settings = Json.Read<AgentSettings>(await remote.Peer.CallAsync("settings", null));
             Invoke("ApplyModelSettings", settings, "history");
             Find<ComboBox>("PermissionPicker").SelectedIndex = 0;

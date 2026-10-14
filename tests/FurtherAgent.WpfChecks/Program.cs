@@ -1,4 +1,4 @@
-using System.Windows.Documents;
+﻿using System.Windows.Documents;
 using FurtherAgent.Client;
 using FurtherAgent.Core;
 using System.Windows;
@@ -14,6 +14,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--compact") { CompactUiChecks.Run(args[1]); return; }
         if (args.Contains("--interactions")) { InteractionUiChecks.Run(""); return; }
         if (args.Length == 2 && args[0] == "--history") { HistoryUiChecks.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--completion") { CompletionUiChecks.Run(args[1]); return; }
@@ -54,9 +55,9 @@ static class Program
         Require(originals==1,"only image click requests original");
         var tool = new ChatMessageView { DataContext = new ChatEntry("tool", new string('x', 18042), "raw") };
         tool.Measure(new Size(600, double.PositiveInfinity));
-        Require(tool.Child is Expander { IsExpanded: false } && tool.DesiredSize.Height < 80, "18K tool output is collapsed and compact");
+        Require(tool.Child is TextBlock { Text: "执行了一项操作" } && tool.DesiredSize.Height < 80, "18K tool output is replaced by a compact summary");
         var reasoning = new ChatMessageView { DataContext = new ChatEntry("reasoning.available", "reply-like text", "raw") };
-        Require(reasoning.Child is Expander { IsExpanded: false }, "reasoning never renders as a second ordinary reply");
+        Require(reasoning.Child is TextBlock { Text: "分析任务与规划步骤" }, "reasoning never renders as a second ordinary reply");
         var user = new ChatMessageView { DataContext = new ChatEntry("user", "你好") };
         var assistant = new ChatMessageView { DataContext = new ChatEntry("assistant", "你好") };
         Require(user.HorizontalAlignment == HorizontalAlignment.Right && assistant.HorizontalAlignment == HorizontalAlignment.Stretch && user.Background.ToString() != assistant.Background.ToString(), "user and assistant alignment and backgrounds differ");

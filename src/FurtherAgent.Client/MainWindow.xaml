@@ -66,6 +66,7 @@
    <Grid x:Name="ConversationPage">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel Margin="{DynamicResource HeaderMargin}">
+     <Button DockPanel.Dock="Right" Content="收缩" Click="Compact_Click" ToolTip="收缩为迷你输入窗口" AutomationProperties.Name="收缩为迷你窗口" VerticalAlignment="Top"/>
      <Border DockPanel.Dock="Right" VerticalAlignment="Top" Margin="12,0,12,0" Padding="10,6" CornerRadius="12" BorderThickness="1" BorderBrush="{DynamicResource BrushCFD9CF}" ToolTip="当前远端连接与所选 Agent 会话状态">
       <StackPanel Orientation="Horizontal"><Ellipse x:Name="ConnectionStateDot" Width="11" Height="11" Fill="#DC2626" Margin="0,0,7,0"/><TextBlock x:Name="ConnectionStateLabel" Text="已断连" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
      </Border>
