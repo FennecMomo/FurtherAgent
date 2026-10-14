@@ -340,8 +340,9 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
                 catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    IsReconnecting = false;
-                    ConnectionChanged?.Invoke(false, "授权码已失效，请获取 B 的新授权码后重新连接。"); return;
+                    // A fixed identity is temporarily absent while its host is offline.
+                    // Keep retrying; only an explicit disconnect should stop recovery.
+                    ConnectionChanged?.Invoke(false, "接入端暂时离线或授权码无效，等待设备重新上线…");
                 }
                 catch (Exception ex) { ConnectionChanged?.Invoke(false, "正在重连：" + ex.Message); }
             }

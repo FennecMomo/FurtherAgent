@@ -7,9 +7,9 @@
     <SingleProject>true</SingleProject>
     <ApplicationTitle>FurtherAgent</ApplicationTitle>
     <ApplicationId>top.fennecmomo.furtheragent</ApplicationId>
-    <ApplicationDisplayVersion>0.12.0</ApplicationDisplayVersion>
-    <Version>0.12.0</Version>
-    <ApplicationVersion>1200</ApplicationVersion>
+    <ApplicationDisplayVersion>0.12.1</ApplicationDisplayVersion>
+    <Version>0.12.1</Version>
+    <ApplicationVersion>1201</ApplicationVersion>
     <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
     <PublishTrimmed>false</PublishTrimmed>
@@ -17,6 +17,8 @@
     <!-- Avoid MAUI 10 Release JNI registration crash; see dotnet/maui#35209. -->
     <AndroidEnableMarshalMethods>false</AndroidEnableMarshalMethods>
     <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <!-- Preserve binary locality for APK deltas; assembly blobs already contain compressed assemblies. -->
+    <AndroidStoreUncompressedFileExtensions>.so</AndroidStoreUncompressedFileExtensions>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.Maui.Controls" Version="10.0.0" />

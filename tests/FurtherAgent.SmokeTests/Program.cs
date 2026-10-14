@@ -14,6 +14,13 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
+if (args.Contains("--app-update-checks")) { await AppUpdateChecks.Run(Check); Console.WriteLine($"ALL {passed} UPDATE CHECKS PASSED"); return; }
+if (args.Length == 5 && args[0] == "--apply-apk-delta")
+{
+    var update = FurtherAgent.Mobile.AppUpdate.Parse(await File.ReadAllTextAsync(args[1]));
+    await update.Deltas!.Single().ApplyAsync(args[2], args[3], args[4], update, default);
+    Console.WriteLine("APK delta reconstructed and SHA256 verified"); return;
+}
 if (args.Contains("--hermes-upgrade-checks")) { await HermesUpgradeChecks.Run(Check); Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }
 if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
 if (args.Contains("--completion-state-checks")) { CompletionChecks.States(Check); Console.WriteLine($"ALL {passed} COMPLETION STATE CHECKS PASSED"); return; }
@@ -56,6 +63,7 @@ if (args.Contains("--dsh-live"))
 await TlsRetryChecks.Run(Check);
 CompletionChecks.States(Check);
 await ConnectionProfileChecks.Run(Check);
+await AppUpdateChecks.Run(Check);
 ConversationChecks.Run(Check);
 QuestionChecks.Run(Check);
 await CodexSettingsChecks.Run(Check);
@@ -213,19 +221,28 @@ try
         string path = DeviceIdentity.DefaultPath(registry.ServerIdentity, "Persistent test");
         string secret = DeviceIdentity.LoadOrCreate(path), fixedCode = DeviceIdentity.Code(secret);
         Check(secret == DeviceIdentity.LoadOrCreate(path) && fixedCode.Length == 8, "device identity persists and derives fixed pairing code");
+        await using var recoveringRemote = new RemoteDevice();
+        var sawOffline = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        recoveringRemote.ConnectionChanged += (_, message) => { if (message.Contains("接入端暂时离线")) sawOffline.TrySetResult(); };
         await using (var first = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
         {
             await first.StartAsync("Persistent test");
             Check(first.Lease!.Code == fixedCode, "relay registers persistent device code");
+            await recoveringRemote.ConnectAsync(registry, fixedCode);
             await Reject(() => { DeviceIdentity.Reset(path); return Task.CompletedTask; }, "active identity cannot be reset by second process");
             var wrong = await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration("Persistent test", new string('A', 64)));
             Check(wrong.Code != fixedCode, "another identity cannot claim existing fixed code");
             await registry.PostAsync<JsonNode>("unregister", new LeaseProof(wrong.Code, wrong.Secret));
         }
+        await sawOffline.Task.WaitAsync(TimeSpan.FromSeconds(20));
+        Check(recoveringRemote.IsReconnecting, "temporary missing fixed code keeps recovery alive after host stops");
         await using (var restarted = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
         {
             await restarted.StartAsync("Persistent test");
             Check(restarted.Lease!.Code == fixedCode, "host restart retains pairing code");
+            recoveringRemote.WakeReconnect();
+            for (int i = 0; i < 100 && !recoveringRemote.IsConnected; i++) await Task.Delay(100);
+            Check(recoveringRemote.IsConnected, "controller recovers same fixed code without manual reconnect");
             server.Kill(true); await server.WaitForExitAsync(); server.Dispose();
             server = StartServer(); await WaitForServer();
             PairResult? paired = null;

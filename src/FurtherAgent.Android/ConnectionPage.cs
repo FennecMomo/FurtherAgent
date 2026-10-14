@@ -10,6 +10,7 @@ internal sealed class ConnectionPage : ContentPage
     private readonly Entry code = new() { Placeholder = "远端显示的授权码", IsPassword = true, IsTextPredictionEnabled = false };
     private readonly Picker saved = new() { Title = "选择已保存的连接" };
     private readonly Label message = Ui.Text("", 12);
+    private readonly Switch autoConnect = new() { IsToggled = true };
     private string? editing;
     private bool busy;
     public ConnectionPage(MainPage home)
@@ -21,23 +22,35 @@ internal sealed class ConnectionPage : ContentPage
         {
             if (saved.SelectedItem is not ConnectionProfile p) return;
             editing = p.Id; name.Text = p.Name; server.Text = p.Server; code.Text = p.Code;
+            autoConnect.IsToggled = Preferences.Get("resume-connection." + p.Id, true);
         };
-        Button Action(string text, Func<Task> action) => new() { Text = text, Command = new Command(async () =>
+        autoConnect.Toggled += (_, _) =>
+        {
+            if (saved.SelectedItem is ConnectionProfile profile)
+                Preferences.Set("resume-connection." + profile.Id, autoConnect.IsToggled);
+        };
+        Button Action(string text, Func<Task> action)
+        {
+            var button = new Button { Text = text, Command = new Command(async () =>
         {
             if (busy) return;
             busy = true; saved.IsEnabled = name.IsEnabled = server.IsEnabled = code.IsEnabled = false;
             try { await action(); }
             catch (Exception ex) { message.Text = string.IsNullOrWhiteSpace(code.Text) ? ex.Message : ex.Message.Replace(code.Text, "[授权码]", StringComparison.Ordinal); }
             finally { busy = false; saved.IsEnabled = name.IsEnabled = server.IsEnabled = code.IsEnabled = true; }
-        }) };
+            }) };
+            Ui.AddFeedback(button); return button;
+        }
         var stack = new VerticalStackLayout { Padding = 24, Spacing = 12, Children =
         {
             Ui.Text("已保存的连接", 22, true), saved,
             Action("新增连接", () => { saved.SelectedIndex = -1; editing = null; name.Text = ""; code.Text = ""; message.Text = "填写新设备的地址和授权码，已有连接会保留。"; return Task.CompletedTask; }),
             name, Ui.Text("中继服务", 12, true), server, Ui.Text("设备授权码", 12, true), code,
+            new HorizontalStackLayout { Spacing = 12, Children = { Ui.Text("启动后自动恢复此连接", 13), autoConnect } },
             Action("保存连接", async () =>
             {
                 var p = await SavedConnections.Store.SaveAsync(name.Text ?? "", server.Text ?? "", code.Text ?? "", editing);
+                Preferences.Set("resume-connection." + p.Id, autoConnect.IsToggled);
                 await ReloadAsync(p.Id); message.Text = "已保存，可随时切换。";
             }),
             Action("连接并查看会话", async () =>
@@ -56,6 +69,7 @@ internal sealed class ConnectionPage : ContentPage
             }),
             message, Ui.Text("支持同时连接多个设备，在主页上方切换。切换不会断开其他设备，草稿按设备和会话分别保留。手动断开或退出程序才会关闭连接，远端任务不受影响。", 12),
             Action("语音设置", () => Navigation.PushAsync(new SpeechSettingsPage())),
+            Action("检查应用更新", () => Navigation.PushAsync(new UpdatePage())),
             Action("清理会话缓存", async () => { await home.CurrentSession.ClearCacheAsync(); message.Text = "会话缓存已清理，草稿、附件和连接保留。"; }),
             Action("断开当前查看的设备", async () => { await home.DisconnectCurrentAsync(); message.Text = "已断开该设备，其他连接与远端任务继续。"; }),
             Action("查看离线界面预览", async () => { await home.PreviewAsync(); await Navigation.PopAsync(); })

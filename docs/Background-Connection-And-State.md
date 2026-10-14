@@ -19,3 +19,27 @@
 本次不更换运行中的客户端，不打包、不安装、不重启。手机真机切后台、锁屏、通知返回的表现留待后续安装验收；当前自动检查不等同于厂商后台电源策略的真机验证。
 
 Android 服务类型依据：[Android 前台服务 remoteMessaging 文档](https://developer.android.com/develop/background-work/services/fgs/service-types#remote-messaging)。
+
+## Android 0.12.1 后续修复
+
+- 图标及连接页面按钮增加按压缩放、透明度状态和轻触震动反馈。
+- 语音改为按住说话、松开后完成识别并发送；向下滑动约 60 dp 后松开丢弃本次输入。触摸取消或切后台会取消录音并恢复原草稿，识别异常不自动发送。
+- 应用进程重新创建时恢复已保存连接和上次会话，临时离线每 20 秒重试初始连接。手动断开的连接不自动恢复，连接页可关闭某个设备的自动恢复开关。
+- 已连接设备暂时返回 404 时继续退避重连，不再误判固定授权码永久失效并终止恢复。恢复不重发用户消息或审批。
+- 首页及连接页提供更新入口，默认清单 `https://bridge.fennecmomo.top/files/updates/android/latest.json`。清单包含 version、versionCode、url、sha256、size、notes；仅支持 HTTPS，安装包最多 100 MiB，校验大小及 SHA256 后调起系统安装器。首次安装需用户在 Android 设置允许本应用安装更新。
+- 自有服务器使用版本化 APK 文件名，避免 CDN 缓存同名旧包。更新清单最后发布，不能先指向未上传完成的安装包。
+
+验证：隔离冒烟检查 357 项通过，含临时离线后原授权码自动恢复、续传范围校验、差分重建、更新校验失败及取消时不交付半包。按住说话、滑动取消、震动、后台厂商电源策略及系统安装器仍需手机实测。
+
+### 增量更新
+
+参考 ResourceManager 远端 main 的 `f7b8fe3`（1.0.0）中 `UpdateClient.Delta.cs`、`UpdateClient.cs` 和发布脚本。其 Windows xdelta3.exe 不适用于 Android；本项目使用托管 FAD1 解码器和 Python 标准库生成器。补丁由 gzip 封装的原文件复制与新增字节组成，严格限制写入大小、复制范围和指令数，合成后校验完整签名 APK 的 SHA256。系统安装器继续负责签名及安装确认。
+
+- 清单可选 `deltas` 数组：`algorithm: "fad1"`、`fromVersionCode`、`baseSha256`、`url`、`sha256`、`size`。
+- 只有已安装 APK 的版本代码与哈希都一致才用差分，补丁达到整包 60% 时不发布。缺失、跨版本、损坏或合成失败时使用完整 APK；用户取消不触发回退下载。
+- 安装包和补丁支持 HTTP Range 续传。临时文件名包含目标 SHA256，避免混用不同版本；下载完成和已有缓存都经过完整校验。服务器忽略 Range 时从头下载，返回错误 Content-Range 时清除半包。
+- APK 的 `.so` 条目使用 ZIP_STORED，保持程序集存储中的未变字节可复用；这会增加首次整包大小，但避免再次整体 deflate 导致小修改变成大补丁。
+- 生成命令：`python scripts/New-AndroidDelta.py --base old.apk --target new.apk --from-code 1201 --version 0.12.2 --version-code 1202 --output release --url https://bridge.fennecmomo.top/files/updates/android`。脚本保留完整 APK、先重建校验，再写 `latest.json`。发布时先上传 APK/补丁，再原子替换清单。
+- 0.12.0 没有应用内更新入口，首次安装带更新功能的 0.12.1 需要整包；后续版本才能通过此入口增量安装。
+
+真实 APK 验证：正式 0.12.1 大小 88,188,392 字节；另行构建仅供验证的 0.12.2（版本变动）为 88,180,200 字节，其补丁 3,499,413 字节（约 3.34 MiB）。由手机使用的托管合成代码重建后 SHA256 与该测试 APK 一致。此样本仅验证更新链路，不代表所有未来版本都有相同压缩率；0.12.2 测试包不发布。正式 0.12.1 的 apksigner 验证通过，签名证书与原安装包相同。

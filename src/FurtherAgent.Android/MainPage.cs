@@ -41,6 +41,8 @@ public sealed class MainPage : ContentPage
     private bool rendering, prependHistory;
     private CancellationTokenSource? downloadCancel;
     private string? downloadStatus;
+    private bool voiceHeld, voiceDiscard, voiceReleaseSend, restoringConnections;
+    private DateTime nextRestore = DateTime.MinValue;
 
     public MainPage()
     {
@@ -55,8 +57,9 @@ public sealed class MainPage : ContentPage
         var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · " + AppInfo.Current.VersionString, 9) } };
         foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
         var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
-            ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
+            ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Auto)] };
         header.Add(badge); header.Add(brand, 1); header.Add(conversations, 2); header.Add(connect, 3);
+        header.Add(Ui.Button("检查更新", () => Navigation.PushAsync(new UpdatePage())), 4);
         Ui.TextTheme(connectionLabel);
         var connection = new HorizontalStackLayout { Spacing = 7, Children = { connectionDot, connectionLabel } };
         SemanticProperties.SetDescription(connection, "远端连接与 Agent 状态");
@@ -79,11 +82,27 @@ public sealed class MainPage : ContentPage
         var toolbar = new HorizontalStackLayout { Spacing = 6, Children = {
             LabeledAction(files, filesCaption), LabeledAction(models, ActionCaption("模型")),
             LabeledAction(stop, ActionCaption("停止")), LabeledAction(prompts, promptsCaption) } };
-        voice = Ui.Button("语音", VoiceInputAsync);
+        voice = Ui.Button("语音", () => Task.CompletedTask);
+        new HoldToTalk(voice, () =>
+        {
+            if (recognizingSpeech || interactionBusy || !session.Connected) return;
+            voiceHeld = true; voiceDiscard = voiceReleaseSend = false;
+            _ = VoiceInputAsync();
+        }, discard =>
+        {
+            voiceDiscard = discard;
+            status.Text = discard ? "松开放弃本次语音" : "松开发送 · 下拉放弃";
+        }, discard =>
+        {
+            voiceHeld = false; voiceDiscard = discard;
+            voiceReleaseSend = !discard;
+            if (discard) speechCancel?.Cancel(); else speechStop?.Cancel();
+        }).Attach();
         voice.AutomationId = "voice-input";
-        SemanticProperties.SetDescription(voice, "实时语音输入，点击结束后可编辑，不会自动发送");
+        SemanticProperties.SetDescription(voice, "按住说话，松开发送，下拉放弃");
         var input = new Grid { ColumnSpacing = 6, ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
-        input.Add(composer); voice.VerticalOptions = LayoutOptions.End; input.Add(voice, 1);
+        input.Add(composer); voice.VerticalOptions = LayoutOptions.End;
+        var voiceControl = LabeledAction(voice, ActionCaption("按住说话")); voiceControl.VerticalOptions = LayoutOptions.End; input.Add(voiceControl, 1);
         send.VerticalOptions = LayoutOptions.End; input.Add(send, 2);
         var footer = new VerticalStackLayout { Padding = new Thickness(16, 8, 16, 12), Spacing = 8,
             Children = { status, attachments, toolbar, input } };
@@ -94,7 +113,9 @@ public sealed class MainPage : ContentPage
         timer.Tick += async (_, _) =>
         {
             if (!suspended && pendingRender && webReady && !rendering) { pendingRender = false; await RenderAsync(); }
+            if (!suspended && DateTime.UtcNow >= nextRestore) await RestoreSavedConnectionsAsync();
         };
+        Loaded += async (_, _) => await RestoreSavedConnectionsAsync();
         timer.Start(); RefreshButtons();
     }
 
@@ -157,7 +178,8 @@ public sealed class MainPage : ContentPage
         title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
         subtitle.Text = preview ? "离线预览 · 不会执行任务" : session.View is { } v
             ? $"{session.Agent?.Name} · {StateName(v)}\n{v.Cwd}" : session.Agent?.Name ?? "尚未连接";
-        status.Text = downloadStatus ?? (session.Status + (backgroundServiceError is null ? "" : " · " + backgroundServiceError));
+        if (!recognizingSpeech)
+            status.Text = downloadStatus ?? (session.Status + (backgroundServiceError is null ? "" : " · " + backgroundServiceError));
         RefreshButtons(); QueueRender();
     }
     private static string StateName(SessionView view) => view.Prompts.Count > 0 ? "等待确认" : view.Status switch
@@ -169,6 +191,7 @@ public sealed class MainPage : ContentPage
         composer.IsEnabled = !session.Busy && !interactionBusy && session.View is not null && !preview;
         voice.IsEnabled = recognizingSpeech || composer.IsEnabled;
         Ui.SetAction(voice, recognizingSpeech ? (recordingSpeech ? "结束" : "取消") : "语音");
+        SemanticProperties.SetDescription(voice, "按住说话，松开发送，下拉放弃");
         composer.Placeholder = session.View is not null && !preview ? "继续这个会话…" : "连接设备后，在这里发送消息…";
         send.IsEnabled = ready && session.View!.CanSend && (!string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0);
         Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑", true);
@@ -222,6 +245,7 @@ public sealed class MainPage : ContentPage
     public void SaveDraft()
     {
         if (!loadingDraft && draftKey.Length > 0) Preferences.Set(draftKey, composer.Text ?? "");
+        if (activeConnection is { } id && session.View is { } view) Preferences.Set("last-session." + id, view.Id);
     }
     public async Task CloseAsync()
     {
@@ -270,6 +294,7 @@ public sealed class MainPage : ContentPage
             Preferences.Set("server-url", url.Trim());
             await SavedConnections.LoadAsync();
             await SavedConnections.Store.SaveAsync(name ?? target.DeviceName, url, code, replaceId);
+            Preferences.Set("resume-connection." + id, true);
         }
         finally { connectingDevice = false; OnChanged(); }
     }
@@ -297,7 +322,11 @@ public sealed class MainPage : ContentPage
     {
         if (session.Busy || interactionBusy || connectingDevice) throw new IOException("请等待当前操作结束再断开。");
         SaveDraft();
-        if (activeConnection is { } id) await connections.CloseAsync(id);
+        if (activeConnection is { } id)
+        {
+            Preferences.Set("resume-connection." + id, false);
+            await connections.CloseAsync(id);
+        }
         var next = connections.Entries.LastOrDefault();
         if (next.Value is not null) ActivateConnection(next.Key, next.Value);
         else { session = NewSession(); activeConnection = null; scope = ""; OnChanged(); }
@@ -315,6 +344,33 @@ public sealed class MainPage : ContentPage
         SaveDraft();
         if (connections.Entries.Count > 0) StartConnectionService();
         if (!interactionBusy) await Task.WhenAll(connections.Entries.Values.Select(s => s.ResumeAsync()));
+        await RestoreSavedConnectionsAsync();
+    }
+    private async Task RestoreSavedConnectionsAsync()
+    {
+        if (restoringConnections || closed || suspended || interactionBusy || connectingDevice || session.Busy) return;
+        restoringConnections = true; nextRestore = DateTime.UtcNow.AddSeconds(20);
+        string? previous = activeConnection;
+        try
+        {
+            var saved = await SavedConnections.LoadAsync();
+            foreach (var profile in saved.Connections.OrderBy(p => p.Id == saved.SelectedId ? 1 : 0))
+            {
+                string id = DeviceConnectionPool<MobileSession>.Identity(profile.Server, profile.Code);
+                if (closed || suspended || interactionBusy) break;
+                if (connections.Entries.ContainsKey(id) || !Preferences.Get("resume-connection." + id, true)) continue;
+                try
+                {
+                    await ConnectAsync(profile.Server, profile.Code, profile.Name);
+                    string thread = Preferences.Get("last-session." + id, "");
+                    if (thread.Length > 0 && session.Sessions.Any(s => s.Id == thread)) await SelectAsync(thread);
+                }
+                catch { status.Text = "正在等待已保存设备上线，稍后自动重试；可在连接页检查地址或授权码"; }
+            }
+            if (previous is not null && connections.Entries.TryGetValue(previous, out var active)) ActivateConnection(previous, active);
+        }
+        catch { status.Text = "无法读取保存的连接，请在连接页检查"; }
+        finally { restoringConnections = false; nextRestore = DateTime.UtcNow.AddSeconds(20); }
     }
     private async Task SendAsync()
     {
@@ -337,7 +393,8 @@ public sealed class MainPage : ContentPage
         suspended = true;
         SaveDraft();
         // Do not keep recording after Home, screen lock, or switching applications.
-        if (recordingSpeech) speechStop?.Cancel(); else speechCancel?.Cancel();
+        voiceHeld = false; voiceDiscard = true; voiceReleaseSend = false;
+        speechCancel?.Cancel();
     }
     private async Task VoiceInputAsync()
     {
@@ -348,6 +405,9 @@ public sealed class MainPage : ContentPage
             return;
         }
         if (interactionBusy || session.Busy || preview || draftKey.Length == 0 || closed) return;
+        bool sendRecognized = false;
+        string originKey = draftKey;
+        var originSession = session;
         await Act(async () =>
         {
             string key = draftKey, original = composer.Text ?? "";
@@ -357,7 +417,7 @@ public sealed class MainPage : ContentPage
             { await Navigation.PushAsync(new SpeechSettingsPage()); return; }
             if (await Permissions.RequestAsync<Permissions.Microphone>() != PermissionStatus.Granted)
                 throw new InvalidOperationException("需要麦克风权限才能语音输入。可在系统应用设置中允许；原草稿已保留。");
-            if (closed || suspended) return;
+            if (closed || suspended || !voiceHeld) return;
             using var cancel = new CancellationTokenSource();
             using var stopCapture = new CancellationTokenSource();
             speechCancel = cancel; speechStop = stopCapture; recognizingSpeech = true;
@@ -371,17 +431,18 @@ public sealed class MainPage : ContentPage
                     ct => MicrophoneAudio.Capture(() => MainThread.BeginInvokeOnMainThread(() =>
                     {
                         if (!recognizingSpeech || closed) return;
-                        recordingSpeech = true; RefreshButtons(); status.Text = "正在听，点击结束 · 最长 3 分钟";
+                        recordingSpeech = true; RefreshButtons(); status.Text = voiceDiscard ? "松开放弃本次语音" : "正在听 · 松开发送 · 下拉放弃";
                     }), stopCapture.Token, ct),
                     text => MainThread.InvokeOnMainThreadAsync(() =>
                     {
-                        if (closed || generation != 0) return;
+                        if (closed || voiceDiscard || generation != 0) return;
                         hasText = !string.IsNullOrWhiteSpace(text);
                         string merged = SpeechTranscript.Append(original, text);
                         Preferences.Set(key, merged);
                         if (draftKey == key) composer.Text = merged;
                     }).GetAwaiter().GetResult(), cancel.Token));
-                status.Text = hasText ? "语音输入已结束，检查文字后点击发送" : "没有识别到文字，原草稿已保留";
+                sendRecognized = hasText && voiceReleaseSend && !voiceDiscard && !suspended;
+                status.Text = hasText ? (sendRecognized ? "正在发送语音…" : "语音已停止，文字保留为草稿") : "没有识别到文字，原草稿已保留";
             }
             catch (OperationCanceledException) { status.Text = "语音输入已停止，已识别的文字已保留"; }
             catch (TimeoutException)
@@ -393,9 +454,16 @@ public sealed class MainPage : ContentPage
             finally
             {
                 generation++;
+                if (voiceDiscard)
+                {
+                    Preferences.Set(key, original);
+                    if (draftKey == key) composer.Text = original;
+                    status.Text = "已放弃本次语音，原草稿保留";
+                }
                 speechCancel = null; speechStop = null; recognizingSpeech = recordingSpeech = false;
             }
         });
+        if (sendRecognized && !closed && !suspended && originKey == draftKey && ReferenceEquals(originSession, session)) await SendAsync();
     }
     private async Task FileMenuAsync()
     {

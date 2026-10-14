@@ -13,8 +13,26 @@ internal static class Ui
             Padding = new Thickness(10), BackgroundColor = primary ? Green : Color.FromArgb("#E7EEE8"),
             TextColor = primary ? Colors.White : Green };
         SetAction(button, text, primary);
+        AddFeedback(button);
         button.Clicked += async (_, _) => await click();
         return button;
+    }
+    public static void AddFeedback(Button button)
+    {
+        button.Pressed += (_, _) => PressFeedback(button, true);
+        button.Released += (_, _) => PressFeedback(button, false);
+        var normal = new VisualState { Name = "Normal" };
+        normal.Setters.Add(new Setter { Property = VisualElement.OpacityProperty, Value = 1d });
+        var disabled = new VisualState { Name = "Disabled" };
+        disabled.Setters.Add(new Setter { Property = VisualElement.OpacityProperty, Value = 0.38d });
+        var pressed = new VisualState { Name = "Pressed" };
+        pressed.Setters.Add(new Setter { Property = VisualElement.OpacityProperty, Value = 0.6d });
+        VisualStateManager.SetVisualStateGroups(button, [new VisualStateGroup { Name = "CommonStates", States = { normal, disabled, pressed } }]);
+    }
+    public static void PressFeedback(Button button, bool pressed)
+    {
+        button.Scale = pressed ? 0.90 : 1;
+        if (pressed) try { HapticFeedback.Default.Perform(HapticFeedbackType.Click); } catch { }
     }
     public static ImageSource Icon(string action, bool primary = false)
     {
@@ -22,7 +40,7 @@ internal static class Ui
         {
             "会话" => "chats", "连接" or "连接并查看会话" => "link", "发送 ↑" => "send",
             "停止" or "结束" => "stop", "附件" => "attach", "模型" => "model", "语音" => "mic",
-            "核对" => "check", "等待…" => "clock", "取消" or "取消下载" => "close", "刷新" => "refresh",
+            "核对" => "check", "等待…" => "clock", "取消" or "取消下载" => "close", "刷新" or "检查更新" => "refresh",
             "新建会话" => "plus", "归档当前" => "archive", "保存" or "应用到此会话" => "save",
             "语音设置" => "settings", "清理会话缓存" => "broom", "查看离线界面预览" => "eye",
             "断开当前连接" => "unlink", "忘记保存的连接" or "删除语音密钥" => "trash",
