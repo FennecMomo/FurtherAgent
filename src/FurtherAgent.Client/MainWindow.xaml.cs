@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.IO;
 using System.Text;
 using System.Text.Json.Nodes;
@@ -51,6 +51,7 @@ public partial class MainWindow : Window
         completionServices = notificationServices;
         InitializeComponent();
         InitializeCompact();
+        InitializeCompactHotkey();
         InitializeHistory();
         string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
         Title = "FurtherAgent · " + version; VersionLabel.Text = version + " · 远程工作空间";

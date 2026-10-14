@@ -14,6 +14,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Contains("--hotkey")) { HotkeyUiChecks.Run(); return; }
         if (args.Length == 2 && args[0] == "--compact") { CompactUiChecks.Run(args[1]); return; }
         if (args.Contains("--interactions")) { InteractionUiChecks.Run(""); return; }
         if (args.Length == 2 && args[0] == "--history") { HistoryUiChecks.Run(args[1]); return; }
