@@ -109,6 +109,29 @@ internal static class InteractionUiChecks
             adapter.Acknowledgement.SetException(new IOException("fixture rejection"));
             await Until(() => !Busy());
             Require(composer.Text == "失败时保留的草稿" && drafts["history"] == composer.Text, "failed submission retains visible and saved draft without retrying");
+            adapter.Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            composer.Text = "先超时后执行"; drafts["history"] = composer.Text;
+            Invoke("Send_Click", window, new RoutedEventArgs());
+            await Until(() => adapter.Sends == 5);
+            adapter.Acknowledgement.SetException(CodexSubmissionReceipt.RequestError("thread-follower-start-turn-timeout"));
+            await Task.Delay(200);
+            Require(Busy() && composer.Text == "先超时后执行", "native timeout waits for original receipt without presenting rejection");
+            adapter.Accepted = true;
+            await Until(() => !Busy());
+            Require(composer.Text == "" && drafts["history"] == "" && adapter.Sends == 5
+                && Find<TextBlock>("StatusBar").Text.Contains("接收"), "late native receipt clears draft and reports success without duplicate submission");
+            adapter.Accepted = false;
+            adapter.Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            composer.Text = "超时前的消息";
+            Invoke("Send_Click", window, new RoutedEventArgs());
+            await Until(() => adapter.Sends == 6);
+            adapter.Acknowledgement.SetException(new TimeoutException());
+            await Task.Delay(150);
+            composer.Text = "超时后新写的草稿"; drafts["history"] = composer.Text;
+            adapter.Accepted = true;
+            await Until(() => !Busy());
+            Require(composer.Text == "超时后新写的草稿" && drafts["history"] == composer.Text,
+                "late receipt after native timeout preserves newly edited draft");
             var settings = Json.Read<AgentSettings>(await remote.Peer.CallAsync("settings", null));
             Invoke("ApplyModelSettings", settings, "history");
             Find<ComboBox>("PermissionPicker").SelectedIndex = 0;
@@ -128,6 +151,7 @@ internal static class InteractionUiChecks
     {
         public string Permission = ":workspace", Model = "model-a";
         public int Sends;
+        public volatile bool Accepted;
         public TaskCompletionSource Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public AgentInfo Info => new("codex", "interaction fixture", true, "isolated fixture", CanConfigure:true);
         public event Action<SessionView>? Changed { add { } remove { } }
@@ -136,7 +160,7 @@ internal static class InteractionUiChecks
         public Task<SessionView> AttachAsync(string id, CancellationToken ct) => Task.FromResult(new SessionView(id,"发送验证","fixture","idle",null,[],[]));
         public Task<AgentSettings> SettingsAsync(CancellationToken ct) => Task.FromResult(new AgentSettings(Model,"openai","default",[],false,false,"fixture", Permission:Permission, CanChangePermissions:true));
         public Task ConfigurePermissionsAsync(string permission, CancellationToken ct) { Permission = permission; return Task.CompletedTask; }
-        public async Task SendAsync(string text,CancellationToken ct) { Interlocked.Increment(ref Sends); await Acknowledgement.Task.WaitAsync(ct); }
+        public async Task SendAsync(string text,CancellationToken ct) { Interlocked.Increment(ref Sends); await CodexSubmissionReceipt.WaitAsync(Acknowledgement.Task, () => Accepted, ct); }
         public Task InterruptAsync(CancellationToken ct) => Task.CompletedTask;
         public Task RespondAsync(string id,string decision,System.Text.Json.Nodes.JsonNode? response,CancellationToken ct)=>Task.CompletedTask;
         public ValueTask DisposeAsync()=>ValueTask.CompletedTask;

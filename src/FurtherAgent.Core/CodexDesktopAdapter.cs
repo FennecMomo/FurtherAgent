@@ -108,7 +108,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             var reply = await source.Task.WaitAsync(TimeSpan.FromMilliseconds(timeoutMs + 3000), ct);
             if (Text(reply["resultType"]) != "success" &&
                 !(allowMissingOwner && Text(reply["resultType"]) == "error" && Text(reply["error"]) == "no-client-found"))
-                throw new IOException($"Codex 桌面拒绝请求：{Text(reply["error"])}。请确认会话已在 B 桌面打开，且桌面版本兼容。");
+                throw CodexSubmissionReceipt.RequestError(Text(reply["error"]));
             return reply;
         }
         finally { pending.TryRemove(id, out _); }

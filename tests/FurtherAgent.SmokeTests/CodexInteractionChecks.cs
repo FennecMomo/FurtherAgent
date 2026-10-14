@@ -35,6 +35,29 @@ internal static class CodexInteractionChecks
         check(rejected, "rejection without an accepted echo preserves failure for the draft owner");
         await CodexSubmissionReceipt.WaitAsync(Task.FromException(new IOException("lost reply")), () => true, default);
         check(true, "persisted echo wins over a lost response without resending");
+        check(CodexSubmissionReceipt.RequestError("thread-follower-start-turn-timeout") is TimeoutException
+            && CodexSubmissionReceipt.RequestError("permission-denied") is IOException,
+            "native timeout is distinct from a rejected request");
+        echoed = false;
+        var lateReceipt = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        waiting = CodexSubmissionReceipt.WaitAsync(lateReceipt.Task, () => echoed, default, TimeSpan.FromSeconds(2));
+        lateReceipt.SetException(CodexSubmissionReceipt.RequestError("thread-follower-start-turn-timeout"));
+        await Task.Delay(150);
+        check(!waiting.IsCompleted, "native timeout keeps the original submission pending for reconciliation");
+        echoed = true;
+        await waiting.WaitAsync(TimeSpan.FromSeconds(2));
+        check(true, "accepted echo after native timeout succeeds so the client can clear its submitted draft");
+        rejected = false;
+        try { await CodexSubmissionReceipt.WaitAsync(Task.FromException(new TimeoutException()), () => false,
+            default, TimeSpan.FromMilliseconds(30)); }
+        catch (IOException ex) { rejected = ex.Message.Contains("发送结果待确认") && ex.Message.Contains("草稿已保留"); }
+        check(rejected, "missing late receipt stays uncertain and preserves draft instead of claiming rejection");
+        using var lateCancel = new CancellationTokenSource(50);
+        rejected = false;
+        try { await CodexSubmissionReceipt.WaitAsync(Task.FromException(new TimeoutException()), () => false,
+            lateCancel.Token, TimeSpan.FromSeconds(2)); }
+        catch (OperationCanceledException) { rejected = true; }
+        check(rejected, "late receipt reconciliation respects cancellation");
         using var canceled = new CancellationTokenSource(); canceled.Cancel();
         rejected = false;
         try { await CodexSubmissionReceipt.WaitAsync(new TaskCompletionSource().Task, () => false, canceled.Token); }
