@@ -50,6 +50,7 @@ public partial class MainWindow : Window
     {
         completionServices = notificationServices;
         InitializeComponent();
+        InitializeHistory();
         string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
         Title = "FurtherAgent · " + version; VersionLabel.Text = version + " · 远程工作空间";
         snapshotTimer = new(System.Windows.Threading.DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(250) };
@@ -318,7 +319,7 @@ public partial class MainWindow : Window
     }
     private void RenderConnectionHealth()
     {
-        if (activeDevice is not null) activeDevice.View = current;
+        if (activeDevice is not null) activeDevice.View = History.Latest ?? current;
         UpdateDevicePicker();
         var indicator = AgentIndicator.From(remote?.IsConnected == true,
             !ConnectButton.IsEnabled || remote?.IsReconnecting == true, current);
@@ -344,10 +345,12 @@ public partial class MainWindow : Window
             : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
             : "会话已加载 · 等待指令（其他入口运行状态不可见）";
     }
-    private void Render(SessionView view)
+    private void Render(SessionView view) => RenderSnapshot(view, false);
+    private void RenderSnapshot(SessionView view, bool historyNavigation)
     {
         if (view.Id != selectedId) return;
-        current = view; ModelButton.Content = string.IsNullOrWhiteSpace(view.Model) ? "模型与模式" : (view.Mode == "plan" ? "Plan" : "Build") + " · " + view.Model;
+        if (!historyNavigation) view = History.Accept(view);
+        current = view; UpdateHistoryActions(); ModelButton.Content = string.IsNullOrWhiteSpace(view.Model) ? "模型与模式" : (view.Mode == "plan" ? "Plan" : "Build") + " · " + view.Model;
         RenderOutputFiles(view);
         ModelButton.ToolTip = "模型与模式 · " + (view.Model ?? "打开会话后设置，远端需支持此功能"); SessionTitle.Text = string.IsNullOrWhiteSpace(view.Title) ? SessionTitle.Text : view.Title;
         SessionMeta.Text = $"{view.Cwd}\n" + (view.StatusDetail ?? $"{(view.Status == "active" ? "执行中" : "等待指令")} · 桌面实时同步");
@@ -359,7 +362,7 @@ public partial class MainWindow : Window
             bool atBottom = ChatScroll.VerticalOffset + ChatScroll.ViewportHeight >= ChatScroll.ExtentHeight - 30;
             double previous = ChatScroll.VerticalOffset;
             transcriptText = content; renderedOutputFilesFingerprint = outputFilesFingerprint; Messages.ItemsSource = view.Messages;
-            if (atBottom) ChatScroll.ScrollToEnd(); else ChatScroll.ScrollToVerticalOffset(previous);
+            if (!historyNavigation) { if (atBottom && !History.ReadingOlder) ChatScroll.ScrollToEnd(); else ChatScroll.ScrollToVerticalOffset(previous); }
         }
         EmptyTitle.Text = "新会话已就绪"; EmptyDescription.Text = "在下方输入第一条消息，开始这段对话。"; EmptyConnect.Visibility = Visibility.Collapsed;
         EmptyState.Visibility = view.Messages.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -456,6 +459,7 @@ public partial class MainWindow : Window
     { if (IsLoaded) SetSessionEnabled(!actionBusy && remote?.IsConnected == true); }
     private void SetSessionEnabled(bool enabled)
     {
+        UpdateHistoryActions();
         SendButton.IsEnabled = enabled && current is not null && current.CanSend;
         InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
         Composer.IsEnabled = SendButton.IsEnabled || InterruptSendButton.IsEnabled;

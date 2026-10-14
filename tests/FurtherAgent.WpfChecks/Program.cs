@@ -14,6 +14,7 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--history") { HistoryUiChecks.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--completion") { CompletionUiChecks.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--connections") { ConnectionUiChecks.Run(args[1]); return; }
         if (args.Length == 2 && args[0] == "--questions") { QuestionUiChecks.Run(args[1]); return; }

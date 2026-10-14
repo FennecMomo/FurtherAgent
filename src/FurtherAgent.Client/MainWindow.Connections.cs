@@ -20,6 +20,7 @@ public partial class MainWindow
         public IReadOnlyList<WorkspaceInfo> Workspaces = [];
         public IReadOnlyList<WorkspaceGroup> Groups = [];
         public SessionView? View;
+        public ConversationHistory History { get; } = new();
         public string? SelectedId, CreateRequestId, FilesSession;
         public string Search = "";
         public Dictionary<string, string> Drafts = [];
@@ -106,7 +107,7 @@ public partial class MainWindow
     {
         if (activeDevice is not { } device) return;
         SaveDraft();
-        device.SelectedId = selectedId; device.View = current;
+        device.SelectedId = selectedId; device.View = History.Latest ?? current;
         lock (snapshotGate)
         {
             if (pendingSnapshot is { } pending && pending.Connection == remote && pending.View.Id == selectedId) device.View = pending.View;

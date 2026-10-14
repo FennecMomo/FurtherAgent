@@ -106,11 +106,19 @@ public sealed partial class MainPage : ContentPage
         panel.SetAppThemeColor(BackgroundColorProperty, Color.FromArgb("#F5F6F7"), Color.FromArgb("#182820"));
         prompts.HorizontalOptions = LayoutOptions.End;
         var footer = new VerticalStackLayout { Padding = new Thickness(12, 4, 12, 8), Spacing = 4,
+            ZIndex = 2,
             Children = { status, attachments, prompts, panel } };
+        // Cover the entire keyboard-following input region, including the rounded
+        // panel corners and status rows; WebView can retain an old Android surface.
+        footer.SetAppThemeColor(BackgroundColorProperty, Colors.White, Color.FromArgb("#101C17"));
+        composer.SetAppThemeColor(Editor.BackgroundColorProperty, Color.FromArgb("#F5F6F7"), Color.FromArgb("#182820"));
+        var transcriptHost = new Grid { IsClippedToBounds = true, ZIndex = 0 };
+        transcriptHost.SetAppThemeColor(BackgroundColorProperty, Colors.White, Color.FromArgb("#101C17"));
+        transcriptHost.Add(transcript);
         status.IsVisible = false;
         status.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(Label.Text)) UpdateStatusVisibility(); };
         var layout = new Grid { RowDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
-        layout.Add(header); layout.Add(transcript, 0, 1); layout.Add(footer, 0, 2);
+        layout.Add(header); layout.Add(transcriptHost, 0, 1); layout.Add(footer, 0, 2);
         Content = CreateDrawerHost(layout);
         composer.TextChanged += (_, _) => { SaveDraft(); RefreshButtons(); };
         timer = Dispatcher.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(400);
