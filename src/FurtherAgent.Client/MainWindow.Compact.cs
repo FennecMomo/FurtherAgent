@@ -20,14 +20,19 @@ public partial class MainWindow
     private ScrollViewer compactScroll = null!;
     private RowDefinition compactContextRow = null!, compactSplitterRow = null!;
     private bool compactMode, compactContextHidden;
+    private Border compactBall = null!;
+    private Size expandedCompactSize = new(420, 210);
+    private ResizeMode expandedResizeMode;
+    private System.Windows.Point ballPress;
+    private bool ballDragged;
     private Rect fullBounds;
     private WindowState fullState;
     private WindowStyle fullStyle;
     private WindowChrome? fullChrome;
     private string compactSettingsPath = Path.Combine(Path.GetDirectoryName(SettingsFile)!, "compact-window.json");
-    private record CompactPosition(double Left, double Top);
+    private record CompactPosition(double Left, double Top, double Width = 420, double Height = 210);
     private CompactPosition? compactPosition;
-    private double fullMinWidth, fullMinHeight, contextHeight = 110;
+    private double fullMinWidth, fullMinHeight;
 
     private void InitializeCompact()
     {
@@ -41,6 +46,22 @@ public partial class MainWindow
         compactSurface.RowDefinitions.Add(compactSplitterRow);
         compactSurface.RowDefinitions.Add(new() { Height = new GridLength(64), MinHeight = 56 });
         root.Children.Add(compactSurface);
+        compactBall = new Border { Visibility = Visibility.Collapsed, Background = Brushes.LightGray,
+            CornerRadius = new CornerRadius(22), Width = 44, Height = 44, Cursor = Cursors.Hand,
+            Focusable = true, ToolTip = "点击展开，按住拖动", Child = new TextBlock { Text = "•", FontSize = 24,
+                HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.DimGray } };
+        System.Windows.Automation.AutomationProperties.SetName(compactBall, "展开迷你窗口");
+        root.Children.Add(compactBall);
+        compactBall.MouseLeftButtonDown += (_, e) => { ballPress = e.GetPosition(compactBall); ballDragged = false; compactBall.CaptureMouse(); e.Handled = true; };
+        compactBall.MouseMove += (_, e) =>
+        {
+            if (e.LeftButton != MouseButtonState.Pressed || !compactBall.IsMouseCaptured) return;
+            var point = e.GetPosition(compactBall);
+            if (Math.Abs(point.X - ballPress.X) + Math.Abs(point.Y - ballPress.Y) < 5) return;
+            ballDragged = true; compactBall.ReleaseMouseCapture(); DragMove(); SaveCompactPosition();
+        };
+        compactBall.MouseLeftButtonUp += (_, e) => { compactBall.ReleaseMouseCapture(); if (!ballDragged) ToggleCompactContext(); e.Handled = true; };
+        compactBall.KeyDown += (_, e) => { if (e.Key is Key.Enter or Key.Space) { ToggleCompactContext(); e.Handled = true; } };
         compactSurface.SizeChanged += (_, _) =>
         {
             if (compactMode && !compactContextHidden)
@@ -59,7 +80,7 @@ public partial class MainWindow
             System.Windows.Automation.AutomationProperties.SetName(button, hint);
             button.Click += click; buttons.Children.Add(button); return button;
         }
-        Small("⌃", "收起 / 展开上下文", (_, _) => ToggleCompactContext());
+        Small("⌄", "向右下角收成小球", (_, _) => ToggleCompactContext());
         Small("↗", "还原大窗口", (_, _) => RestoreCompact());
         var grip = new Border { Background = Brushes.Transparent, ToolTip = "按住拖动窗口" };
         grip.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) { DragMove(); e.Handled = true; } };
@@ -88,15 +109,18 @@ public partial class MainWindow
         if (compactMode) return;
         fullState = WindowState; fullBounds = WindowState == WindowState.Normal ? new Rect(Left, Top, ActualWidth, ActualHeight) : RestoreBounds;
         fullStyle = WindowStyle; fullChrome = WindowChrome.GetWindowChrome(this); fullMinWidth = MinWidth; fullMinHeight = MinHeight;
-        WindowState = WindowState.Normal; MinWidth = 280; MinHeight = compactContextHidden ? 110 : 180;
+        compactContextHidden = false;
+        WindowState = WindowState.Normal; MinWidth = 280; MinHeight = 180;
         WindowStyle = WindowStyle.None;
         WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 0, ResizeBorderThickness = new Thickness(5), GlassFrameThickness = new Thickness(0), UseAeroCaptionButtons = false });
-        Width = 420; Height = compactContextHidden ? 110 : 210;
+        Width = 420; Height = 210;
         compactMode = true; fullSurface.Visibility = Visibility.Collapsed; compactSurface.Visibility = Visibility.Visible;
         try { compactPosition ??= JsonSerializer.Deserialize<CompactPosition>(File.ReadAllText(compactSettingsPath)); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException) { }
         if (compactPosition is { } saved && double.IsFinite(saved.Left) && double.IsFinite(saved.Top))
         {
+            if (double.IsFinite(saved.Width) && double.IsFinite(saved.Height))
+            { Width = Math.Clamp(saved.Width, 280, Math.Max(280, SystemParameters.VirtualScreenWidth)); Height = Math.Clamp(saved.Height, 180, Math.Max(180, SystemParameters.VirtualScreenHeight)); }
             Left = Math.Clamp(saved.Left, SystemParameters.VirtualScreenLeft, Math.Max(SystemParameters.VirtualScreenLeft, SystemParameters.VirtualScreenLeft + SystemParameters.VirtualScreenWidth - Width));
             Top = Math.Clamp(saved.Top, SystemParameters.VirtualScreenTop, Math.Max(SystemParameters.VirtualScreenTop, SystemParameters.VirtualScreenTop + SystemParameters.VirtualScreenHeight - Height));
         }
@@ -104,14 +128,47 @@ public partial class MainWindow
     }
     private void ToggleCompactContext()
     {
-        compactContextHidden = !compactContextHidden;
-        if (compactContextHidden) { MinHeight = 110; contextHeight = Math.Max(40, compactContextRow.ActualHeight); compactContextRow.MinHeight = 0; compactContextRow.Height = new GridLength(0); compactSplitterRow.Height = new GridLength(0); compactScroll.Visibility = Visibility.Collapsed; Height = 110; }
-        else { MinHeight = 180; compactContextRow.MinHeight = 40; compactContextRow.Height = new GridLength(contextHeight); compactSplitterRow.Height = new GridLength(5); compactScroll.Visibility = Visibility.Visible; Height += contextHeight + 5; }
+        if (!compactMode) return;
+        double right = Left + Width, bottom = Top + Height;
+        if (!compactContextHidden)
+        {
+            expandedCompactSize = new(Width, Height); expandedResizeMode = ResizeMode;
+            compactContextHidden = true;
+            compactSurface.Visibility = Visibility.Collapsed; compactBall.Visibility = Visibility.Visible;
+            MinWidth = MinHeight = 44; ResizeMode = ResizeMode.NoResize;
+            Width = Height = 44; Left = right - 44; Top = bottom - 44;
+            SetCompactBallRegion(true); compactBall.Focus();
+        }
+        else
+        {
+            compactContextHidden = false; SetCompactBallRegion(false);
+            compactBall.Visibility = Visibility.Collapsed; compactSurface.Visibility = Visibility.Visible;
+            ResizeMode = expandedResizeMode; MinWidth = 280; MinHeight = 180;
+            Width = expandedCompactSize.Width; Height = expandedCompactSize.Height;
+            Left = right - Width; Top = bottom - Height;
+            compactComposer.Focus();
+        }
+        SaveCompactPosition();
     }
+    private void SetCompactBallRegion(bool enabled)
+    {
+        var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero) return;
+        if (!enabled) { SetWindowRgn(handle, IntPtr.Zero, true); return; }
+        var dpi = VisualTreeHelper.GetDpi(this);
+        var region = CreateEllipticRgn(0, 0, (int)Math.Round(44 * dpi.DpiScaleX), (int)Math.Round(44 * dpi.DpiScaleY));
+        if (SetWindowRgn(handle, region, true) == 0) DeleteObject(region);
+    }
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern IntPtr CreateEllipticRgn(int left, int top, int right, int bottom);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern int SetWindowRgn(IntPtr window, IntPtr region, bool redraw);
+    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr handle);
+
     private void RestoreCompact()
     {
         if (!compactMode) return;
         SaveCompactPosition();
+        if (compactContextHidden) { SetCompactBallRegion(false); ResizeMode = expandedResizeMode; compactContextHidden = false; }
+        compactBall.Visibility = Visibility.Collapsed;
         compactMode = false; compactSurface.Visibility = Visibility.Collapsed; fullSurface.Visibility = Visibility.Visible;
         MinWidth = fullMinWidth; MinHeight = fullMinHeight; WindowStyle = fullStyle; WindowChrome.SetWindowChrome(this, fullChrome);
         Left = fullBounds.Left; Top = fullBounds.Top; Width = fullBounds.Width; Height = fullBounds.Height; WindowState = fullState;
@@ -120,7 +177,9 @@ public partial class MainWindow
     private void SaveCompactPosition()
     {
         if (!compactMode || WindowState != WindowState.Normal || !double.IsFinite(Left) || !double.IsFinite(Top)) return;
-        compactPosition = new(Left, Top);
+        compactPosition = compactContextHidden
+            ? new(Left + Width - expandedCompactSize.Width, Top + Height - expandedCompactSize.Height, expandedCompactSize.Width, expandedCompactSize.Height)
+            : new(Left, Top, Width, Height);
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(compactSettingsPath)!);

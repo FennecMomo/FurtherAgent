@@ -47,10 +47,24 @@ internal static class CompactUiChecks
             var surface = Field<Grid>("compactSurface");
             var bitmap = new RenderTargetBitmap(420,210,96,96,PixelFormats.Pbgra32); bitmap.Render((Visual)window.Content);
             var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using (var file = File.Create(output)) png.Save(file);
-            Call("ToggleCompactContext"); Layout(420,110);
-            Check(Field<ScrollViewer>("compactScroll").Visibility == Visibility.Collapsed && window.Height <= 110, "context collapses to input-sized window");
+            window.Left = 120; window.Top = 140;
+            for (int i = 0; i < 25; i++)
+            {
+                Call("ToggleCompactContext"); Layout(44,44);
+                if (window.Width != 44 || window.Height != 44 || window.Left != 496 || window.Top != 306)
+                    throw new Exception("ball must preserve bottom-right corner");
+                if (surface.Visibility != Visibility.Collapsed || Field<Border>("compactBall").Visibility != Visibility.Visible)
+                    throw new Exception("ball must hide both context and input");
+                Call("ToggleCompactContext"); Layout(420,210);
+                if (window.Width != 420 || window.Height != 210 || window.Left != 120 || window.Top != 140)
+                    throw new Exception("collapse cycles must not accumulate size or position drift");
+            }
+            Check(true, "25 collapse cycles preserve exact size and bottom-right anchor with only a ball visible");
+            Call("ToggleCompactContext"); Layout(44,44);
+            window.Left += 30; window.Top += 20;
             Call("ToggleCompactContext"); Layout(420,210);
-            Check(Field<ScrollViewer>("compactScroll").Visibility == Visibility.Visible, "context expands again");
+            Check(window.Left == 150 && window.Top == 160 && composer.Text == "继续保留草稿",
+                "moving the ball moves expanded window without losing draft");
             window.Left = 160; window.Top = 180;
             Call("RestoreCompact"); Layout(1100,760);
             Check(File.Exists(positionFile), "mini position is persisted on restore");
