@@ -15,11 +15,13 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private static IReadOnlyList<SessionInfo> Sorted(JsonNode? node) => Json.Read<SessionInfo[]>(node).OrderByDescending(s => s.SortTime).ThenBy(s => s.Id).ToArray();
     private void Accept(SessionView incoming, bool reset = false)
     {
+        if (incoming.Id != View?.Id || incoming.Model is { } model && Settings is { } settings && settings.Model != model)
+            Settings = null;
         // Older Codex hosts omit files in snapshots. Preserve the separately queried list.
         if (incoming.OutputFiles is null && View?.Id == incoming.Id)
             incoming = incoming with { OutputFiles = View.OutputFiles };
         // Even a legacy host must not hand megabytes of history to the WebView.
-        if (incoming.History is null) incoming = HistoryPaging.Latest(incoming) with { History = null };
+        if (incoming.History is null) incoming = HistoryPaging.Latest(incoming, includeOperations: true) with { History = null };
         latest = incoming;
         if (reset || !readingOlder) { View = incoming; readingOlder = false; }
         else if (View is { } current) View = incoming with { Messages = current.Messages, History = current.History };
@@ -28,7 +30,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private async Task NegotiateAsync(RpcPeer peer)
     {
         paging = false;
-        try { paging = (await peer.CallAsync("history-mode", new { version = 1 }))?["enabled"]?.GetValue<bool>() == true; }
+        try { paging = (await peer.CallAsync("history-mode", new { version = 2 }))?["enabled"]?.GetValue<bool>() == true; }
         catch (IOException) { /* Older hosts still work with a bounded local view. */ }
     }
     public Task ClearCacheAsync() => cache?.ClearAsync() ?? Task.CompletedTask;
@@ -56,6 +58,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private string? selected;
     private string? pendingCreate;
     public event Action? Changed;
+    public AgentSettings? Settings { get; private set; }
     public AgentInfo? Agent { get; private set; }
     public SessionView? View { get; private set; }
     public IReadOnlyList<SessionInfo> Sessions { get; private set; } = [];
@@ -84,7 +87,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public Task ConnectAsync(string url, string code) => Run(async () =>
     {
         await CloseConnectionAsync();
-        selected = null; View = null; Agent = null; Sessions = []; pendingCreate = null;
+        selected = null; View = null; Settings = null; Agent = null; Sessions = []; pendingCreate = null;
         latest = null; readingOlder = false;
         cacheScope = url.TrimEnd('/').ToLowerInvariant() + "\n" + code.Replace("-", "").Trim().ToUpperInvariant();
         SendUncertain = false;
@@ -177,7 +180,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             { View = saved with { CanSend = false, CanStop = false, Prompts = [] }; Status = "显示本地缓存 · 正在同步最新状态…"; Notify(); }
             var view = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id }));
             if (revision != generation) return;
-            selected = id; Accept(view, true); Status = "已同步最新记录";
+            selected = id; Settings = null; Accept(view, true); Status = "已同步最新记录";
             await RefreshFilesCoreAsync();
         }
         catch { View = oldView; throw; }
@@ -279,25 +282,26 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public async Task<AgentSettings> GetSettingsAsync()
     {
         AgentSettings? settings = null;
-        await Run(async () => settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null, responseTimeout: TimeSpan.FromMinutes(1))));
+        await Run(async () => Settings = settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null, responseTimeout: TimeSpan.FromMinutes(1))));
         return settings!;
     }
     public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort = null) => Run(async () =>
     {
         if (Agent?.CanConfigure != true) throw new NotSupportedException("远端不支持设置。");
         await Peer.CallAsync("configure", new { model, provider, mode, reasoningEffort });
+        if (Settings is { } current) Settings = current with { Model = model, Provider = provider, Mode = mode, ReasoningEffort = reasoningEffort };
     });
     public Task ArchiveAsync() => Run(async () =>
     {
         if (Agent?.CanArchive != true || View is null) throw new NotSupportedException("当前不支持归档。");
         await Peer.CallAsync("archive", new { session = View.Id, archived = true });
-        ++generation; selected = null; View = null;
+        ++generation; selected = null; View = null; Settings = null;
         Sessions = Sorted(await Peer.CallAsync("sessions", null));
     });
 
     public Task DisconnectAsync() => Run(async () =>
     {
-        await CloseConnectionAsync(); View = null; latest = null; readingOlder = false; selected = null; Sessions = []; Agent = null; Status = "已断开 · 远端任务不受影响";
+        await CloseConnectionAsync(); View = null; latest = null; readingOlder = false; selected = null; Settings = null; Sessions = []; Agent = null; Status = "已断开 · 远端任务不受影响";
     });
     private async Task CloseConnectionAsync()
     {

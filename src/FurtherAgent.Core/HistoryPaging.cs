@@ -10,10 +10,12 @@ public static class HistoryPaging
     public const int MaxPageBytes = 1024 * 1024;
     private sealed record Index(string Revision, List<ChatEntry> Messages, int[] Sizes);
     private static readonly ConditionalWeakTable<SessionView, Index> Indexes = new();
-    private static Index Get(SessionView view) => Indexes.GetValue(view, value =>
+    private static readonly ConditionalWeakTable<SessionView, Index> OperationIndexes = new();
+    private static Index Get(SessionView view, bool includeOperations) => (includeOperations ? OperationIndexes : Indexes).GetValue(view, value =>
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var entries = value.Messages.Where(IsConversation).Select(m => m with { Text = Limit(m.Text), Detail = null }).ToList();
+        var entries = value.Messages.Where(m => includeOperations || IsConversation(m))
+            .Select(m => m with { Text = Limit(m.Text), Detail = includeOperations && m.Detail is not null ? Limit(m.Detail) : null }).ToList();
         var sizes = new int[entries.Count];
         for (int i = 0; i < entries.Count; i++)
         {
@@ -25,9 +27,9 @@ public static class HistoryPaging
     });
     private static string Limit(string text) => text.Length <= 20000 ? text : text[..20000] + "\n[长内容已截断，请在电脑查看全文]";
     public static bool IsConversation(ChatEntry entry) => ChatPresentation.Kind(entry) is "user" or "assistant";
-    public static HistoryPage Page(SessionView view, int? before = null, string? revision = null)
+    public static HistoryPage Page(SessionView view, int? before = null, string? revision = null, bool includeOperations = false)
     {
-        var index = Get(view);
+        var index = Get(view, includeOperations);
         if (revision is not null && revision != index.Revision) throw new IOException("历史已更新，请返回最新记录后继续加载。");
         int end = before ?? index.Messages.Count;
         if (end < 0 || end > index.Messages.Count) throw new ArgumentException("历史游标无效。");
@@ -36,9 +38,9 @@ public static class HistoryPaging
             bytes += index.Sizes[--start];
         return new(view.Id, index.Revision, start, end, index.Messages.Count, index.Messages.GetRange(start, end - start));
     }
-    public static SessionView Latest(SessionView view)
+    public static SessionView Latest(SessionView view, bool includeOperations = false)
     {
-        var page = Page(view);
+        var page = Page(view, includeOperations: includeOperations);
         return view with { Messages = page.Messages, History = new(page.Revision, page.Start, page.Total) };
     }
 }

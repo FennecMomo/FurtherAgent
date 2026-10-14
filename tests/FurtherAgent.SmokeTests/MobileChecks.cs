@@ -15,6 +15,11 @@ internal static class MobileChecks
         check(mobile.Connected && mobile.Sessions.Count == 2, "mobile pairs and lists sessions through real relay");
         await mobile.SelectAsync("one");
         check(mobile.View?.Id == "one", "mobile opens remote session");
+        await mobile.GetSettingsAsync();
+        check(mobile.Settings?.ReasoningEffort == "high", "composer gets actual remote model and reasoning settings");
+        await mobile.ConfigureAsync("other", "fixture", "default", "low");
+        check(mobile.Settings is { Model: "other", ReasoningEffort: "low" }, "composer settings refresh after acknowledged configuration");
+        check(mobile.View!.Messages.Any(m => m.Role == "工具" && m.Detail == "fixture detail"), "v2 negotiation transports operation details through the real relay");
         await mobile.ResumeAsync();
         check(mobile.Connected && mobile.View?.Id == "one" && adapter.Sends == 0,
             "foreground resume retains selected session without submitting a message");
@@ -44,6 +49,7 @@ internal static class MobileChecks
         bool rejected = false;
         try { await mobile.SelectAsync("locked"); } catch { rejected = true; }
         check(rejected && mobile.View?.Id == "one", "rejected mobile switch preserves previous selection");
+        check(mobile.Settings?.Model == "other", "rejected session switch preserves current model settings");
         adapter.FailAfterAccept = true;
         try { await mobile.SendAsync("accepted but lost response", []); } catch { }
         check(mobile.SendUncertain && adapter.Sends == 2, "mobile retains uncertain send state");
@@ -69,6 +75,7 @@ internal static class MobileChecks
         try { await mobile.RespondAsync("stale", "accept"); } catch { invalidPrompt = true; }
         check(invalidPrompt && adapter.Decisions == 1, "mobile rejects stale approval ID");
         await mobile.CreateAsync(); check(mobile.View?.Id == "created", "mobile creates and attaches supported session");
+        check(mobile.Settings is null, "new session never inherits prior session reasoning label");
         await mobile.ArchiveAsync(); check(mobile.View is null && adapter.Archives == 1, "mobile archives without deleting history");
         await mobile.DisconnectAsync();
         check(!mobile.Connected && mobile.View is null, "mobile explicit disconnect clears active view");
@@ -82,7 +89,7 @@ internal static class MobileChecks
         check(attachment.Contains("href=\"attachment:app.apk\""), "mobile attachment links reach native download handler");
         var fileCard = Transcript.Render(Transcript.Preview with { OutputFiles = [new("outbox/资料 #1.txt", "资料 #1.txt", 4096)] });
         check(fileCard.Contains("会话文件") && fileCard.Contains("attachment:" + Uri.EscapeDataString("资料 #1.txt")), "mobile renders downloadable file cards with encoded Unicode filenames");
-        check(demo.Contains("离线界面预览") && !demo.Contains("<details>"), "mobile preview retains conversation and omits tool records");
+        check(demo.Contains("离线界面预览") && demo.Contains("class='operations'"), "mobile preview retains conversation and groups tool records");
         Directory.Delete(filesRoot, true);
     }
     private sealed class Adapter : IAgentAdapter
@@ -95,7 +102,7 @@ internal static class MobileChecks
         public event Action<SessionView>? Changed;
         public event Action<string>? Faulted { add { } remove { } }
         public Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<SessionInfo>>([new("one", "One", ""), new("locked", "Locked", "")]);
-        private SessionView View(string id, string text) => new(id, id, "", "active", "run", [new("assistant", text)], [new("approve", "hermes/approval", "Test", "", null)], CanStop: true);
+        private SessionView View(string id, string text) => new(id, id, "", "active", "run", [new("工具", "fixture tool", "fixture detail"), new("assistant", text)], [new("approve", "hermes/approval", "Test", "", null)], CanStop: true);
         public void Emit(string id, string text) => Changed?.Invoke(View(id, text));
         public Task<SessionView> AttachAsync(string id, CancellationToken ct)
         { if (id == "locked") throw new IOException("running elsewhere"); Attaches++; selected = id; return Task.FromResult(View(id, last)); }
@@ -105,6 +112,8 @@ internal static class MobileChecks
         public Task InterruptAsync(CancellationToken ct) { Stops++; return Task.CompletedTask; }
         public Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct) { Decisions++; return Task.CompletedTask; }
         public Task ArchiveAsync(string id, bool archived, CancellationToken ct) { Archives++; return Task.CompletedTask; }
+        public Task<AgentSettings> SettingsAsync(CancellationToken ct) => Task.FromResult(new AgentSettings("fixture", "fixture", "default", [], true, false, "", "high", true));
+        public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct) => Task.CompletedTask;
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 }

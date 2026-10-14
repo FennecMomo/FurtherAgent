@@ -7,7 +7,7 @@ using FurtherAgent.Mobile;
 
 namespace FurtherAgent.AndroidApp;
 
-public sealed class MainPage : ContentPage
+public sealed partial class MainPage : ContentPage
 {
     private readonly DeviceConnectionPool<MobileSession> connections = new();
     private readonly Dictionary<string, string> connectionNames = [];
@@ -16,22 +16,18 @@ public sealed class MainPage : ContentPage
     public MobileSession CurrentSession => session;
     private static MobileSession NewSession() => new(action => MainThread.BeginInvokeOnMainThread(action), new HistoryCache(Path.Combine(FileSystem.AppDataDirectory, "history-cache-v1")));
     private string? activeConnection;
-    private readonly Picker devicePicker = new() { Title = "切换已连接设备", FontSize = 12 };
-    private bool updatingDevices, connectingDevice;
+    private bool connectingDevice;
     private string devicesSignature = "";
-    private sealed record DeviceChoice(string Id, string Label);
     private readonly WebView transcript = new();
-    private readonly Label title = Ui.Text("工作，随时接续", 21, true);
-    private readonly Label subtitle = Ui.Text("离线预览 · 不会执行任务", 11);
+    private readonly Label title = Ui.Text("工作，随时接续", 17, true);
     private readonly Label status = Ui.Text("连接远端设备，继续你的会话", 11);
     private readonly Label attachments = Ui.Text("", 11);
     private readonly Label connectionLabel = Ui.Text("已断连", 12, true);
     private readonly Microsoft.Maui.Controls.Shapes.Ellipse connectionDot = new() { WidthRequest = 11, HeightRequest = 11, Fill = new SolidColorBrush(Color.FromArgb("#DC2626")), VerticalOptions = LayoutOptions.Center };
-    private readonly Label filesCaption = ActionCaption("附件"), promptsCaption = ActionCaption("确认");
     private string? backgroundServiceError;
     private readonly Editor composer = new() { Placeholder = "连接设备后，在这里发送消息…", AutoSize = EditorAutoSizeOption.TextChanges,
         MinimumHeightRequest = 54, MaximumHeightRequest = 140, FontSize = 15, BackgroundColor = Colors.Transparent };
-    private readonly Button send, stop, files, models, prompts, conversations, voice;
+    private readonly Button send, stop, files, models, reasoning, prompts, conversations, voice;
     private readonly Dictionary<string, List<RemoteFile>> uploads = [];
     private string scope = "", draftKey = "", lastSession = "", lastHtml = "";
     private bool loadingDraft, webReady, pendingRender, preview = true, interactionBusy, recognizingSpeech, closed;
@@ -47,30 +43,27 @@ public sealed class MainPage : ContentPage
     public MainPage()
     {
         Title = "FurtherAgent"; Ui.Theme(this);
-        Ui.TextTheme(title); Ui.TextTheme(subtitle); Ui.TextTheme(status); Ui.TextTheme(attachments);
+        Ui.TextTheme(title); Ui.TextTheme(status); Ui.TextTheme(attachments);
         composer.SetAppThemeColor(Editor.TextColorProperty, Ui.Green, Colors.White);
         conversations = Ui.Button("会话", OpenSessionsAsync);
-        var connect = Ui.Button("连接", OpenConnectionAsync);
-        var logo = Ui.Text("F", 24, true); logo.TextColor = Colors.White; logo.HorizontalTextAlignment = TextAlignment.Center; logo.VerticalTextAlignment = TextAlignment.Center;
-        var badge = new Border { Content = logo, BackgroundColor = Ui.Green, WidthRequest = 42, HeightRequest = 42,
-            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 14 }, StrokeThickness = 0 };
-        var brand = new VerticalStackLayout { Spacing = 0, Children = { Ui.Text("FurtherAgent", 17, true), Ui.Text("ANDROID · " + AppInfo.Current.VersionString, 9) } };
-        foreach (var label in brand.Children.OfType<Label>()) Ui.TextTheme(label);
-        var header = new Grid { ZIndex = 1, Padding = new Thickness(16, 12), ColumnSpacing = 10,
-            ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Auto)] };
-        header.Add(badge); header.Add(brand, 1); header.Add(conversations, 2); header.Add(connect, 3);
-        header.Add(Ui.Button("检查更新", () => Navigation.PushAsync(new UpdatePage())), 4);
+        NavigationPage.SetHasNavigationBar(this, false);
+        title.MaxLines = 1; title.LineBreakMode = LineBreakMode.TailTruncation;
+        title.HorizontalTextAlignment = TextAlignment.Center;
         Ui.TextTheme(connectionLabel);
-        var connection = new HorizontalStackLayout { Spacing = 7, Children = { connectionDot, connectionLabel } };
-        SemanticProperties.SetDescription(connection, "远端连接与 Agent 状态");
-        devicePicker.ItemDisplayBinding = new Binding(nameof(DeviceChoice.Label));
-        devicePicker.SelectedIndexChanged += (_, _) =>
-        {
-            if (updatingDevices || devicePicker.SelectedItem is not DeviceChoice choice) return;
-            if (interactionBusy || session.Busy || connectingDevice) { devicesSignature = ""; UpdateDevices(); return; }
-            if (connections.Entries.TryGetValue(choice.Id, out var target)) ActivateConnection(choice.Id, target);
-        };
-        var heading = new VerticalStackLayout { ZIndex = 1, Padding = new Thickness(20, 4, 20, 8), Spacing = 5, Children = { devicePicker, title, connection, subtitle } };
+        deviceButton = TextAction("连接设备 ▾", SwitchDeviceAsync);
+        deviceButton.FontSize = 12; deviceButton.MaximumWidthRequest = 190;
+        var connection = new HorizontalStackLayout { Spacing = 5, HorizontalOptions = LayoutOptions.Center,
+            Children = { deviceButton, connectionDot, connectionLabel } };
+        var heading = new VerticalStackLayout { Spacing = 0, VerticalOptions = LayoutOptions.Center, Children = { title, connection } };
+        var header = new Grid { Padding = new Thickness(10, 4), ColumnSpacing = 4,
+            ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
+        conversations.BackgroundColor = Colors.Transparent;
+        conversations.SetAppTheme(Button.ImageSourceProperty, ImageSource.FromFile("ic_menu.png"), ImageSource.FromFile("ic_menu_white.png"));
+        var newChat = Ui.Button("新建会话", NewConversationAsync); newChat.BackgroundColor = Colors.Transparent;
+        newChat.SetAppTheme(Button.ImageSourceProperty, ImageSource.FromFile("ic_square_pen.png"), ImageSource.FromFile("ic_square_pen_white.png"));
+        header.Add(conversations); header.Add(heading, 1); header.Add(newChat, 2);
+        AlignStart(deviceButton);
+        header.SizeChanged += (_, _) => deviceButton.MaximumWidthRequest = Math.Clamp(header.Width - 210, 70, 190);
         transcript.Source = new HtmlWebViewSource { Html = Transcript.Shell };
         transcript.Navigated += (_, _) => { webReady = true; QueueRender(); };
         transcript.Navigating += OnNavigating;
@@ -78,10 +71,9 @@ public sealed class MainPage : ContentPage
         stop = Ui.Button("停止", () => Act(session.StopAsync));
         files = Ui.Button("附件", FileMenuAsync);
         models = Ui.Button("模型", SettingsAsync);
+        reasoning = TextAction("思考 ▾", SettingsAsync);
+        reasoning.FontSize = 12; reasoning.Padding = new Thickness(2, 0);
         prompts = Ui.Button("待确认", RespondAsync);
-        var toolbar = new HorizontalStackLayout { Spacing = 6, Children = {
-            LabeledAction(files, filesCaption), LabeledAction(models, ActionCaption("模型")),
-            LabeledAction(stop, ActionCaption("停止")), LabeledAction(prompts, promptsCaption) } };
         voice = Ui.Button("语音", () => Task.CompletedTask);
         new HoldToTalk(voice, () =>
         {
@@ -100,14 +92,26 @@ public sealed class MainPage : ContentPage
         }).Attach();
         voice.AutomationId = "voice-input";
         SemanticProperties.SetDescription(voice, "按住说话，松开发送，下拉放弃");
-        var input = new Grid { ColumnSpacing = 6, ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
-        input.Add(composer); voice.VerticalOptions = LayoutOptions.End;
-        var voiceControl = LabeledAction(voice, ActionCaption("按住说话")); voiceControl.VerticalOptions = LayoutOptions.End; input.Add(voiceControl, 1);
-        send.VerticalOptions = LayoutOptions.End; input.Add(send, 2);
-        var footer = new VerticalStackLayout { Padding = new Thickness(16, 8, 16, 12), Spacing = 8,
-            Children = { status, attachments, toolbar, input } };
-        var layout = new Grid { RowDefinitions = [new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
-        layout.Add(header); layout.Add(heading, 0, 1); layout.Add(transcript, 0, 2); layout.Add(footer, 0, 3); Content = layout;
+        StyleModelButton(models);
+        prompts.BackgroundColor = Color.FromArgb("#FFF3E6"); prompts.WidthRequest = -1;
+        prompts.Padding = new Thickness(12, 0); prompts.FontSize = 12;
+        files.BackgroundColor = voice.BackgroundColor = Colors.Transparent;
+        send.CornerRadius = stop.CornerRadius = 22;
+        stop.BackgroundColor = Ui.Green; Ui.SetAction(stop, "停止", true);
+        var controls = new Grid { ColumnSpacing = 2, ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Auto)] };
+        controls.Add(files); controls.Add(models, 1); controls.Add(reasoning, 2); controls.Add(voice, 3); controls.Add(stop, 4); controls.Add(send, 5);
+        var input = new VerticalStackLayout { Spacing = 2, Children = { composer, controls } };
+        var panel = new Border { Padding = new Thickness(10, 6), StrokeThickness = 0,
+            StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 24 }, Content = input };
+        panel.SetAppThemeColor(BackgroundColorProperty, Color.FromArgb("#F5F6F7"), Color.FromArgb("#182820"));
+        prompts.HorizontalOptions = LayoutOptions.End;
+        var footer = new VerticalStackLayout { Padding = new Thickness(12, 4, 12, 8), Spacing = 4,
+            Children = { status, attachments, prompts, panel } };
+        status.IsVisible = false;
+        status.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(Label.Text)) UpdateStatusVisibility(); };
+        var layout = new Grid { RowDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
+        layout.Add(header); layout.Add(transcript, 0, 1); layout.Add(footer, 0, 2);
+        Content = CreateDrawerHost(layout);
         composer.TextChanged += (_, _) => { SaveDraft(); RefreshButtons(); };
         timer = Dispatcher.CreateTimer(); timer.Interval = TimeSpan.FromMilliseconds(400);
         timer.Tick += async (_, _) =>
@@ -160,7 +164,7 @@ public sealed class MainPage : ContentPage
         if (connections.Entries.Count == 0 && !connectingDevice) ConnectionService.Stop();
         UpdateDevices();
         var indicator = session.Indicator;
-        connectionLabel.Text = indicator.Label;
+        connectionLabel.Text = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true ? "等待回答" : indicator.Label;
         connectionDot.Fill = new SolidColorBrush(Color.FromArgb(indicator.Color));
         if (session.Connected) preview = false;
         string nextKey = session.View is { } view ? $"draft.{scope}.{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(view.Id)))}" : "";
@@ -176,14 +180,11 @@ public sealed class MainPage : ContentPage
             composer.Text = nextKey.Length > 0 ? Preferences.Get(nextKey, "") : ""; loadingDraft = false;
         }
         title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
-        subtitle.Text = preview ? "离线预览 · 不会执行任务" : session.View is { } v
-            ? $"{session.Agent?.Name} · {StateName(v)}\n{v.Cwd}" : session.Agent?.Name ?? "尚未连接";
         if (!recognizingSpeech)
             status.Text = downloadStatus ?? (session.Status + (backgroundServiceError is null ? "" : " · " + backgroundServiceError));
+        deviceButton.Text = session.HasConnection ? $"{connectionNames.GetValueOrDefault(activeConnection ?? "", session.DeviceName)} · {session.Agent?.Name} ▾" : "连接设备 ▾";
         RefreshButtons(); QueueRender();
     }
-    private static string StateName(SessionView view) => view.Prompts.Count > 0 ? "等待确认" : view.Status switch
-    { "running" or "active" => "正在执行", "idle" or "ready" => "就绪", _ => view.Status };
     private List<RemoteFile> PendingFiles => uploads.GetValueOrDefault(draftKey) ?? [];
     private void RefreshButtons()
     {
@@ -198,26 +199,31 @@ public sealed class MainPage : ContentPage
         stop.IsEnabled = ready && session.View!.CanStop == true;
         files.IsEnabled = downloadCancel is not null || ready && session.Agent?.CanFiles == true;
         Ui.SetAction(files, downloadCancel is null ? "附件" : "取消下载");
-        filesCaption.Text = downloadCancel is null ? "附件" : "取消下载";
+        if (downloadCancel is null) files.SetAppTheme(Button.ImageSourceProperty, Ui.Icon("新建会话"), Ui.Icon("新建会话", true));
+        voice.SetAppTheme(Button.ImageSourceProperty, Ui.Icon(recognizingSpeech ? "停止" : "语音"), Ui.Icon(recognizingSpeech ? "停止" : "语音", true));
         models.IsEnabled = ready && session.Agent?.CanConfigure == true;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
         bool hasQuestion = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true;
         Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"{(hasQuestion ? "回答问题" : "确认")} {session.View.Prompts.Count}" : "待确认", hasQuestion);
-        promptsCaption.Text = session.View?.Prompts.Count > 0 ? $"{(hasQuestion ? "回答" : "确认")} {session.View.Prompts.Count}" : "确认";
-        conversations.IsEnabled = session.Connected && !session.Busy && !interactionBusy;
+        conversations.IsEnabled = !session.Busy && !interactionBusy;
+        bool hasDraft = !string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0;
+        stop.IsVisible = session.View?.CanStop == true && !session.SendUncertain && !(hasDraft && session.View.CanSend);
+        send.IsVisible = !stop.IsVisible;
+        prompts.IsVisible = session.View?.Prompts.Count > 0;
+        prompts.ImageSource = null;
+        prompts.Text = $"{(hasQuestion ? "待回答" : "待确认")} {session.View?.Prompts.Count}  ›";
+        models.ImageSource = null;
+        models.Text = (session.Settings?.Model ?? session.View?.Model ?? "模型") + " ▾";
+        reasoning.Text = (session.Settings?.ReasoningEffort ?? "思考") + " ▾";
+        reasoning.IsEnabled = models.IsEnabled;
+        reasoning.IsVisible = session.Settings?.CanChangeReasoning != false;
+        SemanticProperties.SetDescription(reasoning, "思考强度：" + (session.Settings?.ReasoningEffort ?? "点击读取远端设置"));
+        deviceButton.IsEnabled = !interactionBusy && !session.Busy && !connectingDevice;
+        UpdateStatusVisibility();
         attachments.Text = PendingFiles.Count == 0 ? "" : "待发送：" + string.Join("、", PendingFiles.Select(f => f.Name));
         attachments.IsVisible = PendingFiles.Count > 0;
     }
     private void QueueRender() => pendingRender = true;
-    private static Label ActionCaption(string text)
-    {
-        var label = Ui.Text(text, 10);
-        label.HorizontalTextAlignment = TextAlignment.Center;
-        Ui.TextTheme(label);
-        return label;
-    }
-    private static View LabeledAction(Button button, Label caption) => new VerticalStackLayout
-    { Spacing = 1, MinimumWidthRequest = 48, Children = { button, caption } };
     private void StartConnectionService()
     {
         try { ConnectionService.Start(); backgroundServiceError = null; }
@@ -271,7 +277,7 @@ public sealed class MainPage : ContentPage
         finally { interactionBusy = false; RefreshButtons(); }
     }
     private Task OpenConnectionAsync() => interactionBusy || session.Busy || connectingDevice ? Task.CompletedTask : Navigation.PushAsync(new ConnectionPage(this));
-    private Task OpenSessionsAsync() => Navigation.PushAsync(new SessionsPage(this, session));
+    private Task OpenSessionsAsync() { OpenDrawer(); return Task.CompletedTask; }
     public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null)
     {
         if (connectingDevice || interactionBusy || session.Busy) throw new IOException("请等待当前操作结束再切换设备。");
@@ -300,18 +306,10 @@ public sealed class MainPage : ContentPage
     }
     private void UpdateDevices()
     {
-        var choices = connections.Entries.Select(p => new DeviceChoice(p.Key, $"{connectionNames.GetValueOrDefault(p.Key, p.Value.DeviceName)} · {p.Value.Indicator.Label}")).ToList();
-        string signature = string.Join("|", choices.Select(c => c.Id + c.Label)) + "|" + activeConnection;
+        string signature = string.Join("|", connections.Entries.Select(e => e.Key + e.Value.Indicator.Label + e.Value.Sessions.Count)) + "|" + activeConnection;
         if (signature == devicesSignature) return;
         devicesSignature = signature;
-        updatingDevices = true;
-        try
-        {
-            devicePicker.ItemsSource = choices;
-            devicePicker.SelectedItem = choices.FirstOrDefault(c => c.Id == activeConnection);
-            devicePicker.IsVisible = choices.Count > 0;
-        }
-        finally { updatingDevices = false; }
+        if (drawerLayer is not null && drawerLayer.IsVisible) RenderDrawer();
     }
     private void ActivateConnection(string id, MobileSession target)
     {

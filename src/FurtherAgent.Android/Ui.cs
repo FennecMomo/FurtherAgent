@@ -56,8 +56,8 @@ internal static class Ui
     }
     public static void Theme(Page page)
     {
-        page.SetAppThemeColor(Page.BackgroundColorProperty, Color.FromArgb("#F6F8F5"), Color.FromArgb("#101C17"));
+        page.SetAppThemeColor(Page.BackgroundColorProperty, Colors.White, Color.FromArgb("#101C17"));
         if (page is ContentPage content) content.SafeAreaEdges = new SafeAreaEdges(SafeAreaRegions.All);
     }
-    public static void TextTheme(Label label) => label.SetAppThemeColor(Label.TextColorProperty, Green, Color.FromArgb("#E4ECE6"));
+    public static void TextTheme(Label label) => label.SetAppThemeColor(Label.TextColorProperty, Color.FromArgb("#202428"), Color.FromArgb("#E4ECE6"));
 }

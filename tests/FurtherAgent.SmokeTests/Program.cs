@@ -14,6 +14,8 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
+if (args.Contains("--mobile-layout-checks")) { MobileLayoutChecks.Run(Check); return; }
+if (args.Length == 2 && args[0] == "--mobile-layout-preview") { MobileLayoutChecks.Preview(args[1]); return; }
 if (args.Contains("--app-update-checks")) { await AppUpdateChecks.Run(Check); Console.WriteLine($"ALL {passed} UPDATE CHECKS PASSED"); return; }
 if (args.Length == 5 && args[0] == "--apply-apk-delta")
 {
@@ -116,6 +118,7 @@ try
 {
     await WaitForServer();
     using var registry = new RegistryClient($"http://127.0.0.1:{serverPort}");
+    MobileLayoutChecks.Run(Check);
     await MobileChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
     await DevicePoolChecks.RunAsync(registry, $"http://127.0.0.1:{serverPort}", Check);
     if (args.Contains("--mobile-connection-checks")) { Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }

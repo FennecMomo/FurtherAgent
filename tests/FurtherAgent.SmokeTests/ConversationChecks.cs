@@ -37,6 +37,6 @@ internal static class ConversationChecks
         var previous = HistoryPaging.Page(source, latest.History!.Start, latest.History.Revision);
         check(previous.Messages.Count == 8 && previous.Messages[0].Text == "question 4", "filtered history paginates without losing conversation messages");
         var html = Transcript.Render(source);
-        check(!html.Contains("private tool details") && !html.Contains("reasoning payload") && !html.Contains("extra process detail"), "legacy cached process entries are hidden by renderer");
+        check(html.Contains("private tool details") && html.Contains("reasoning payload") && html.Contains("class='operations'") && !html.Contains("extra process detail"), "process entries are available inside collapsed groups without leaking assistant detail");
     }
 }

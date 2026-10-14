@@ -25,6 +25,7 @@
     <ProjectReference Include="../FurtherAgent.Mobile/FurtherAgent.Mobile.csproj" />
     <MauiIcon Include="Resources/AppIcon/appicon.svg" Color="#183F34" />
     <MauiImage Include="Resources/Images/*.svg" BaseSize="24,24" />
+    <MauiAsset Include="Resources/Images/LUCIDE-LICENSE.txt" LogicalName="third-party/LUCIDE-LICENSE.txt" />
     <MauiSplashScreen Include="Resources/AppIcon/appicon.svg" Color="#F6F8F5" BaseSize="100,100" />
   </ItemGroup>
 </Project>

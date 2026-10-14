@@ -135,7 +135,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 var view = WithFiles(await adapter.AttachAsync(id, token));
                 if (adapter.Info.Id == "hermes") await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
                 historySource = view; attachedSession = view.Id;
-                return Json.Node(Volatile.Read(ref paged) == 1 || adapter.Info.Id == "codex" ? HistoryPaging.Latest(view) : view);
+                return Json.Node(Volatile.Read(ref paged) > 0 || adapter.Info.Id == "codex" ? HistoryPaging.Latest(view, Volatile.Read(ref paged) == 2) : view);
             }
             string FileSession(JsonNode? args)
             {
@@ -160,9 +160,9 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             peer.Handler = async (method, args, token) => method switch
             {
-                "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, 1) >= 0 }),
+                "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, args?["version"]?.GetValue<int>() == 2 ? 2 : 1) >= 0, version = Volatile.Read(ref paged) }),
                 "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
-                    args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>())),
+                    args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) == 2)),
                 "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1 }),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
@@ -204,7 +204,7 @@ public sealed class DeviceHost : IAsyncDisposable
                         if (mode != lastIncremental) { sync = new SessionSyncEncoder(); lastIncremental = mode; }
                         var enriched = WithFiles(view);
                         historySource = enriched;
-                        if (Volatile.Read(ref paged) == 1 || adapter.Info.Id == "codex") enriched = HistoryPaging.Latest(enriched);
+                        if (Volatile.Read(ref paged) > 0 || adapter.Info.Id == "codex") enriched = HistoryPaging.Latest(enriched, Volatile.Read(ref paged) == 2);
                         var update = sync.Encode(enriched);
                         if (update is not null)
                             await peer.NotifyAsync(mode ? "session-update" : "session", mode ? (object)update : enriched);
