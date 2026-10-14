@@ -28,6 +28,9 @@ public static class VisualTheme
         Put("OriginalOnly", Visibility.Visible, Visibility.Collapsed);
         Put("ShellRadius", new CornerRadius(0), new CornerRadius(16, 16, 0, 0));
         Put("SidebarPadding", new Thickness(18), new Thickness(8, 12, 8, 10));
+        // Extend only the scrollable list through the sidebar's right padding.
+        Put("SessionListMargin", new Thickness(0), new Thickness(0, 0, -8, 0));
+        Put("ConversationScrollBar", ScrollBarVisibility.Auto, ScrollBarVisibility.Hidden);
         Put("ContentMargin", new Thickness(30, 20, 30, 14), new Thickness(16, 14, 16, 10));
         Put("UIFont", new FontFamily("Microsoft YaHei UI"), CodexFont);
         // Match the reference at 150%: 14 DIP produces a 21 px text em.

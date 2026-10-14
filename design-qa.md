@@ -2,6 +2,14 @@
 
 final result: passed
 
+## 会话滚动条位置微调（最新）
+
+- Codex 风格的 SessionList 向右延伸 8 DIP，抵消侧栏右内边距；其余侧栏控件保留原内边距。细滚动条距分隔线约 1–2 DIP，不再留出一整块空白。
+- Codex 风格正文 ScrollViewer 使用 Hidden，隐藏轨道且不占宽度；滚轮、键盘和顶部历史加载仍启用。原始风格保持 Auto 和原列表边距。
+- 已查看实际 WPF 截图 `artifacts/inspection/desktop-scrollbar-alignment/codex-narrow-running.png` 及长历史溢出截图 `history.png`，确认列表滚动条贴右、正文无滚动条。
+- 双主题预览与状态保留检查通过；11 项独立中继历史检查通过，包含正文滚轮及顶部自动加载。
+- 本轮仅源码修改，未打包替换。
+
 ## 2026-10-14 字号与行距二次校准（最新）
 
 上一轮实际安装后的反馈指出正文及侧栏仍偏大、列表过松。本轮以新参考 `C:/Users/renqi/AppData/Local/Temp/codex-clipboard-1e6b2c82-61f6-4215-a31e-0de8fcf10454.png` 为准；旧实机效果为 `codex-clipboard-e149be08-46ca-44b0-93e3-ea1033ef8cdd.png`（同一临时目录）。
