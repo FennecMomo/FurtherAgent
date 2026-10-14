@@ -58,7 +58,7 @@ internal static class ThemePreview
             var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(Path.Combine(output, name + ".png")); png.Save(file);
         }
-        Find<ItemsControl>("Messages").ItemsSource = new[] { new ChatEntry("assistant", "1. **桌面端无法上翻加载历史**\n\n原因有两处：桌面只显示接入端返回的最新一页，没有接上历史分页请求；消息正文控件还会吞掉滚轮事件，让鼠标放在正文上时难以带动外层滚动。\n\n现在向上滚到顶部会自动加载更早记录，也加了“加载更早记录”和“返回最新”按钮。加载后会尽量保持当前阅读位置，实时状态刷新不会把旧记录挤回最新一页，切换会话后的旧请求也不会覆盖新会话。\n\n用独立本地中继和实际 WPF 控件完成了 **11 项历史专项检查**，现有 **27 项 WPF/持久化检查、5 项多设备检查**也通过了。\n\n2. **手机端输入文字和历史正文重叠**\n\n重构后的圆角输入面板确实已经有背景，但外围输入区域仍然透明，不能据此断定旧问题已经消失。这次给整个底部输入区和编辑器都加了不透明背景，同时明确输入区在前、正文在后的层级，并限制正文 WebView 绘制在自己的区域内；浅色、深色主题都处理了。\n\nAndroid 编译通过，**0 警告、0 错误**。目前没检测到连接的手机，所以我还不能保证键盘弹出后的实际问题已经彻底消失。\n\n已本地提交：`2806227` — 修复桌面历史上翻加载并加固手机输入区遮挡。\n\n**没有打包、安装、推送或更换服务器接入端**，你当前使用的版本不会受影响。") };
+        Find<ItemsControl>("Messages").ItemsSource = new[] { new ChatEntry("assistant", "已打包并替换为桌面端 **0.14.2**，新版窗口已经打开。\n\n这次装上了：\n\n- **Codex 风格样式优化**：配色、字体、侧栏和控件尺寸、输入框及细滚动条。\n- **历史上翻修复**：顶部自动加载、更早记录按钮和阅读位置保持。\n\n已确认运行的是新安装目录中的 **0.14.2**，安装文件与发布文件的哈希全部一致；已自动连回 **MOMO · Codex**，中继和接入端心跳均在线。现在选择会话就可以继续使用。\n\n旧版本已保留，可以回滚。**手机端和服务器没有更换，代码尚未推送。**") };
         Capture("codex-reference", 940, 796, 1.5);
         var fontUris = new HashSet<string>();
         void DrawFonts(Drawing? d) { if(d is GlyphRunDrawing g) fontUris.Add(g.GlyphRun.GlyphTypeface.FontUri.ToString()); if(d is DrawingGroup group) foreach(var child in group.Children) DrawFonts(child); }

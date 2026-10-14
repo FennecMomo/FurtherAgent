@@ -26,9 +26,9 @@ public sealed class MarkdownView : RichTextBox
     private void Refresh()
     {
         bool codex = VisualTheme.GetIsCodex(this);
-        var doc = new FlowDocument { PagePadding = new Thickness(0), TextAlignment = codex ? TextAlignment.Left : TextAlignment.Justify, FontFamily = codex ? VisualTheme.CodexFont : new FontFamily("Microsoft YaHei UI"), FontSize = codex ? 14.5 : 13,
+        var doc = new FlowDocument { PagePadding = new Thickness(0), TextAlignment = codex ? TextAlignment.Left : TextAlignment.Justify, FontFamily = codex ? VisualTheme.CodexFont : new FontFamily("Microsoft YaHei UI"), FontSize = codex ? 14 : 13,
             Language = System.Windows.Markup.XmlLanguage.GetLanguage(codex ? "zh-CN" : Language.IetfLanguageTag),
-            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(codex ? "#202123" : "#202C32")), LineHeight = codex ? 22 : double.NaN };
+            Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(codex ? "#202123" : "#202C32")), LineStackingStrategy = codex ? LineStackingStrategy.BlockLineHeight : LineStackingStrategy.MaxHeight, LineHeight = codex ? 22 : double.NaN };
         string text = Markdown ?? "";
         if (text.Length > 30000) text = text[..30000] + "\n[显示已截断]";
         string[] lines = text.Replace("\r", "").Split('\n');
@@ -54,8 +54,14 @@ public sealed class MarkdownView : RichTextBox
                 fenced = !fenced; continue;
             }
             if (fenced) { code.AppendLine(line); continue; }
-            if (line.Trim().Length == 0) continue;
-            var p = new Paragraph { Margin = codex ? new Thickness(0, 2, 0, 12) : new Thickness(0, 2, 0, 6) };
+            if (line.Trim().Length == 0)
+            {
+                // A blank line ends a compact list; retain separation from the next paragraph.
+                if (codex && doc.Blocks.LastBlock is Paragraph { Tag: "list" } lastList)
+                    lastList.Margin = new Thickness(12, 0, 0, 6);
+                continue;
+            }
+            var p = new Paragraph { Margin = codex ? new Thickness(0, 2, 0, 14) : new Thickness(0, 2, 0, 6) };
             string value = line;
             var heading = Regex.Match(line, @"^(#{1,6})\s+(.+)$");
             if (heading.Success) { p.FontSize = 23 - heading.Groups[1].Length * 1.5; p.FontWeight = FontWeights.SemiBold; value = heading.Groups[2].Value; }
@@ -64,10 +70,10 @@ public sealed class MarkdownView : RichTextBox
             {
                 bool done = Regex.IsMatch(line, @"\[[xX]\]");
                 value = Regex.Replace(line, @"^\s*[-*+]\s+\[[ xX]\]\s+", done ? "☑ " : "☐ ");
-                p.Margin = new Thickness(12, 2, 0, 6);
+                p.Tag = "list"; p.Margin = codex ? new Thickness(12, 0, 0, 0) : new Thickness(12, 2, 0, 6);
             }
-            else if (Regex.IsMatch(line, @"^\s*[-*+]\s+")) { value = Regex.Replace(line, @"^\s*[-*+]\s+", "• "); p.Margin = new Thickness(12, 2, 0, 6); }
-            else if (Regex.IsMatch(line, @"^\s*\d+[.)]\s+")) { value = line.TrimStart(); p.Margin = new Thickness(12, 2, 0, 6); }
+            else if (Regex.IsMatch(line, @"^\s*[-*+]\s+")) { value = Regex.Replace(line, @"^\s*[-*+]\s+", "• "); p.Tag = "list"; p.Margin = codex ? new Thickness(12, 0, 0, 0) : new Thickness(12, 2, 0, 6); }
+            else if (Regex.IsMatch(line, @"^\s*\d+[.)]\s+")) { value = line.TrimStart(); p.Tag = "list"; p.Margin = codex ? new Thickness(12, 0, 0, 0) : new Thickness(12, 2, 0, 6); }
             else if (line.Trim() is "---" or "***") { p.BorderThickness = new Thickness(0, 0, 0, 1); p.BorderBrush = Brushes.LightGray; value = ""; }
             InlineText(p.Inlines, value); doc.Blocks.Add(p);
         }

@@ -30,10 +30,10 @@ public static class VisualTheme
         Put("SidebarPadding", new Thickness(18), new Thickness(8, 12, 8, 10));
         Put("ContentMargin", new Thickness(30, 20, 30, 14), new Thickness(16, 14, 16, 10));
         Put("UIFont", new FontFamily("Microsoft YaHei UI"), CodexFont);
-        // Half-DIP sizes give smoother CJK strokes in the 100% / 150% WPF previews.
-        Put("UIFontSize", 13d, 14.5d);
+        // Match the reference at 150%: 14 DIP produces a 21 px text em.
+        Put("UIFontSize", 13d, 14d);
         Put("CompactFontSize", 12d, 12.5d);
-        Put("HeaderSize", 23d, 14.5d);
+        Put("HeaderSize", 23d, 14d);
         Put("PageTitleSize", 28d, 22d);
         Put("DialogTitleSize", 24d, 20d);
         Put("SectionTitleSize", 18d, 15d);

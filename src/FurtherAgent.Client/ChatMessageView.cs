@@ -25,7 +25,7 @@ public sealed class ChatMessageView : Border
         MaxWidth = codex && kind == "user" ? 560 : double.PositiveInfinity;
         if (codex)
         {
-            Margin = kind == "user" ? new Thickness(70, 12, 12, 34) : new Thickness(10, 8, 10, 26);
+            Margin = kind == "user" ? new Thickness(70, 12, 12, 34) : new Thickness(10, 8, 10, 18);
             Padding = kind == "user" ? new Thickness(18, 13, 18, 13) : new Thickness(0);
             CornerRadius = new CornerRadius(22);
             Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(kind == "user" ? "#E7F3FF" : "#FFFFFF"));
