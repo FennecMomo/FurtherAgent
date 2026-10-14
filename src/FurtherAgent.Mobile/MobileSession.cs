@@ -21,7 +21,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         if (incoming.OutputFiles is null && View?.Id == incoming.Id)
             incoming = incoming with { OutputFiles = View.OutputFiles };
         // Even a legacy host must not hand megabytes of history to the WebView.
-        if (incoming.History is null) incoming = HistoryPaging.Latest(incoming, includeOperations: true) with { History = null };
+        if (incoming.History is null) incoming = HistoryPaging.Latest(incoming, includeOperations: true, conversationBudget: true) with { History = null };
         latest = incoming;
         if (reset || !readingOlder) { View = incoming; readingOlder = false; }
         else if (View is { } current) View = incoming with { Messages = current.Messages, History = current.History };
@@ -30,7 +30,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private async Task NegotiateAsync(RpcPeer peer)
     {
         paging = false;
-        try { paging = (await peer.CallAsync("history-mode", new { version = 2 }))?["enabled"]?.GetValue<bool>() == true; }
+        try { paging = await OperationGroups.NegotiateAsync(peer); }
         catch (IOException) { /* Older hosts still work with a bounded local view. */ }
     }
     public Task ClearCacheAsync() => cache?.ClearAsync() ?? Task.CompletedTask;
@@ -48,7 +48,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         }
         if (View?.Id != view.Id || latest?.History?.Revision != h.Revision) { ShowLatest(); return; }
         readingOlder = true;
-        View = view with { Messages = page.Messages.Concat(view.Messages).Take(32).ToList(), History = h with { Start = page.Start } };
+        View = view with { Messages = OperationGroups.TakeConversations(page.Messages.Concat(view.Messages), 32), History = h with { Start = page.Start } };
     });
     private RegistryClient? registry;
     private RemoteDevice? remote;

@@ -13,6 +13,7 @@ void Check(bool condition, string name)
     if (!condition) throw new Exception("FAIL: " + name);
     Console.WriteLine("PASS: " + name); passed++;
 }
+if (args.Contains("--operation-history-checks")) { OperationHistoryChecks.Run(Check); return; }
 if (args.Contains("--codex-permission-fixture")) { Console.WriteLine(Json.Node(CodexPermissions.Values.Select(CodexPermissions.Build).ToArray()).ToJsonString()); return; }
 if (args.Contains("--codex-interaction-checks")) { await CodexInteractionChecks.Run(Check); Console.WriteLine($"ALL {passed} INTERACTION CHECKS PASSED"); return; }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
@@ -71,6 +72,7 @@ await AppUpdateChecks.Run(Check);
 ConversationChecks.Run(Check);
 QuestionChecks.Run(Check);
 await CodexInteractionChecks.Run(Check);
+OperationHistoryChecks.Run(Check);
 await CodexSettingsChecks.Run(Check);
 await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);

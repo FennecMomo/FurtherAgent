@@ -24,7 +24,7 @@ public sealed class ConversationHistory
             page.Start < 0 || page.Start >= page.End || page.Start + page.Messages.Count != page.End || page.Total != history.Total)
             throw new IOException("历史分页不匹配，请返回最新记录后重试。");
         ReadingOlder = true;
-        Displayed = view with { Messages = page.Messages.Concat(view.Messages).Take(256).ToList(), History = history with { Start = page.Start } };
+        Displayed = view with { Messages = OperationGroups.TakeConversations(page.Messages.Concat(view.Messages), 256), History = history with { Start = page.Start } };
         return Displayed;
     }
     public SessionView? ShowLatest()

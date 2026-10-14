@@ -80,7 +80,7 @@ public partial class MainWindow
         try
         {
             RenderSnapshot(view, true); ChatScroll.UpdateLayout();
-            var moved = Messages.ItemContainerGenerator.ContainerFromIndex(page.Messages.Count) as FrameworkElement;
+            var moved = Messages.ItemContainerGenerator.ContainerFromIndex(OperationGroups.Group(page.Messages).Count) as FrameworkElement;
             double delta = moved is null ? ChatScroll.ExtentHeight - extent : moved.TranslatePoint(new Point(), ChatScroll).Y - anchorY;
             ChatScroll.ScrollToVerticalOffset(offset + delta); ChatScroll.UpdateLayout();
         }

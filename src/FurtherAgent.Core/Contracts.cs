@@ -40,7 +40,7 @@ public record SessionInfo(string Id, string Title, string UpdatedAt, string Cwd 
 public record ModelOption(string Id, string Provider, string Label, List<string>? ReasoningEfforts = null, string? DefaultReasoningEffort = null);
 public record AgentSettings(string Model, string Provider, string Mode, List<ModelOption> Models, bool CanChangeModel, bool CanChangeMode, string Detail,
     string? ReasoningEffort = null, bool CanChangeReasoning = false, string? Usage = null, bool RequireModelSelection = false, string? Permission = null, bool CanChangePermissions = false);
-public record ChatEntry(string Role, string Text, string? Detail = null);
+public record ChatEntry(string Role, string Text, string? Detail = null, List<ChatEntry>? Operations = null);
 public record PendingPrompt(string Id, string Kind, string Title, string Detail, JsonNode? Payload);
 public record SessionView(string Id, string Title, string Cwd, string Status, string? TurnId,
     List<ChatEntry> Messages, List<PendingPrompt> Prompts,

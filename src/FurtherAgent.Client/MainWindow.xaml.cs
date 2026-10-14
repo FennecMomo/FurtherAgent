@@ -355,13 +355,13 @@ public partial class MainWindow : Window
         ModelButton.ToolTip = "模型与模式 · " + (view.Model ?? "打开会话后设置，远端需支持此功能"); SessionTitle.Text = string.IsNullOrWhiteSpace(view.Title) ? SessionTitle.Text : view.Title;
         SessionMeta.Text = $"{view.Cwd}\n" + (view.StatusDetail ?? $"{(view.Status == "active" ? "执行中" : "等待指令")} · 桌面实时同步");
         var builder = new StringBuilder();
-        foreach (var message in view.Messages.Select(ChatPresentation.Display)) builder.AppendLine($"{message.Role}\n{message.Text}\n{message.Detail}\n");
+        foreach (var message in view.Messages.Select(ChatPresentation.Display)) builder.AppendLine($"{message.Role}\n{message.Text}\n{message.Detail}\n{(message.Operations is null ? "" : Json.Node(message.Operations).ToJsonString())}\n");
         var content = builder.ToString();
         if (content != transcriptText || renderedOutputFilesFingerprint != outputFilesFingerprint)
         {
             bool atBottom = ChatScroll.VerticalOffset + ChatScroll.ViewportHeight >= ChatScroll.ExtentHeight - 30;
             double previous = ChatScroll.VerticalOffset;
-            transcriptText = content; renderedOutputFilesFingerprint = outputFilesFingerprint; Messages.ItemsSource = view.Messages;
+            transcriptText = content; renderedOutputFilesFingerprint = outputFilesFingerprint; Messages.ItemsSource = OperationGroups.Group(view.Messages);
             if (!historyNavigation) { if (atBottom && !History.ReadingOlder) ChatScroll.ScrollToEnd(); else ChatScroll.ScrollToVerticalOffset(previous); }
         }
         EmptyTitle.Text = "新会话已就绪"; EmptyDescription.Text = "在下方输入第一条消息，开始这段对话。"; EmptyConnect.Visibility = Visibility.Collapsed;
@@ -369,6 +369,19 @@ public partial class MainWindow : Window
         SetSessionEnabled(!actionBusy && remote?.IsConnected == true);
         var signature = string.Join("|", view.Prompts.Select(p => p.Id + p.Kind + p.Payload?.ToJsonString()));
         if (signature != promptSignature) { promptSignature = signature; RenderPrompts(view.Prompts); }
+    }
+    private readonly HashSet<string> expandedOperationGroups = [];
+    internal string? OperationGroupKey(ChatEntry entry)
+    {
+        int index = Messages.Items.IndexOf(entry);
+        return index < 0 || current is null ? null : $"{remote?.Device?.Name}|{current.Id}|{(current.History?.Start ?? 0) + index}";
+    }
+    internal bool OperationGroupExpanded(string? key) => key is not null && expandedOperationGroups.Contains(key);
+    internal void SetOperationGroupExpanded(string? key, bool expanded)
+    {
+        if (key is null) return;
+        if (expanded) { if (expandedOperationGroups.Count > 1024) expandedOperationGroups.Clear(); expandedOperationGroups.Add(key); }
+        else expandedOperationGroups.Remove(key);
     }
     private string? operationPhase;
     private string outputFilesFingerprint = "";
@@ -436,7 +449,13 @@ public partial class MainWindow : Window
     {
         string signature = view.Id + "|" + Json.Node(view.OutputFiles ?? []).ToJsonString();
         if (signature == outputFilesFingerprint) return;
+        bool sameSession = outputFilesFingerprint.StartsWith(view.Id + "|", StringComparison.Ordinal);
+        bool expanded = sameSession && OutputFilesPanel.Children.OfType<Expander>().FirstOrDefault()?.IsExpanded == true;
         outputFilesFingerprint = signature; OutputFilesPanel.Children.Clear();
+        if (view.OutputFiles is not { Count: > 0 }) return;
+        var fileRows = new StackPanel();
+        OutputFilesPanel.Children.Add(new Expander { Header = $"会话文件 · {view.OutputFiles.Count} 个", IsExpanded = expanded,
+            Content = new ScrollViewer { Content = fileRows, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
         foreach (var file in view.OutputFiles ?? [])
         {
             var row = new WrapPanel { Margin = new Thickness(0, 2, 0, 8) };
@@ -451,7 +470,7 @@ public partial class MainWindow : Window
                 row.Children.Add(preview);
 
             }
-            OutputFilesPanel.Children.Add(row);
+            fileRows.Children.Add(row);
         }
     }
     private string DeliveryMode => agent?.CanChooseDelivery != true ? "auto" : DeliveryPicker.SelectedIndex switch { 1 => "queue", 2 => "steer", _ => "auto" };

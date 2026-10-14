@@ -46,6 +46,7 @@ public partial class MainWindow
             try
             {
                 await added.Remote.ConnectAsync(added.Registry, code);
+                try { await OperationGroups.NegotiateAsync(added.Remote.Peer); } catch (IOException) { /* Legacy hosts still provide their existing history. */ }
                 added.Agent = Json.Read<AgentInfo[]>(await added.Remote.Peer.CallAsync("agents", null)).FirstOrDefault(a => a.Available)
                     ?? throw new IOException("远端没有可用适配器。");
                 added.Sessions = Json.Read<List<SessionInfo>>(await added.Remote.Peer.CallAsync("sessions", null));
@@ -90,6 +91,7 @@ public partial class MainWindow
         int version = selectionVersion;
         try
         {
+            try { await OperationGroups.NegotiateAsync(device.Remote.Peer); } catch (IOException) { /* Legacy history fallback. */ }
             device.Sessions = Json.Read<List<SessionInfo>>(await device.Remote.Peer.CallAsync("sessions", null));
             if (activeDevice == device ? selectedId != id || version != selectionVersion : device.SelectedId != id) return;
             var view = id is null ? null : Json.Read<SessionView>(await device.Remote.Peer.CallAsync("attach", new { id }));

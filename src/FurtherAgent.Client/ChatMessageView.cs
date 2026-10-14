@@ -30,6 +30,22 @@ public sealed class ChatMessageView : Border
             CornerRadius = new CornerRadius(22);
             Background = new SolidColorBrush((Color)ColorConverter.ConvertFromString(kind == "user" ? "#E7F3FF" : "#FFFFFF"));
         }
+        if (entry.Operations is { } operations)
+        {
+            var items = new StackPanel();
+            var owner = Window.GetWindow(this) as MainWindow;
+            string? key = owner?.OperationGroupKey(raw);
+            void Fill()
+            {
+                if (items.Children.Count > 0) return;
+                foreach (var operation in operations) items.Children.Add(new ChatMessageView { DataContext = operation });
+            }
+            var group = new Expander { Header = entry.Text, IsExpanded = owner?.OperationGroupExpanded(key) == true, Content = items };
+            if (group.IsExpanded) Fill();
+            group.Expanded += (_, e) => { if (e.OriginalSource == group) { Fill(); owner?.SetOperationGroupExpanded(key, true); } };
+            group.Collapsed += (_, e) => { if (e.OriginalSource == group) owner?.SetOperationGroupExpanded(key, false); };
+            Child = group; return;
+        }
         if (kind is "tool" or "reasoning" or "system")
         {
             string label = kind == "tool" ? "工具调用" : kind == "reasoning" ? "思考记录（非正式回复）" : "运行记录";

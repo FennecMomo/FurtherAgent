@@ -111,6 +111,28 @@ internal static class HistoryUiChecks
             Invoke("Render", new SessionView("another", "另一会话", "", "idle", null, [new("assistant", "另一会话正文")], []));
             await staleLoad;
             Require(messages.Items.Count == 1 && ((ChatEntry)messages.Items[0]).Text == "另一会话正文", "late history response cannot overwrite a newly selected session");
+            Set("selectedId", "operations");
+            var operationView = Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = "operations" }));
+            Require(operationView.Messages.Any(m => m.Operations is not null), "desktop negotiates grouped operation history through the real relay");
+            operationView = operationView with { OutputFiles = Enumerable.Range(0, 30).Select(i => new RemoteFile("outbox/" + i, "文件" + i + ".txt", 1024)).ToList() };
+            Invoke("Render", operationView); Layout();
+            var grouped = Descendants(messages).OfType<Expander>().First(e => e.Header?.ToString()?.Contains("项操作记录") == true);
+            Require(!grouped.IsExpanded, "desktop consecutive operations default to collapsed");
+            grouped.IsExpanded = true; Layout();
+            Require(Descendants(grouped).OfType<Expander>().Count() >= 2, "expanded group contains individually expandable operation details");
+            var fileGroup = Find<StackPanel>("OutputFilesPanel").Children.OfType<Expander>().Single();
+            Require(!fileGroup.IsExpanded && fileGroup.ActualHeight < 50, "thirty session files occupy one collapsed row");
+            fileGroup.IsExpanded = true; Layout();
+            Require(Descendants(fileGroup).OfType<Button>().Count() == 30, "expanding session files preserves every save action");
+            Invoke("Render", operationView with { OutputFiles = operationView.OutputFiles!.Append(new("outbox/new", "新增.txt", 20)).ToList() }); Layout();
+            Require(Find<StackPanel>("OutputFilesPanel").Children.OfType<Expander>().Single().IsExpanded, "file list refresh preserves the user's expanded state");
+            Require(Descendants(messages).OfType<Expander>().First(e => e.Header?.ToString()?.Contains("项操作记录") == true).IsExpanded, "snapshot refresh preserves manually expanded operation group");
+            Find<StackPanel>("OutputFilesPanel").Children.OfType<Expander>().Single().IsExpanded = false;
+            foreach (var expander in Descendants(messages).OfType<Expander>().ToList()) expander.IsExpanded = false;
+            Layout(); scroll.ScrollToEnd(); Layout();
+            var compactBitmap = new RenderTargetBitmap(1100,760,96,96,PixelFormats.Pbgra32); compactBitmap.Render(content);
+            var compactEncoder = new PngBitmapEncoder(); compactEncoder.Frames.Add(BitmapFrame.Create(compactBitmap));
+            using (var file = File.Create(Path.ChangeExtension(output, ".compact.png"))) compactEncoder.Save(file);
         }
         finally
         {
@@ -130,7 +152,9 @@ internal static class HistoryUiChecks
         public event Action<SessionView>? Changed { add { } remove { } }
         public event Action<string>? Faulted { add { } remove { } }
         public Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<SessionInfo>>([new("history", "历史加载验证", "")]);
-        public Task<SessionView> AttachAsync(string id, CancellationToken ct) => Task.FromResult(new SessionView(id,"历史加载验证","fixture","idle",null,
+        public Task<SessionView> AttachAsync(string id, CancellationToken ct) => Task.FromResult(id == "operations"
+            ? new SessionView(id, "操作显示验证", "fixture", "idle", null, [new("你", "开始"), new("工具", "读文件"), new("工具", "执行检查"), new("Codex", "回复正文")], [])
+            : new SessionView(id,"历史加载验证","fixture","idle",null,
             Enumerable.Range(0,40).Select(i=>new ChatEntry("assistant",$"记录 {i}\n\n这是可选择的正文，用来验证向上加载更早记录时不跳动。\n\n每次请求只返回八条消息。")).ToList(),[]));
         public Task SendAsync(string text,CancellationToken ct) => Task.CompletedTask;
         public Task InterruptAsync(CancellationToken ct) => Task.CompletedTask;

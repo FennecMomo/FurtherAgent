@@ -19,7 +19,7 @@ internal static class MobileChecks
         check(mobile.Settings?.ReasoningEffort == "high", "composer gets actual remote model and reasoning settings");
         await mobile.ConfigureAsync("other", "fixture", "default", "low");
         check(mobile.Settings is { Model: "other", ReasoningEffort: "low" }, "composer settings refresh after acknowledged configuration");
-        check(mobile.View!.Messages.Any(m => m.Role == "工具" && m.Detail == "fixture detail"), "v2 negotiation transports operation details through the real relay");
+        check(mobile.View!.Messages.Any(m => m.Operations?.Any(op => op.Role == "工具" && op.Detail == "fixture detail") == true), "v3 negotiation transports grouped operation details through the real relay");
         await mobile.ResumeAsync();
         check(mobile.Connected && mobile.View?.Id == "one" && adapter.Sends == 0,
             "foreground resume retains selected session without submitting a message");
@@ -63,6 +63,7 @@ internal static class MobileChecks
         check(mobile.Connected && mobile.View?.Id == "one" && adapter.Attaches > attachedBeforeDisconnect
             && mobile.SendUncertain && adapter.Sends == 2,
             "foreground resume recovers a broken relay connection and original session without replaying uncertain send");
+        check(mobile.View!.Messages.Any(m => m.Operations is not null), "reconnected mobile renegotiates grouped operation history");
         await mobile.RefreshAsync();
         try { await mobile.SendAsync("no replay", []); } catch { }
         check(adapter.Sends == 2 && mobile.SendUncertain, "refresh does not replay and uncertain send blocks duplicate submit");
