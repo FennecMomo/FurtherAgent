@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -134,6 +134,7 @@ internal static class InteractionUiChecks
                 "late receipt after native timeout preserves newly edited draft");
             adapter.Accepted = false;
             adapter.Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Set("compactSettingsPath", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fa-compact-interaction-" + Guid.NewGuid() + ".json"));
             Invoke("Compact_Click", window, new RoutedEventArgs());
             var miniComposer = (TextBox)typeof(MainWindow).GetField("compactComposer", Private)!.GetValue(window)!;
             miniComposer.Text = "迷你窗口发送";
