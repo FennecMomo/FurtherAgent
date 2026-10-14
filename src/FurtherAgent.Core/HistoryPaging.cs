@@ -16,7 +16,8 @@ public static class HistoryPaging
     {
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         var entries = (conversationBudget ? OperationGroups.Group(value.Messages) : value.Messages).Where(m => includeOperations || IsConversation(m))
-            .Select(m => m with { Text = Limit(m.Text), Detail = includeOperations && m.Detail is not null ? Limit(m.Detail) : null }).ToList();
+            .Select(OperationSummary.ForTransport)
+            .Select(m => m with { Text = Limit(m.Text) }).ToList();
         var sizes = new int[entries.Count];
         for (int i = 0; i < entries.Count; i++)
         {

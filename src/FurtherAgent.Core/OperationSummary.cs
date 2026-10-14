@@ -4,6 +4,14 @@ namespace FurtherAgent.Core;
 
 public static class OperationSummary
 {
+    // Apply before hashing, diffing or serializing any outbound conversation.
+    public static ChatEntry ForTransport(ChatEntry entry) => entry.Operations is { } operations
+        ? new("工具", $"{operations.Count} 项操作记录", Operations: operations.Select(ForTransport).ToList())
+        : HistoryPaging.IsConversation(entry) ? entry with { Detail = null } : Display(entry);
+
+    public static SessionView ForTransport(SessionView view) => view with
+    { Messages = view.Messages.Select(ForTransport).ToList() };
+
     public static ChatEntry Display(ChatEntry entry)
     {
         string summary = "执行了一项操作";
@@ -13,6 +21,8 @@ public static class OperationSummary
         string status = data?["status"]?.ToString() ?? "";
         string Short(string value) => value.Replace('\r', ' ').Replace('\n', ' ') is { } clean && clean.Length > 160 ? clean[..160] + "…" : value.Replace('\r', ' ').Replace('\n', ' ');
         if (type == "mcpToolCall") summary = "调用工具 " + Short(data?["tool"]?.ToString() ?? "未知工具");
+        else if (ChatPresentation.Kind(entry) == "tool" && data?["tool"] is JsonValue tool)
+            summary = "调用工具 " + Short(tool.ToString());
         else if (type == "commandExecution")
         {
             string command = data?["command"]?.ToString()?.Trim() ?? "";

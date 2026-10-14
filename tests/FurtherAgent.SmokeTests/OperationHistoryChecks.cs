@@ -5,6 +5,24 @@ internal static class OperationHistoryChecks
 {
     internal static void Run(Action<bool, string> check)
     {
+        var raw = new SessionView("wire", "", "", "idle", null,
+            [new("assistant", "visible-reply", "PRIVATE_DETAIL"),
+             new("工具", "PRIVATE_OUTPUT", """{"type":"mcpToolCall","tool":"analysis","arguments":"PRIVATE_ARGS","result":"PRIVATE_RESULT"}"""),
+             new("推理摘要", "PRIVATE_REASONING")], []);
+        var clean = OperationSummary.ForTransport(raw);
+        check(OperationSummary.Display(new("tool.completed", "PRIVATE_OUTPUT",
+            """{"event":"tool.completed","tool":"terminal","result":"PRIVATE_RESULT"}""")).Text == "调用工具 terminal",
+            "Hermes event retains only the tool name");
+        foreach (var payload in new[] { Json.Node(clean).ToJsonString(),
+            Json.Node(HistoryPaging.Latest(raw, true)).ToJsonString(),
+            Json.Node(HistoryPaging.Latest(raw, true, true)).ToJsonString(),
+            Json.Node(new SessionSyncEncoder().Encode(clean)!).ToJsonString() })
+            check(!payload.Contains("PRIVATE_") && payload.Contains("visible-reply"),
+                "outbound snapshot, v2/v3 history and incremental snapshot omit raw operation payloads");
+        var encoder = new SessionSyncEncoder(); encoder.Encode(clean);
+        var changed = raw with { Messages = raw.Messages.Select(m => m.Role == "工具" ? m with { Text = "PRIVATE_CHANGED_OUTPUT" } : m).ToList() };
+        check(encoder.Encode(OperationSummary.ForTransport(changed)) is null,
+            "tool output growth alone produces no incremental network update");
         var messages = new List<ChatEntry>();
         for (int i = 0; i < 40; i++)
         {

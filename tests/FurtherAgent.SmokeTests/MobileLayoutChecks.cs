@@ -31,12 +31,12 @@ internal static class MobileLayoutChecks
         var old = HistoryPaging.Page(view);
         var current = HistoryPaging.Page(view, includeOperations: true);
         check(old.Messages.Count == 3 && old.Messages.All(HistoryPaging.IsConversation), "v1 history remains conversation only");
-        check(current.Messages.Count == 6 && current.Messages[1].Detail == "<unsafe>", "v2 history delivers ordered tool details");
+        check(current.Messages.Count == 6 && current.Messages[1].Detail is null, "v2 history delivers ordered summaries without tool details");
         check(old.Revision != current.Revision, "operation history cannot reuse a conversation-only cache baseline");
         var big = view with { Messages = Enumerable.Range(0, 20).Select(i => new ChatEntry(i % 2 == 0 ? "工具" : "assistant", i.ToString())).ToList() };
         var last = HistoryPaging.Page(big, includeOperations: true);
         var before = HistoryPaging.Page(big, last.Start, last.Revision, includeOperations: true);
-        check(before.End == last.Start && last.Messages[0].Text == "12" && before.Messages[^1].Text == "11", "v2 pagination preserves operation boundaries without duplicate records");
+        check(before.End == last.Start && last.Start == 12 && last.Messages[0].Text == "执行了一项操作" && before.Messages[^1].Text == "11", "v2 pagination preserves operation boundaries without duplicate records");
         check(Transcript.Render(view with { Messages = [new("工具", "only")] }).EndsWith("</details></section>"), "trailing operation group is closed");
     }
 }

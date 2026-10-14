@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Text;
 using System.Text.Json.Nodes;
 using FurtherAgent.Core;
@@ -81,8 +81,8 @@ static class HermesChecks
             && api.LastBody?["input"]?.ToString().Contains("[FurtherAgent 文件工作区]") == false,
             "Hermes inherits model routing and delivers output context separately from user message");
         check(view.Messages.Any(m => m.Text == "你好"), "SSE multiline JSON and UTF-8 deltas reach relay controller");
-        check(view.Messages.Any(m => m.Role == "tool.completed" && m.Detail?.Contains("duration") == true && m.Detail.Contains("error")), "tool event duration and error survive relay projection");
-        check(view.Messages.Any(m => m.Role == "reasoning.available" && m.Text.Contains("public summary")), "provided reasoning event is retained");
+        check(view.Messages.Any(m => m.Role == "工具") && view.Messages.All(m => m.Detail is null), "relay removes raw tool event payloads");
+        check(view.Messages.Any(m => m.Text == "分析任务与规划步骤") && !Json.Node(view).ToJsonString().Contains("public summary"), "reasoning is summarized before relay transport");
         await Task.Delay(2400, ct);
         await remote.DisposeAsync();
         await Task.Delay(400, ct);
