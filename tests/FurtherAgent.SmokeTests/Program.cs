@@ -14,6 +14,7 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--operation-history-checks")) { OperationHistoryChecks.Run(Check); return; }
+if (args.Contains("--lan-checks")) { await LanChecks.Run(Check); Console.WriteLine($"ALL {passed} LAN CHECKS PASSED"); return; }
 if (args.Contains("--codex-permission-fixture")) { Console.WriteLine(Json.Node(CodexPermissions.Values.Select(CodexPermissions.Build).ToArray()).ToJsonString()); return; }
 if (args.Contains("--codex-interaction-checks")) { await CodexInteractionChecks.Run(Check); Console.WriteLine($"ALL {passed} INTERACTION CHECKS PASSED"); return; }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }
@@ -232,7 +233,7 @@ try
         await using var recoveringRemote = new RemoteDevice();
         var sawOffline = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         recoveringRemote.ConnectionChanged += (_, message) => { if (message.Contains("接入端暂时离线")) sawOffline.TrySetResult(); };
-        await using (var first = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
+        await using (var first = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true, enableLan: false))
         {
             await first.StartAsync("Persistent test");
             Check(first.Lease!.Code == fixedCode, "relay registers persistent device code");
@@ -244,7 +245,7 @@ try
         }
         await sawOffline.Task.WaitAsync(TimeSpan.FromSeconds(20));
         Check(recoveringRemote.IsReconnecting, "temporary missing fixed code keeps recovery alive after host stops");
-        await using (var restarted = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true))
+        await using (var restarted = new DeviceHost(registry, () => new TestAdapter(), persistentIdentity: true, enableLan: false))
         {
             await restarted.StartAsync("Persistent test");
             Check(restarted.Lease!.Code == fixedCode, "host restart retains pairing code");

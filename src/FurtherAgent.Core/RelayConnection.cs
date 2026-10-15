@@ -1,3 +1,6 @@
+using System.Net.Sockets;
+using System.Security.Authentication;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 
@@ -15,41 +18,67 @@ public sealed class DeviceHost : IAsyncDisposable
     private readonly Lazy<FileTransferStore> files;
     private readonly bool persistentIdentity;
     private string? identitySecret;
+    private string? identityPath;
+    private LanHost? lan;
+    private bool registered;
+    private int disposed;
+    public int LanPort => lan?.Port ?? 0;
     private FileStream? identityLock;
     public DeviceLease? Lease { get; private set; }
     public event Action<string>? Status;
     public event Action<string>? CodeChanged;
-    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false)
-    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; }
+    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false, bool enableLan = true)
+    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; this.enableLan = enableLan; }
 
+    private readonly bool enableLan;
     public async Task StartAsync(string name, CancellationToken ct = default)
     {
         this.name = name;
         if (persistentIdentity)
         {
             string path = DeviceIdentity.DefaultPath(registry.ServerIdentity, name);
+            identityPath = path;
             _ = DeviceIdentity.LoadOrCreate(path);
             identityLock = DeviceIdentity.Lock(path);
             identitySecret = DeviceIdentity.LoadOrCreate(path);
+            if (enableLan && Environment.GetEnvironmentVariable("FURTHERAGENT_LAN") != "0")
+            {
+                try { lan = new LanHost(name, path, identitySecret, ServePeerAsync); lan.Start(); Status?.Invoke($"局域网接入已启用，端口 {lan.Port}。"); }
+                catch (Exception ex) { if (lan is not null) await lan.DisposeAsync(); lan = null; Status?.Invoke("局域网接入暂不可用：" + ex.Message); }
+            }
         }
-        control = await OpenControlAsync(ct);
+        try { control = await OpenControlAsync(ct); }
+        catch (Exception ex) when (lan is not null && !ct.IsCancellationRequested)
+        {
+            Lease = new DeviceLease(DeviceIdentity.Code(identitySecret!), identitySecret!, DateTimeOffset.MaxValue);
+            CodeChanged?.Invoke(Lease.Code); Status?.Invoke("局域网接入就绪，中继暂不可达：" + ex.Message);
+        }
         supervisor = SuperviseAsync(control);
+    }
+    public async Task SetLanEnabledAsync(bool enabled)
+    {
+        if (!enabled) { var previous = lan; lan = null; if (previous is not null) await previous.DisposeAsync(); return; }
+        if (lan is not null) return;
+        if (identityPath is null || identitySecret is null) throw new IOException("局域网接入需要固定设备身份。");
+        var candidate = new LanHost(name, identityPath, identitySecret, ServePeerAsync);
+        try { candidate.Start(); lan = candidate; }
+        catch { await candidate.DisposeAsync(); throw; }
     }
     private async Task<WebSocketTransport> OpenControlAsync(CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
-        Lease ??= await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret, 8), timeout.Token);
-        if (identitySecret is not null && (Lease.Code != DeviceIdentity.Code(identitySecret) || Lease.Secret != identitySecret))
+        if (!registered) { Lease = await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret, 8), timeout.Token); registered = true; }
+        if (identitySecret is not null && (Lease!.Code != DeviceIdentity.Code(identitySecret) || Lease.Secret != identitySecret))
             throw new IOException("中继尚不支持固定配对码，请升级中继；设备身份已保留，不会退回随机码。");
         var socket = await registry.OpenSocketAsync("host", timeout.Token);
         try
         {
-            await socket.WriteAsync(Json.Node(new { code = Lease.Code, secret = Lease.Secret }), timeout.Token);
+            await socket.WriteAsync(Json.Node(new { code = Lease!.Code, secret = Lease.Secret }), timeout.Token);
             var response = await socket.ReadLimitedAsync(4096, timeout.Token);
             if (response["ok"]?.GetValue<bool>() != true)
             {
-                if (response["resetLease"]?.GetValue<bool>() == true) Lease = null;
+                if (response["resetLease"]?.GetValue<bool>() == true) { Lease = null; registered = false; }
                 throw new IOException(response["error"]?.ToString() ?? "设备中继连接失败。");
             }
             CodeChanged?.Invoke(Lease.Code);
@@ -57,7 +86,7 @@ public sealed class DeviceHost : IAsyncDisposable
         }
         catch { await socket.DisposeAsync(); throw; }
     }
-    private async Task SuperviseAsync(WebSocketTransport socket)
+    private async Task SuperviseAsync(WebSocketTransport? socket)
     {
         while (!lifetime.IsCancellationRequested)
         {
@@ -65,6 +94,7 @@ public sealed class DeviceHost : IAsyncDisposable
             var tasks = new List<Task>();
             try
             {
+                socket ??= control = await OpenControlAsync(cycle.Token);
                 using var stop = cycle.Token.Register(socket.Abort);
                 while (true)
                 {
@@ -81,7 +111,7 @@ public sealed class DeviceHost : IAsyncDisposable
             catch (Exception ex) { if (!lifetime.IsCancellationRequested) Status?.Invoke("服务连接中断，正在重连：" + ex.Message); }
             finally
             {
-                cycle.Cancel(); await socket.DisposeAsync();
+                cycle.Cancel(); if (socket is not null) await socket.DisposeAsync();
                 await Task.WhenAll(tasks);
             }
             int attempt = 0;
@@ -109,6 +139,14 @@ public sealed class DeviceHost : IAsyncDisposable
             await socket.WriteAsync(Json.Node(new { code = Lease!.Code, secret = Lease.Secret, sessionId }), timeout.Token);
             var hello = await socket.ReadLimitedAsync(4096, timeout.Token);
             if (hello["ok"]?.GetValue<bool>() != true) throw new IOException(hello["error"]?.ToString() ?? "连接授权失败。");
+            await ServePeerAsync(socket, ct);
+        }
+        catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("远程会话连接结束：" + ex.Message); }
+    }
+    private async Task ServePeerAsync(IConnectionTransport socket, CancellationToken ct)
+    {
+        try
+        {
             using var stop = ct.Register(socket.Abort);
             await using var adapter = await agents.ConnectAsync(ct);
             await using var peer = new RpcPeer(socket);
@@ -165,6 +203,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
                 "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1 }),
+                "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
                 "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
@@ -194,7 +233,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 }
                 catch (Exception) { socket.Abort(); }
             });
-            Status?.Invoke("远程端已通过服务端中继连接。");
+            Status?.Invoke(socket is LanTransport ? "控制端已通过局域网直连。" : "远程端已通过服务端中继连接。");
             var pump = Task.Run(async () =>
             {
                 try
@@ -219,18 +258,20 @@ public sealed class DeviceHost : IAsyncDisposable
             updates.Writer.TryComplete(); completions.Writer.TryComplete(); pumping.Cancel(); await Task.WhenAll(pump, completionPump);
             Status?.Invoke("远程端已断开，授权码仍可用于连接。");
         }
-        catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("远程会话连接结束：" + ex.Message); }
+        catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("连接结束：" + ex.Message); }
     }
     private static async Task<JsonNode?> Execute(Func<Task> operation) { await operation(); return Json.Node(new { ok = true }); }
     public async ValueTask DisposeAsync()
     {
+        if (Interlocked.Exchange(ref disposed, 1) != 0) return;
         lifetime.Cancel(); control?.Abort();
         if (supervisor is not null) await supervisor;
+        if (lan is not null) await lan.DisposeAsync();
         await agents.DisposeAsync();
         if (files.IsValueCreated) files.Value.Dispose();
         if (control is not null) await control.DisposeAsync();
-        if (Lease is not null)
-            try { await registry.PostAsync<JsonNode>("unregister", new LeaseProof(Lease.Code, Lease.Secret)); } catch { }
+        if (Lease is not null && registered)
+            try { using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(3)); await registry.PostAsync<JsonNode>("unregister", new LeaseProof(Lease.Code, Lease.Secret), timeout.Token); } catch { }
         identityLock?.Dispose();
     }
 }
@@ -269,8 +310,13 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     public long ReceivedBytes => socket?.ReceivedBytes ?? 0;
     public long SentBytes => socket?.SentBytes ?? 0;
     private readonly CancellationTokenSource lifetime = new();
-    private WebSocketTransport? socket;
+    private IConnectionTransport? socket;
     private Task? supervisor;
+    public string ConnectionKind { get; private set; } = "服务器中继";
+    private LanPairing? pairing;
+    private string? attached;
+    private int historyMode;
+    private long selectionRevision;
     public RpcPeer Peer { get; private set; } = null!;
     public PairResult? Device { get; private set; }
     public bool IsConnected => Peer is not null && Peer.Completion?.IsCompleted == false;
@@ -284,10 +330,39 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
         finally { IsReconnecting = false; }
         supervisor = SuperviseAsync(registry, code);
     }
+    private RpcPeer NewPeer(IConnectionTransport connection)
+    {
+        var peer = new RpcPeer(connection); var sync = new SessionSyncDecoder();
+        peer.Notification += (method, node) =>
+        {
+            if (method == "session-update")
+            {
+                var view = sync.Apply(Json.Read<SessionUpdate>(node));
+                if (Peer == peer) Notification?.Invoke("session", Json.Node(view));
+            }
+            else if (Peer == peer) Notification?.Invoke(method, node);
+        };
+        peer.CallSucceeded += (method, args) =>
+        {
+            if (Peer != peer) return;
+            if (method == "attach") { attached = Json.Node(args!)["id"]?.ToString(); Interlocked.Increment(ref selectionRevision); }
+            else if (method == "history-mode") { historyMode = Json.Node(args!)["version"]?.GetValue<int>() ?? 1; Interlocked.Increment(ref selectionRevision); }
+        };
+        peer.Start(); return peer;
+    }
     private async Task OpenAsync(RegistryClient registry, string code, CancellationToken ct)
     {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(20));
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        pairing ??= LanTrustStore.Load(registry.ServerIdentity, code);
+        IConnectionTransport? direct = null;
+        if (pairing is not null)
+            try { direct = await LanHost.ConnectAsync(pairing, timeout.Token); }
+            catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException && !timeout.IsCancellationRequested) { }
+        if (direct is not null)
+        {
+            socket = direct; Device = new PairResult(pairing!.Name, ""); ConnectionKind = "局域网直连";
+            Peer = NewPeer(direct); await EnableSync(Peer, timeout.Token); ConnectedAt = DateTimeOffset.UtcNow; return;
+        }
         Device = await registry.PostAsync<PairResult>("pair", new PairRequest(code), timeout.Token);
         var connection = await registry.OpenSocketAsync("control", timeout.Token);
         try
@@ -295,36 +370,63 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             await connection.WriteAsync(Json.Node(new { ticket = Device.Ticket }), timeout.Token);
             var response = await connection.ReadLimitedAsync(4096, timeout.Token);
             if (response["ok"]?.GetValue<bool>() != true) throw new IOException(response["error"]?.ToString() ?? "中继连接失败。");
-            socket = connection;
-            Peer = new RpcPeer(connection);
-            var sync = new SessionSyncDecoder();
-            Peer.Notification += (method, node) =>
+            socket = connection; ConnectionKind = "服务器中继"; Peer = NewPeer(connection); await EnableSync(Peer, timeout.Token);
+            try
             {
-                if (method == "session-update")
-                {
-                    // Maintain the baseline even before a UI/CLI observer subscribes.
-                    var view = sync.Apply(Json.Read<SessionUpdate>(node));
-                    Notification?.Invoke("session", Json.Node(view));
-                }
-                else Notification?.Invoke(method, node);
-            };
-            Peer.Start();
-            try { await Peer.CallAsync("session-sync", new { version = 1 }, timeout.Token); }
-            catch (IOException) when (Peer.Completion?.IsCompleted == false) { /* Legacy Host sends full snapshots. */ }
+                var info = await Peer.CallAsync("lan-info", null, timeout.Token, TimeSpan.FromSeconds(5));
+                if (info is not null) { pairing = Json.Read<LanPairing>(info); LanTrustStore.Save(registry.ServerIdentity, code, pairing); }
+            }
+            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or TimeoutException) { }
+            await TryUpgradeAsync(timeout.Token);
             ConnectedAt = DateTimeOffset.UtcNow;
         }
         catch { await connection.DisposeAsync(); throw; }
+    }
+    private static async Task EnableSync(RpcPeer peer, CancellationToken ct)
+    {
+        try { await peer.CallAsync("session-sync", new { version = 1 }, ct); }
+        catch (IOException) when (peer.Completion?.IsCompleted == false) { }
+    }
+    private async Task<bool> TryUpgradeAsync(CancellationToken ct)
+    {
+        if (pairing is null || ConnectionKind == "局域网直连" || Peer.HasPendingCalls || !IsConnected) return false;
+        var previous = Peer; var previousSocket = socket; long revision = Interlocked.Read(ref selectionRevision);
+        IConnectionTransport? direct = null; RpcPeer? candidate = null;
+        try
+        {
+            direct = await LanHost.ConnectAsync(pairing, ct); if (direct is null) return false;
+            candidate = NewPeer(direct); await EnableSync(candidate, ct);
+            if (historyMode > 0) await candidate.CallAsync("history-mode", new { version = historyMode }, ct);
+            if (attached is { } id) await candidate.CallAsync("attach", new { id }, ct);
+            if (!previous.TryRedirectTo(candidate, () => Peer == previous && Interlocked.Read(ref selectionRevision) == revision)) return false;
+            socket = direct; Peer = candidate; ConnectionKind = "局域网直连";
+            direct = null; candidate = null;
+            await previous.DisposeAsync(); if (previousSocket is not null) await previousSocket.DisposeAsync();
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or SocketException or TimeoutException or AuthenticationException or OperationCanceledException or ObjectDisposedException) { return false; }
+        finally { if (candidate is not null) await candidate.DisposeAsync(); if (direct is not null) await direct.DisposeAsync(); }
     }
     private async Task SuperviseAsync(RegistryClient registry, string code)
     {
         while (!lifetime.IsCancellationRequested)
         {
-            await Peer.Completion!;
+            var observed = Peer;
+            var done = await Task.WhenAny(observed.Completion!, Task.Delay(TimeSpan.FromSeconds(15), lifetime.Token));
             if (lifetime.IsCancellationRequested) return;
+            if (Peer != observed) continue;
+            if (done != observed.Completion)
+            {
+                using var probe = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); probe.CancelAfter(TimeSpan.FromSeconds(8));
+                try { if (await TryUpgradeAsync(probe.Token)) { ConnectionChanged?.Invoke(true, "已切换为局域网直连。"); Reconnected?.Invoke(); } }
+                catch (OperationCanceledException) when (!lifetime.IsCancellationRequested) { }
+                if (ConnectionKind == "局域网直连" && !Peer.HasPendingCalls) await CheckConnectionAsync();
+                continue;
+            }
             DisconnectedAt = DateTimeOffset.UtcNow;
             await Peer.DisposeAsync();
             IsReconnecting = autoReconnect;
-            ConnectionChanged?.Invoke(false, autoReconnect ? "中继连接已断开，正在重连…" : "中继连接已断开。");
+            ConnectionChanged?.Invoke(false, autoReconnect ? "连接已断开，正在选择局域网或中继…" : "连接已断开。");
             if (!autoReconnect) return;
             int attempt = 0;
             while (!lifetime.IsCancellationRequested)
@@ -335,7 +437,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
                     await OpenAsync(registry, code, lifetime.Token);
                     ReconnectCount++;
                     IsReconnecting = false;
-                    ConnectionChanged?.Invoke(true, "中继连接已恢复。");
+                    ConnectionChanged?.Invoke(true, "已恢复连接 · " + ConnectionKind);
                     Reconnected?.Invoke();
                     break;
                 }

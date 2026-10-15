@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace FurtherAgent.Core;
 
 // Each endpoint opens an outbound connection to the relay. No local listen port.
-public sealed class WebSocketTransport(WebSocket socket) : IJsonTransport
+public sealed class WebSocketTransport(WebSocket socket) : IConnectionTransport
 {
     private readonly SemaphoreSlim writes = new(1, 1);
     private int disposed;

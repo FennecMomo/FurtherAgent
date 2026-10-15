@@ -19,11 +19,21 @@ static class RpcSchedulingChecks
         check(blockedUi.Posts == 0, "RPC receives notifications without needing the caller UI dispatcher");
         var request = peer.CallAsync("send", new { text = "one submission" }, responseTimeout: TimeSpan.FromSeconds(2));
         var sent = await transport.Output.Reader.ReadAsync();
+        var nextTransport = new ProbeTransport();
+        await using var nextPeer = new RpcPeer(nextTransport); nextPeer.Start();
+        check(!peer.TryRedirectTo(nextPeer, () => true), "route migration refuses an in-flight submission");
         await Task.Delay(100);
         await transport.Input.Writer.WriteAsync(new JsonObject { ["id"] = sent["id"]!.ToString(), ["result"] = new JsonObject { ["ok"] = true } });
         check((await request)?["ok"]?.GetValue<bool>() == true && !transport.Output.Reader.TryRead(out _),
             "delayed acknowledgement resolves the original request without resubmitting");
         check(peer.LastReceivedAt is not null && peer.ReceivedMessages == 2, "RPC reports actual application receive time and count");
+        check(!peer.TryRedirectTo(nextPeer, () => false), "route migration rejects a changed session baseline");
+        check(peer.TryRedirectTo(nextPeer, () => true), "settled RPC connection can switch routes atomically");
+        var forwarded = peer.CallAsync("send", new { text = "after migration" });
+        var next = await nextTransport.Output.Reader.ReadAsync();
+        await nextTransport.Input.Writer.WriteAsync(new JsonObject { ["id"] = next["id"]!.ToString(), ["result"] = new JsonObject { ["ok"] = true } });
+        check((await forwarded)?["ok"]?.GetValue<bool>() == true && !nextTransport.Output.Reader.TryRead(out _) && !transport.Output.Reader.TryRead(out _),
+            "stale RPC reference submits exactly once on the new route");
     }
     private sealed class UnpumpedContext : SynchronizationContext
     {

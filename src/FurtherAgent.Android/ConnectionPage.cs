@@ -47,6 +47,7 @@ internal sealed class ConnectionPage : ContentPage
             Action("新增连接", () => { saved.SelectedIndex = -1; editing = null; name.Text = ""; code.Text = ""; message.Text = "填写新设备的地址和授权码，已有连接会保留。"; return Task.CompletedTask; }),
             name, Ui.Text("中继服务", 12, true), server, Ui.Text("设备授权码", 12, true), code,
             new HorizontalStackLayout { Spacing = 12, Children = { Ui.Text("启动后自动恢复此连接", 13), autoConnect } },
+            Ui.Text("首次通过中继配对；同一局域网优先加密直连，不可达时自动回退中继。", 12),
             Action("保存连接", async () =>
             {
                 var p = await SavedConnections.Store.SaveAsync(name.Text ?? "", server.Text ?? "", code.Text ?? "", editing);

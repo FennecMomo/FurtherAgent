@@ -74,6 +74,19 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     private readonly CancellationTokenSource lifetime = new();
     private readonly Channel<JsonNode> requests = Channel.CreateBounded<JsonNode>(64);
     private Task? handlers;
+    private readonly object callGate = new();
+    private RpcPeer? redirect;
+    public bool HasPendingCalls => !pending.IsEmpty;
+    public event Action<string, object?>? CallSucceeded;
+    // Atomically move future calls only after every submitted request has settled.
+    internal bool TryRedirectTo(RpcPeer replacement, Func<bool> unchanged)
+    {
+        lock (callGate)
+        {
+            if (!pending.IsEmpty || lifetime.IsCancellationRequested || !unchanged()) return false;
+            redirect = replacement; return true;
+        }
+    }
     public Func<string, JsonNode?, CancellationToken, Task<JsonNode?>>? Handler { get; set; }
     public event Action<string, JsonNode?>? Notification;
     public event Action<string>? Closed;
@@ -92,12 +105,23 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     {
         string id = Guid.NewGuid().ToString("N");
         var source = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        if (lifetime.IsCancellationRequested) throw new IOException("连接已断开。");
-        pending[id] = source;
+        RpcPeer? forwarded;
+        lock (callGate)
+        {
+            forwarded = redirect;
+            if (forwarded is null)
+            {
+                if (lifetime.IsCancellationRequested) throw new IOException("连接已断开。");
+                pending[id] = source;
+            }
+        }
+        if (forwarded is not null) return await forwarded.CallAsync(method, args, ct, responseTimeout);
         try
         {
             await WriteAsync(Json.Node(new { id, method, args }), ct);
-            return await source.Task.WaitAsync(responseTimeout ?? TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            var result = await source.Task.WaitAsync(responseTimeout ?? TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            CallSucceeded?.Invoke(method, args);
+            return result;
         }
         finally { pending.TryRemove(id, out _); }
     }
@@ -179,6 +203,12 @@ public interface IJsonTransport : IAsyncDisposable
 {
     Task<JsonNode> ReadAsync(CancellationToken ct);
     Task WriteAsync(JsonNode message, CancellationToken ct);
+}
+public interface IConnectionTransport : IJsonTransport
+{
+    void Abort();
+    long ReceivedBytes { get; }
+    long SentBytes { get; }
 }
 
 public sealed class StreamTransport(Stream stream) : IJsonTransport

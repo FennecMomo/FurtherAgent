@@ -1,4 +1,4 @@
-﻿using System.Text.Json.Nodes;
+using System.Text.Json.Nodes;
 using FurtherAgent.Core;
 
 namespace FurtherAgent.Mobile;
@@ -120,7 +120,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
                 ?? throw new IOException("远端尚无可用 Agent。");
             Sessions = Sorted(await Peer.CallAsync("sessions", null));
             heartbeat = new(client, owner); heartbeat.Start();
-            Status = "已连接 · " + Agent.Name;
+            Status = "已连接 · " + owner.ConnectionKind + " · " + Agent.Name;
         }
         catch { await CloseConnectionAsync(); Status = "连接失败，请检查地址与授权码"; throw; }
     });
@@ -138,7 +138,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             var sessions = Sorted(await owner.Peer.CallAsync("sessions", null));
             SessionView? view = id is null ? null : Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));
             if (remote != owner || revision != generation) return;
-            Agent = agent; Sessions = sessions; if (view is not null) Accept(view, true); Status = "已恢复连接 · 未重发任何操作";
+            Agent = agent; Sessions = sessions; if (view is not null) Accept(view, true); Status = "已恢复连接 · " + owner.ConnectionKind + " · 未重发任何操作";
             await RefreshFilesCoreAsync();
         }
         catch (Exception ex) { if (remote == owner) Status = "恢复读取失败：" + ex.Message; }

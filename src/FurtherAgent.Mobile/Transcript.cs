@@ -1,4 +1,4 @@
-﻿using System.Net;
+using System.Net;
 using System.Text;
 using FurtherAgent.Core;
 using Markdig;
@@ -112,7 +112,43 @@ addEventListener('touchmove',()=>{armed=true;if(scrollY<30)older();},{passive:tr
 addEventListener('wheel',e=>{armed=true;if(e.deltaY<0&&scrollY<30)older();},{passive:true});
 addEventListener('scroll',()=>{if(armed&&scrollY<30){armed=false;older();}},{passive:true});
 function historyLoadDone(){loading=false;}
-function renderTranscript(html, reset,prepend){const bottom=innerHeight+scrollY>=document.body.scrollHeight-100;const y=scrollY;const anchor=[...document.querySelectorAll('section')].find(x=>x.getBoundingClientRect().bottom>0);const aid=anchor?.id;const ay=anchor?.getBoundingClientRect().top;const opened=new Set([...document.querySelectorAll('details[open]')].map(x=>x.id));document.getElementById('chat').innerHTML=html;if(!reset)document.querySelectorAll('details').forEach(x=>x.open=opened.has(x.id));armed=false;loading=false;requestAnimationFrame(()=>{const a=aid&&document.getElementById(aid);if(prepend&&a)scrollTo(0,scrollY+a.getBoundingClientRect().top-ay);else scrollTo(0,reset||bottom?document.body.scrollHeight:y);});}
+// Reconcile keyed messages and their children in place, preserving selection and nested scroll positions.
+function patchNode(current,next){
+ if(current.nodeType!==next.nodeType||current.nodeName!==next.nodeName){const replacement=next.cloneNode(true);current.replaceWith(replacement);return replacement;}
+ if(current.nodeType===Node.TEXT_NODE){if(current.nodeValue!==next.nodeValue)current.nodeValue=next.nodeValue;return current;}
+ if(current.nodeType!==Node.ELEMENT_NODE)return current;
+ for(const attr of [...current.attributes])if(!(current.tagName==='DETAILS'&&attr.name==='open')&&!next.hasAttribute(attr.name))current.removeAttribute(attr.name);
+ for(const attr of next.attributes)if(!(current.tagName==='DETAILS'&&attr.name==='open')&&current.getAttribute(attr.name)!==attr.value)current.setAttribute(attr.name,attr.value);
+ patchChildren(current,next);return current;
+}
+function patchChildren(current,next){
+ const keyed=new Map([...current.children].filter(n=>n.id).map(n=>[n.id,n]));
+ let cursor=current.firstChild;
+ for(const desired of [...next.childNodes]){
+  let node=desired.nodeType===Node.ELEMENT_NODE&&desired.id?keyed.get(desired.id):cursor;
+  if(node&&node.nodeType===Node.ELEMENT_NODE&&node.id!==((desired.nodeType===Node.ELEMENT_NODE&&desired.id)||''))node=null;
+  if(!node){node=desired.cloneNode(true);current.insertBefore(node,cursor);}
+  else{if(node!==cursor)current.insertBefore(node,cursor);node=patchNode(node,desired);}
+  cursor=node.nextSibling;
+ }
+ while(cursor){const nextNode=cursor.nextSibling;cursor.remove();cursor=nextNode;}
+}
+let renderVersion=0;
+function renderTranscript(html,reset,prepend){
+ const chat=document.getElementById('chat');
+ const bottom=innerHeight+scrollY>=document.body.scrollHeight-100,y=scrollY;
+ const anchor=[...chat.querySelectorAll('section')].find(x=>x.getBoundingClientRect().bottom>0);
+ const aid=anchor?.id,ay=anchor?.getBoundingClientRect().top;
+ const template=document.createElement('template');template.innerHTML=html;
+ if(reset)chat.replaceChildren(template.content);else patchChildren(chat,template.content);
+ armed=false;loading=false;const version=++renderVersion;
+ requestAnimationFrame(()=>{
+  if(version!==renderVersion)return;
+  const a=aid&&document.getElementById(aid);
+  if(!reset&&(prepend||!bottom)&&a)scrollTo(0,scrollY+a.getBoundingClientRect().top-ay);
+  else scrollTo(0,reset||bottom?document.body.scrollHeight:y);
+ });
+}
 </script></body></html>
 """;
 

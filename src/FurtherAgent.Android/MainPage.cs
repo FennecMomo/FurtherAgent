@@ -37,7 +37,7 @@ public sealed partial class MainPage : ContentPage
     private bool rendering, prependHistory;
     private CancellationTokenSource? downloadCancel;
     private string? downloadStatus;
-    private bool voiceHeld, voiceDiscard, voiceReleaseSend, restoringConnections;
+    private bool voiceHeld, voiceDiscard, restoringConnections;
     private DateTime nextRestore = DateTime.MinValue;
 
     public MainPage()
@@ -78,20 +78,19 @@ public sealed partial class MainPage : ContentPage
         new HoldToTalk(voice, () =>
         {
             if (recognizingSpeech || interactionBusy || !session.Connected) return;
-            voiceHeld = true; voiceDiscard = voiceReleaseSend = false;
+            voiceHeld = true; voiceDiscard = false;
             _ = VoiceInputAsync();
         }, discard =>
         {
             voiceDiscard = discard;
-            status.Text = discard ? "松开放弃本次语音" : "松开发送 · 下拉放弃";
+            status.Text = discard ? "松开放弃本次语音" : "松手停止，文字保留 · 下拉放弃";
         }, discard =>
         {
             voiceHeld = false; voiceDiscard = discard;
-            voiceReleaseSend = !discard;
             if (discard) speechCancel?.Cancel(); else speechStop?.Cancel();
         }).Attach();
         voice.AutomationId = "voice-input";
-        SemanticProperties.SetDescription(voice, "按住说话，松开发送，下拉放弃");
+        SemanticProperties.SetDescription(voice, "按住说话，松手停止，文字保留，下拉放弃");
         StyleModelButton(models);
         prompts.BackgroundColor = Color.FromArgb("#FFF3E6"); prompts.WidthRequest = -1;
         prompts.Padding = new Thickness(12, 0); prompts.FontSize = 12;
@@ -200,7 +199,7 @@ public sealed partial class MainPage : ContentPage
         composer.IsEnabled = !session.Busy && !interactionBusy && session.View is not null && !preview;
         voice.IsEnabled = recognizingSpeech || composer.IsEnabled;
         Ui.SetAction(voice, recognizingSpeech ? (recordingSpeech ? "结束" : "取消") : "语音");
-        SemanticProperties.SetDescription(voice, "按住说话，松开发送，下拉放弃");
+        SemanticProperties.SetDescription(voice, "按住说话，松手停止，文字保留，下拉放弃");
         composer.Placeholder = session.View is not null && !preview ? "继续这个会话…" : "连接设备后，在这里发送消息…";
         send.IsEnabled = ready && session.View!.CanSend && (!string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0);
         Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑", true);
@@ -401,7 +400,7 @@ public sealed partial class MainPage : ContentPage
         suspended = true;
         SaveDraft();
         // Do not keep recording after Home, screen lock, or switching applications.
-        voiceHeld = false; voiceDiscard = true; voiceReleaseSend = false;
+        voiceHeld = false; voiceDiscard = true;
         speechCancel?.Cancel();
     }
     private async Task VoiceInputAsync()
@@ -413,9 +412,6 @@ public sealed partial class MainPage : ContentPage
             return;
         }
         if (interactionBusy || session.Busy || preview || draftKey.Length == 0 || closed) return;
-        bool sendRecognized = false;
-        string originKey = draftKey;
-        var originSession = session;
         await Act(async () =>
         {
             string key = draftKey, original = composer.Text ?? "";
@@ -439,7 +435,7 @@ public sealed partial class MainPage : ContentPage
                     ct => MicrophoneAudio.Capture(() => MainThread.BeginInvokeOnMainThread(() =>
                     {
                         if (!recognizingSpeech || closed) return;
-                        recordingSpeech = true; RefreshButtons(); status.Text = voiceDiscard ? "松开放弃本次语音" : "正在听 · 松开发送 · 下拉放弃";
+                        recordingSpeech = true; RefreshButtons(); status.Text = voiceDiscard ? "松开放弃本次语音" : "正在听 · 松手停止，文字保留 · 下拉放弃";
                     }), stopCapture.Token, ct),
                     text => MainThread.InvokeOnMainThreadAsync(() =>
                     {
@@ -449,8 +445,7 @@ public sealed partial class MainPage : ContentPage
                         Preferences.Set(key, merged);
                         if (draftKey == key) composer.Text = merged;
                     }).GetAwaiter().GetResult(), cancel.Token));
-                sendRecognized = hasText && voiceReleaseSend && !voiceDiscard && !suspended;
-                status.Text = hasText ? (sendRecognized ? "正在发送语音…" : "语音已停止，文字保留为草稿") : "没有识别到文字，原草稿已保留";
+                status.Text = hasText ? "语音已停止，文字保留为草稿，请手动发送" : "没有识别到文字，原草稿已保留";
             }
             catch (OperationCanceledException) { status.Text = "语音输入已停止，已识别的文字已保留"; }
             catch (TimeoutException)
@@ -471,7 +466,6 @@ public sealed partial class MainPage : ContentPage
                 speechCancel = null; speechStop = null; recognizingSpeech = recordingSpeech = false;
             }
         });
-        if (sendRecognized && !closed && !suspended && originKey == draftKey && ReferenceEquals(originSession, session)) await SendAsync();
     }
     private async Task FileMenuAsync()
     {

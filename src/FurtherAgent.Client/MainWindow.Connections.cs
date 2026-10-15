@@ -25,7 +25,7 @@ public partial class MainWindow
         public string Search = "";
         public Dictionary<string, string> Drafts = [];
         public List<RemoteFile> Attachments = [];
-        public string Label => Name + " · " + AgentIndicator.From(Remote.IsConnected, Remote.IsReconnecting, View).Label;
+        public string Label => Name + " · " + Remote.ConnectionKind + " · " + AgentIndicator.From(Remote.IsConnected, Remote.IsReconnecting, View).Label;
         public async ValueTask DisposeAsync()
         {
             try { if (Heartbeat is not null) await Heartbeat.DisposeAsync(); }
@@ -135,7 +135,7 @@ public partial class MainWindow
         WorkspaceButton.Visibility = agent?.CanWorkspaces == true ? Visibility.Visible : Visibility.Collapsed;
         AgentPicker.Items.Clear(); AgentPicker.Items.Add(agent?.Name ?? "Agent"); AgentPicker.SelectedIndex = 0;
         DisconnectButton.IsEnabled = true; RefreshButton.IsEnabled = remote.IsConnected;
-        SetSessionEnabled(false); RemoteStatus.Text = "当前设备 · " + device.Name;
+        SetSessionEnabled(false); RemoteStatus.Text = "当前设备 · " + device.Name + " · " + device.Remote.ConnectionKind;
         SessionTitle.Text = "选择远端会话，继续工作"; SessionMeta.Text = "其他设备保持连接，可在左侧随时切换。";
         EmptyTitle.Text = "选择会话，继续工作"; EmptyDescription.Text = "从左侧打开已有会话，或点击「新建会话」。";
         EmptyConnect.Visibility = Visibility.Collapsed; EmptyState.Visibility = Visibility.Visible;
