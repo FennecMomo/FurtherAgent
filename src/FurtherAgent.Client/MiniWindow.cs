@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shell;
 using FurtherAgent.Core;
+using Ellipse = System.Windows.Shapes.Ellipse;
 
 namespace FurtherAgent.Client;
 
@@ -29,9 +30,12 @@ internal sealed class MiniWindow : Window
     private readonly Button send = new() { Content = "↑", Width = 34, Height = 34, Padding = new Thickness(0), Margin = new Thickness(4), VerticalAlignment = VerticalAlignment.Bottom, FontSize = 20 };
     private readonly Border ball;
     private readonly TextBlock title = new() { TextTrimming = TextTrimming.CharacterEllipsis, FontSize = 12, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Ellipse statusDot = new() { Width = 7, Height = 7, Margin = new Thickness(0, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
+    private readonly TextBlock statusLabel = new() { FontSize = 11, VerticalAlignment = VerticalAlignment.Center };
+    private readonly Border statusBadge = new() { Background = Brushes.WhiteSmoke, CornerRadius = new CornerRadius(8), Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
     private readonly RowDefinition contextRow = new() { Height = new GridLength(1, GridUnitType.Star), MinHeight = 40 };
     private readonly System.Windows.Threading.DispatcherTimer positionTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
-    private bool closed, collapsed, sending, settingDraft, dragging, ballDragged, attached;
+    private bool closed, collapsed, sending, settingDraft, dragging, ballDragged, attached, sessionConnecting = true;
     private Point ballPress;
     private double dragY, dragOffset;
     private Size expandedSize = new(420, 210);
@@ -76,6 +80,10 @@ internal sealed class MiniWindow : Window
         Small("⌄", "收成小球", (_, _) => ToggleContext());
         Small("↗", "显示主窗口", (_, _) => showMain());
         Small("×", "关闭此迷你窗口", (_, _) => Close());
+        var statusContent = new StackPanel { Orientation = Orientation.Horizontal };
+        statusContent.Children.Add(statusDot); statusContent.Children.Add(statusLabel);
+        statusBadge.Child = statusContent;
+        DockPanel.SetDock(statusBadge, Dock.Right); header.Children.Add(statusBadge);
         title.Text = sessionTitle; title.ToolTip = sessionTitle;
         title.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) { DragMove(); e.Handled = true; } };
         header.Children.Add(title); surface.Children.Add(header);
@@ -155,11 +163,11 @@ internal sealed class MiniWindow : Window
             surface.Visibility = Visibility.Collapsed; ball.Visibility = Visibility.Visible;
             MinWidth = MinHeight = 44; ResizeMode = ResizeMode.NoResize;
             Width = Height = 44; Left = right - 44; Top = bottom - 44;
-            SetBallRegion(true); ball.Focus();
+            SetBallRegion(true); Opacity = 0.3; ball.Focus();
         }
         else
         {
-            collapsed = false; SetBallRegion(false); ball.Visibility = Visibility.Collapsed; surface.Visibility = Visibility.Visible;
+            collapsed = false; Opacity = 1; SetBallRegion(false); ball.Visibility = Visibility.Collapsed; surface.Visibility = Visibility.Visible;
             ResizeMode = expandedResizeMode; MinWidth = 280; MinHeight = 180;
             Width = expandedSize.Width; Height = expandedSize.Height;
             Left = right - Width; Top = bottom - Height; composer.Focus();
@@ -183,8 +191,10 @@ internal sealed class MiniWindow : Window
             {
                 if (closed) return;
                 if (!online) attached = false;
+                sessionConnecting = !online || !attached;
                 send.IsEnabled = online && attached && !sending && view?.CanSend == true;
                 composer.IsEnabled = send.IsEnabled;
+                UpdateRunStatus();
                 SetStatus(online ? view?.Title ?? sessionId : message);
             });
             connection.Reconnected += () => Dispatcher.BeginInvoke(async () =>
@@ -193,7 +203,7 @@ internal sealed class MiniWindow : Window
                 try
                 {
                     var restored = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = sessionId }, lifetime.Token));
-                    attached = true; Refresh(restored);
+                    attached = true; sessionConnecting = false; Refresh(restored);
                 }
                 catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException) { if (!closed) SetStatus("重连后读取会话失败：" + ex.Message); }
             });
@@ -202,12 +212,12 @@ internal sealed class MiniWindow : Window
             try { await OperationGroups.NegotiateAsync(connection.Peer); } catch (IOException) { }
             agent = Json.Read<AgentInfo[]>(await connection.Peer.CallAsync("agents", null, lifetime.Token)).FirstOrDefault(a => a.Available);
             var loaded = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = sessionId }, lifetime.Token));
-            attached = true; Refresh(loaded);
+            attached = true; sessionConnecting = false; Refresh(loaded);
         }
         catch (OperationCanceledException) when (closed) { }
         catch (Exception ex)
         {
-            if (!closed) { SetStatus("迷你窗口连接失败：" + ex.Message); context.Text = "连接失败：" + ex.Message + "\n请关闭后从主窗口重新打开。"; send.IsEnabled = false; composer.IsEnabled = false; }
+            if (!closed) { sessionConnecting = false; UpdateRunStatus(); SetStatus("迷你窗口连接失败：" + ex.Message); context.Text = "连接失败：" + ex.Message + "\n请关闭后从主窗口重新打开。"; send.IsEnabled = false; composer.IsEnabled = false; }
         }
     }
 
@@ -216,6 +226,7 @@ internal sealed class MiniWindow : Window
         if (update.Id != sessionId || closed) return;
         view = update;
         if (!string.IsNullOrWhiteSpace(update.Title)) { Title = "迷你 · " + update.Title; title.Text = update.Title; SetStatus(update.Title); ball.ToolTip = update.Title + " · 点击展开，按住拖动"; }
+        UpdateRunStatus();
         send.IsEnabled = attached && remote?.IsConnected == true && !sending && update.CanSend;
         composer.IsEnabled = send.IsEnabled;
         if (dragging || scroll.ScrollableHeight - scroll.VerticalOffset > 2) return;
@@ -230,6 +241,7 @@ internal sealed class MiniWindow : Window
         string text = composer.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
         sending = true; send.IsEnabled = false; composer.IsEnabled = false;
+        UpdateRunStatus();
         try
         {
             var peer = remote.Peer;
@@ -244,7 +256,23 @@ internal sealed class MiniWindow : Window
         }
         catch (TimeoutException) { SetStatus("确认超时，发送结果未知。请先查看会话结果，不要重复提交。"); }
         catch (Exception ex) { SetStatus("发送失败：" + ex.Message); }
-        finally { sending = false; send.IsEnabled = attached && remote?.IsConnected == true && view?.CanSend == true; composer.IsEnabled = send.IsEnabled; }
+        finally { sending = false; send.IsEnabled = attached && remote?.IsConnected == true && view?.CanSend == true; composer.IsEnabled = send.IsEnabled; UpdateRunStatus(); }
+    }
+
+    private void UpdateRunStatus()
+    {
+        var indicator = sending ? new AgentIndicator("提交中", "#D97706")
+            : AgentIndicator.From(attached && remote?.IsConnected == true, sessionConnecting, view);
+        statusLabel.Text = indicator.Label;
+        var color = (Brush)new BrushConverter().ConvertFromString(indicator.Color)!;
+        statusDot.Fill = color;
+        ((TextBlock)ball.Child).Foreground = color;
+        string detail = view?.StatusDetail is { Length: > 0 } description ? " · " + description : "";
+        string hint = indicator.Label + detail;
+        statusBadge.ToolTip = hint;
+        ball.ToolTip = (view?.Title ?? sessionId) + " · " + hint + " · 点击展开，按住拖动";
+        AutomationProperties.SetName(statusBadge, "会话状态：" + indicator.Label);
+        AutomationProperties.SetName(ball, "展开迷你窗口：" + (view?.Title ?? sessionId) + "，" + indicator.Label);
     }
 
     private void EndDrag() { dragging = false; if (scroll.IsMouseCaptured) scroll.ReleaseMouseCapture(); }

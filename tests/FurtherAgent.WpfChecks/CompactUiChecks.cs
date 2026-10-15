@@ -35,6 +35,7 @@ internal static class CompactUiChecks
         try
         {
             Layout(a, 420, 210); Layout(b, 420, 210);
+            Check(Field<TextBlock>(a, "statusLabel").Text == "连接中", "mini shows connection progress before its own session attaches");
             Check(main.Width == 1240 && main.MinWidth == 940 && main.Content is Grid,
                 "creating minis leaves main window size and content intact");
             Check(Field<TextBlock>(a, "context").Text.Contains("回复 A") && !Field<TextBlock>(a, "context").Text.Contains("工具原文") &&
@@ -60,8 +61,10 @@ internal static class CompactUiChecks
             {
                 Call(a, "ToggleContext"); Layout(a, 44, 44);
                 Check(a.Width == 44 && a.Height == 44 && a.Left == 496 && a.Top == 306, "mini ball preserves its bottom-right corner");
+                Check(Math.Abs(a.Opacity - 0.3) < 0.001, "collapsed ball uses 30 percent opacity");
                 Call(a, "ToggleContext"); Layout(a, 420, 210);
                 Check(a.Width == 420 && a.Height == 210 && a.Left == 120 && a.Top == 140, "mini expansion returns to exact bounds");
+                Check(Math.Abs(a.Opacity - 1) < 0.001, "expanded mini returns to full opacity");
             }
             Check(b.Width == 420 && b.Height == 210 && Field<TextBlock>(b, "context").Text.Contains("回复 B"),
                 "collapsing one mini does not alter another mini");

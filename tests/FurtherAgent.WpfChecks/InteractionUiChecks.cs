@@ -140,7 +140,20 @@ internal static class InteractionUiChecks
             var miniType = mini.GetType();
             var miniComposer = (TextBox)miniType.GetField("composer", Private)!.GetValue(mini)!;
             var miniSend = (Button)miniType.GetField("send", Private)!.GetValue(mini)!;
+            var miniStatus = (TextBlock)miniType.GetField("statusLabel", Private)!.GetValue(mini)!;
             await Until(() => miniSend.IsEnabled);
+            Require(miniStatus.Text == "空闲", "connected mini shows its own session idle state");
+            adapter.Publish(latest with { Status = "active" });
+            await Until(() => miniStatus.Text == "执行中");
+            Require(miniStatus.Text == "执行中", "mini receives live running state from its own session");
+            var miniBall = (Border)miniType.GetField("ball", Private)!.GetValue(mini)!;
+            Require(((SolidColorBrush)((TextBlock)miniBall.Child).Foreground).Color == Color.FromRgb(37, 99, 235),
+                "mini ball dot reflects the running session color");
+            adapter.Publish(latest with { Status = "active", Prompts = [new PendingPrompt("approve-1", "approval", "需要确认", "", null)] });
+            await Until(() => miniStatus.Text == "等待确认");
+            Require(miniStatus.Text == "等待确认", "mini prioritizes pending approval over running state");
+            adapter.Publish(latest);
+            await Until(() => miniStatus.Text == "空闲");
             Require(window.Width == mainWidth && window.Height == mainHeight && window.Content is Grid,
                 "creating a mini does not shrink or replace the main window");
             Invoke("Compact_Click", window, new RoutedEventArgs());
@@ -159,6 +172,12 @@ internal static class InteractionUiChecks
             var minis = Application.Current.Windows.OfType<Window>().Where(w => w.Title.StartsWith("迷你 · ")).ToArray();
             var secondMini = minis.Single(w => w != mini);
             await Until(() => ((Button)miniType.GetField("send", Private)!.GetValue(secondMini)!).IsEnabled);
+            var secondStatus = (TextBlock)miniType.GetField("statusLabel", Private)!.GetValue(secondMini)!;
+            adapter.Publish(latest with { Status = "active" });
+            await Until(() => miniStatus.Text == "执行中");
+            Require(secondStatus.Text == "空闲", "running updates for one session leave another mini status unchanged");
+            adapter.Publish(latest);
+            await Until(() => miniStatus.Text == "空闲");
             Require(minis.Length == 2 && minis.All(w => w != window) && window.Width == mainWidth,
                 "different sessions connect concurrent independent minis while main remains full size");
             Require((string)miniType.GetField("sessionId", Private)!.GetValue(mini)! == "history" &&
@@ -189,8 +208,9 @@ internal static class InteractionUiChecks
         public volatile bool Accepted;
         public TaskCompletionSource Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public AgentInfo Info => new("codex", "interaction fixture", true, "isolated fixture", CanConfigure:true);
-        public event Action<SessionView>? Changed { add { } remove { } }
+        public event Action<SessionView>? Changed;
         public event Action<string>? Faulted { add { } remove { } }
+        public void Publish(SessionView view) => Changed?.Invoke(view);
         public Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct) => Task.FromResult<IReadOnlyList<SessionInfo>>([new("history", "发送验证", "")]);
         public Task<SessionView> AttachAsync(string id, CancellationToken ct) => Task.FromResult(new SessionView(id,"发送验证","fixture","idle",null,[],[]));
         public Task<AgentSettings> SettingsAsync(CancellationToken ct) => Task.FromResult(new AgentSettings(Model,"openai","default",[],false,false,"fixture", Permission:Permission, CanChangePermissions:true));
