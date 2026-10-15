@@ -2,6 +2,7 @@ using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using FurtherAgent.Client;
@@ -52,6 +53,42 @@ internal static class CompactUiChecks
             Check(inputB.Text == "主窗口同步 B" && draftB == "第二个会话草稿", "main window can update mini draft without a write loop");
             Check(inputA.ActualHeight >= 48 && inputA.TransformToAncestor((Visual)a.Content).Transform(new Point(0, inputA.ActualHeight)).Y <= 210,
                 "mini composer stays fully inside expanded window");
+            var contextScroll = Field<ScrollViewer>(a, "scroll");
+            var growing = viewA with { Messages = [new("user", new string('甲', 260)), new("assistant", new string('乙', 260))] };
+            Call(a, "Refresh", growing); Layout(a, 420, 210);
+            Check(contextScroll.ScrollableHeight > 0 && Math.Abs(contextScroll.VerticalOffset - contextScroll.ScrollableHeight) < 1,
+                "new long messages remain visible above the composer after layout");
+            Call(a, "Refresh", growing with { Messages = [.. growing.Messages, new("user", new string('丙', 260))] }); Layout(a, 420, 210);
+            Check(Math.Abs(contextScroll.VerticalOffset - contextScroll.ScrollableHeight) < 1,
+                "the newest user message remains visible without waiting for another update");
+            contextScroll.ScrollToVerticalOffset(contextScroll.ScrollableHeight - 40); Layout(a, 420, 210);
+            var continued = growing with { Messages = [.. growing.Messages, new("assistant", "新回复应该立即显示")] };
+            Call(a, "Refresh", continued); Layout(a, 420, 210);
+            Check(Field<TextBlock>(a, "context").Text.Contains("新回复应该立即显示"),
+                "a stale scroll offset does not hide the next live update");
+            a.Height = 300; Layout(a, 420, 300); contextScroll.ScrollToEnd(); Layout(a, 420, 300);
+            a.Height = 180; Layout(a, 420, 180);
+            var afterResize = growing with { Messages = [.. growing.Messages, new("assistant", "缩小窗口之后的新回复")] };
+            Call(a, "Refresh", afterResize); Layout(a, 420, 180);
+            Check(Field<TextBlock>(a, "context").Text.Contains("缩小窗口之后的新回复"),
+                "viewport changes do not freeze new conversation content");
+            var complete = viewA with { Messages = [new("user", "第一条用户消息"),
+                new("assistant", "第二条"), new("assistant", "第三条"), new("assistant", "第四条"),
+                new("assistant", "第五条"), new("assistant", "第六条"), new("assistant", "第七条"),
+                new("assistant", "长回复开头" + new string('长', 6100) + "长回复结尾")] };
+            Call(a, "Refresh", complete); Layout(a, 420, 180);
+            Check(Field<TextBlock>(a, "context").Text.Contains("第一条用户消息") &&
+                  Field<TextBlock>(a, "context").Text.Contains("长回复开头") && Field<TextBlock>(a, "context").Text.Contains("长回复结尾"),
+                "mini does not cut conversation entries or long replies inside its latest snapshot");
+            contextScroll.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, 120) { RoutedEvent = Mouse.PreviewMouseWheelEvent });
+            Layout(a, 420, 180);
+            string reading = Field<TextBlock>(a, "context").Text;
+            Call(a, "Refresh", complete with { Messages = [.. complete.Messages, new("assistant", "阅读中暂不跳到底部")] });
+            Check(Field<TextBlock>(a, "context").Text == reading, "user wheel reading remains anchored during live updates");
+            contextScroll.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice, Environment.TickCount, -100000) { RoutedEvent = Mouse.PreviewMouseWheelEvent });
+            Layout(a, 420, 180);
+            Check(Field<TextBlock>(a, "context").Text.Contains("阅读中暂不跳到底部"),
+                "returning to the bottom immediately reveals updates received while reading");
             a.Height = 180; Field<RowDefinition>(a, "contextRow").Height = new GridLength(500); Layout(a, 420, 180);
             Check(inputA.ActualHeight >= 48 && inputA.TransformToAncestor((Visual)a.Content).Transform(new Point(0, inputA.ActualHeight)).Y <= 180,
                 "long context cannot push composer outside minimum window");

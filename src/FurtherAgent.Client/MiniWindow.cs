@@ -35,7 +35,8 @@ internal sealed class MiniWindow : Window
     private readonly Border statusBadge = new() { Background = Brushes.WhiteSmoke, CornerRadius = new CornerRadius(8), Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
     private readonly RowDefinition contextRow = new() { Height = new GridLength(1, GridUnitType.Star), MinHeight = 40 };
     private readonly System.Windows.Threading.DispatcherTimer positionTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
-    private bool closed, collapsed, sending, settingDraft, dragging, ballDragged, attached, sessionConnecting = true;
+    private bool closed, collapsed, sending, settingDraft, dragging, ballDragged, attached, sessionConnecting = true, followLatest = true;
+    private int scrollRevision;
     private Point ballPress;
     private double dragY, dragOffset;
     private Size expandedSize = new(420, 210);
@@ -89,13 +90,22 @@ internal sealed class MiniWindow : Window
         header.Children.Add(title); surface.Children.Add(header);
 
         scroll = new ScrollViewer { Content = context, VerticalScrollBarVisibility = ScrollBarVisibility.Hidden, Background = Brushes.Transparent, Cursor = Cursors.Hand, CanContentScroll = false };
-        scroll.PreviewMouseWheel += (_, e) => e.Handled = true;
+        scroll.PreviewMouseWheel += (_, e) =>
+        {
+            e.Handled = true;
+            double target = Math.Clamp(scroll.VerticalOffset - e.Delta, 0, scroll.ScrollableHeight);
+            followLatest = target >= scroll.ScrollableHeight - 2;
+            scroll.ScrollToVerticalOffset(target);
+            if (followLatest) RenderLatestText();
+        };
         scroll.PreviewMouseLeftButtonDown += (_, e) => { dragging = true; dragY = e.GetPosition(scroll).Y; dragOffset = scroll.VerticalOffset; scroll.CaptureMouse(); e.Handled = true; };
         scroll.PreviewMouseMove += (_, e) =>
         {
             if (!dragging) return;
             if (e.LeftButton != MouseButtonState.Pressed) { EndDrag(); return; }
-            scroll.ScrollToVerticalOffset(Math.Clamp(dragOffset + dragY - e.GetPosition(scroll).Y, 0, scroll.ScrollableHeight)); e.Handled = true;
+            double target = Math.Clamp(dragOffset + dragY - e.GetPosition(scroll).Y, 0, scroll.ScrollableHeight);
+            if (Math.Abs(target - scroll.VerticalOffset) > 0.5) followLatest = target >= scroll.ScrollableHeight - 2;
+            scroll.ScrollToVerticalOffset(target); e.Handled = true;
         };
         scroll.PreviewMouseLeftButtonUp += (_, e) => { if (dragging) { EndDrag(); e.Handled = true; } };
         scroll.LostMouseCapture += (_, _) => dragging = false;
@@ -170,7 +180,7 @@ internal sealed class MiniWindow : Window
             collapsed = false; Opacity = 1; SetBallRegion(false); ball.Visibility = Visibility.Collapsed; surface.Visibility = Visibility.Visible;
             ResizeMode = expandedResizeMode; MinWidth = 280; MinHeight = 180;
             Width = expandedSize.Width; Height = expandedSize.Height;
-            Left = right - Width; Top = bottom - Height; composer.Focus();
+            Left = right - Width; Top = bottom - Height; if (followLatest) ScrollToLatestAfterLayout(); composer.Focus();
         }
         SavePosition();
     }
@@ -229,10 +239,28 @@ internal sealed class MiniWindow : Window
         UpdateRunStatus();
         send.IsEnabled = attached && remote?.IsConnected == true && !sending && update.CanSend;
         composer.IsEnabled = send.IsEnabled;
-        if (dragging || scroll.ScrollableHeight - scroll.VerticalOffset > 2) return;
-        string text = string.Join("\n", update.Messages.Where(HistoryPaging.IsConversation).TakeLast(6).Select(m => (ChatPresentation.Kind(m) == "user" ? "你：" : "") + ChatPresentation.Display(m).Text));
-        if (text.Length > 6000) text = text[^6000..];
-        if (context.Text != text) { context.Text = text; scroll.ScrollToEnd(); }
+        RenderLatestText();
+    }
+
+    private void RenderLatestText()
+    {
+        if (dragging || !followLatest || view is null) return;
+        string text = string.Join("\n", view.Messages.Where(HistoryPaging.IsConversation)
+            .Select(m => (ChatPresentation.Kind(m) == "user" ? "你：" : "") + ChatPresentation.Display(m).Text));
+        if (context.Text != text) context.Text = text;
+        ScrollToLatestAfterLayout();
+    }
+
+    private void ScrollToLatestAfterLayout()
+    {
+        int revision = ++scrollRevision;
+        scroll.ScrollToEnd();
+        Dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Loaded, new Action(() =>
+        {
+            if (closed || collapsed || dragging || !followLatest || revision != scrollRevision) return;
+            scroll.UpdateLayout();
+            scroll.ScrollToEnd();
+        }));
     }
 
     private async Task SendAsync()
@@ -275,7 +303,12 @@ internal sealed class MiniWindow : Window
         AutomationProperties.SetName(ball, "展开迷你窗口：" + (view?.Title ?? sessionId) + "，" + indicator.Label);
     }
 
-    private void EndDrag() { dragging = false; if (scroll.IsMouseCaptured) scroll.ReleaseMouseCapture(); }
+    private void EndDrag()
+    {
+        dragging = false;
+        if (scroll.IsMouseCaptured) scroll.ReleaseMouseCapture();
+        if (followLatest) RenderLatestText();
+    }
 
     private void LoadPosition(bool allowLegacy)
     {

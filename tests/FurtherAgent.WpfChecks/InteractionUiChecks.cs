@@ -142,6 +142,20 @@ internal static class InteractionUiChecks
             var miniSend = (Button)miniType.GetField("send", Private)!.GetValue(mini)!;
             var miniStatus = (TextBlock)miniType.GetField("statusLabel", Private)!.GetValue(mini)!;
             await Until(() => miniSend.IsEnabled);
+            var miniContext = (TextBlock)miniType.GetField("context", Private)!.GetValue(mini)!;
+            var miniScroll = (ScrollViewer)miniType.GetField("scroll", Private)!.GetValue(mini)!;
+            var stream = latest with { Messages = [new("user", new string('甲', 280)), new("assistant", new string('乙', 280) + " 首次尾部")] };
+            adapter.Publish(stream);
+            await Until(() => miniContext.Text.Contains("首次尾部"));
+            await Task.Delay(150);
+            Require(miniScroll.ScrollableHeight > 0 && Math.Abs(miniScroll.VerticalOffset - miniScroll.ScrollableHeight) < 2,
+                "live mini keeps the first streamed tail above the composer");
+            adapter.Publish(stream with { Messages = [.. stream.Messages, new("user", new string('丙', 280) + " 第二次尾部")] });
+            await Until(() => miniContext.Text.Contains("第二次尾部"));
+            await Task.Delay(150);
+            Require(Math.Abs(miniScroll.VerticalOffset - miniScroll.ScrollableHeight) < 2,
+                "live mini keeps the next streamed tail above the composer");
+            adapter.Publish(latest);
             Require(miniStatus.Text == "空闲", "connected mini shows its own session idle state");
             adapter.Publish(latest with { Status = "active" });
             await Until(() => miniStatus.Text == "执行中");
