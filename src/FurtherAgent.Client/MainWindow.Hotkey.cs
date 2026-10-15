@@ -54,11 +54,10 @@ public partial class MainWindow
     }
     private void ToggleCompactHotkey()
     {
-        if (!IsVisible) Show();
-        if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
-        if (!compactMode) Compact_Click(this, new RoutedEventArgs());
-        else ToggleCompactContext();
-        Activate();
+        if (activeDevice is not null && selectedId is not null &&
+            miniWindows.TryGetValue((activeDevice, selectedId), out var mini))
+        { mini.ToggleContext(); mini.Activate(); }
+        else Compact_Click(this, new RoutedEventArgs());
     }
     private void CompactHotkey_KeyDown(object sender, KeyEventArgs e)
     {

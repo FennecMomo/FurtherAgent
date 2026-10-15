@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using System.Reflection;
 using System.Windows;
 using System.Windows.Controls;
@@ -12,87 +12,69 @@ internal static class CompactUiChecks
     internal static void Run(string output)
     {
         var app = new App(); app.InitializeComponent();
-        var window = new MainWindow();
+        var main = new MainWindow();
+        var type = typeof(MainWindow).Assembly.GetType("FurtherAgent.Client.MiniWindow")!;
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        void Call(string name, params object[] args) => typeof(MainWindow).GetMethod(name, flags)!.Invoke(window, args);
-        T Field<T>(string name) => (T)typeof(MainWindow).GetField(name, flags)!.GetValue(window)!;
+        string pathA = Path.Combine(Path.GetTempPath(), "fa-mini-a-" + Guid.NewGuid() + ".json");
+        string pathB = Path.Combine(Path.GetTempPath(), "fa-mini-b-" + Guid.NewGuid() + ".json");
+        string draftA = "第一个会话草稿", draftB = "第二个会话草稿";
+        var viewA = new SessionView("a", "会话 A", "", "idle", null, [new("user", "问题 A"), new("tool", "不显示工具原文"), new("assistant", "回复 A")], []);
+        var viewB = new SessionView("b", "会话 B", "", "idle", null, [new("assistant", "回复 B")], []);
+        Window Create(string id, SessionView view, string path, Func<string> read, Action<string> write) =>
+            (Window)Activator.CreateInstance(type, "https://example.test", "fixture", id, view.Title, view, path, read, write, (Action)(() => { }), 0)!;
+        var a = Create("a", viewA, pathA, () => draftA, text => draftA = text);
+        var b = Create("b", viewB, pathB, () => draftB, text => draftB = text);
+        T Field<T>(Window window, string name) => (T)type.GetField(name, flags)!.GetValue(window)!;
+        void Call(Window window, string name, params object[] args) => type.GetMethod(name, flags | BindingFlags.Public)!.Invoke(window, args);
         void Check(bool condition, string text) { if (!condition) throw new Exception(text); Console.WriteLine("PASS: " + text); }
-        void Layout(double width, double height) { window.Measure(new Size(width,height)); window.Arrange(new Rect(100,100,width,height)); window.UpdateLayout(); var content = (FrameworkElement)window.Content; content.Measure(new Size(width,height)); content.Arrange(new Rect(0,0,width,height)); content.UpdateLayout(); }
-        string positionFile = Path.Combine(Path.GetTempPath(), "fa-compact-" + Guid.NewGuid() + ".json");
-        typeof(MainWindow).GetField("compactSettingsPath", flags)!.SetValue(window, positionFile);
+        void Layout(Window window, double width, double height)
+        {
+            window.Measure(new Size(width, height)); window.Arrange(new Rect(100, 100, width, height)); window.UpdateLayout();
+            var content = (FrameworkElement)window.Content; content.Measure(new Size(width, height)); content.Arrange(new Rect(0, 0, width, height)); content.UpdateLayout();
+        }
         try
         {
-            Layout(1100,760);
-            var composer = (TextBox)window.FindName("Composer"); composer.Text = "保留当前草稿";
-            var history = (ConversationHistory)typeof(MainWindow).GetProperty("History", flags)!.GetValue(window)!;
-            history.Accept(new("compact", "会话", "", "idle", null, [new("你", "刚才的提问"),new("工具", "工具原文不显示"),new("Codex", "这是最新回复。\n上下文保留约五行，拖动分隔线可以调整高度。")], []));
-            Call("Compact_Click", window, new RoutedEventArgs()); Layout(420,210);
-            Check(Field<FrameworkElement>("fullSurface").Visibility == Visibility.Collapsed && Field<Grid>("compactSurface").Visibility == Visibility.Visible, "compact mode hides the complete full UI");
-            var mini = Field<TextBox>("compactComposer");
-            Check(mini.ActualHeight >= 48 && mini.TransformToAncestor((Visual)window.Content).Transform(new Point(0, mini.ActualHeight)).Y <= 210,
-                "expanded compact window keeps visible input fully inside window");
-            window.Height = 180;
-            Field<RowDefinition>("compactContextRow").Height = new GridLength(500);
-            Layout(420,180);
-            Check(mini.ActualHeight >= 48 && mini.TransformToAncestor((Visual)window.Content).Transform(new Point(0, mini.ActualHeight)).Y <= 180,
-                "oversized context cannot push input outside minimum-size window");
-            Field<RowDefinition>("compactContextRow").Height = new GridLength(1, GridUnitType.Star);
-            window.Height = 210; Layout(420,210);
-            Check(mini.Text == composer.Text, "compact composer inherits current draft");
-            mini.Text = "迷你窗口编辑的新草稿";
-            Check(composer.Text == mini.Text, "compact typing updates the original composer");
-            composer.Clear(); Check(mini.Text == "", "successful-send clear propagates into compact composer");
-            mini.Text = "继续保留草稿";
-            Check(Field<TextBlock>("compactContext").Text.Contains("最新回复") && !Field<TextBlock>("compactContext").Text.Contains("工具原文"), "compact context shows only conversation prose");
-            var surface = Field<Grid>("compactSurface");
-            var bitmap = new RenderTargetBitmap(420,210,96,96,PixelFormats.Pbgra32); bitmap.Render((Visual)window.Content);
-            var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using (var file = File.Create(output)) png.Save(file);
-            var scroll = Field<ScrollViewer>("compactScroll");
-            string longReply = string.Join("\n", Enumerable.Range(0, 60).Select(i => "稳定阅读行 " + i));
-            history.Accept(new("drag-test", "", "", "idle", null, [new("Codex", longReply)], []));
-            Call("RefreshCompact"); Layout(420,210); scroll.ScrollToVerticalOffset(300); Layout(420,210);
-            double beforeDrag = scroll.VerticalOffset;
-            Call("BeginCompactDrag", 50.0); Call("MoveCompactDrag", 80.0); Layout(420,210);
-            Check(Math.Abs(scroll.VerticalOffset - (beforeDrag - 30)) < 1, "drag follows pointer by exact pixel distance");
-            double readingOffset = scroll.VerticalOffset;
-            history.Accept(new("drag-test", "", "", "active", "run", [new("Codex", longReply + "\n新增回复")], []));
-            Call("RefreshCompact"); Layout(420,210);
-            Check(scroll.VerticalOffset == readingOffset && !Field<TextBlock>("compactContext").Text.Contains("新增回复"), "stream updates cannot move text during drag");
-            Call("EndCompactDrag"); Call("RefreshCompact"); Layout(420,210);
-            Check(scroll.VerticalOffset == readingOffset, "reading old lines stays stable after releasing pointer");
-            var wheel = new System.Windows.Input.MouseWheelEventArgs(System.Windows.Input.Mouse.PrimaryDevice, 0, -120)
-                { RoutedEvent = System.Windows.Input.Mouse.PreviewMouseWheelEvent };
-            scroll.RaiseEvent(wheel); Layout(420,210);
-            Check(wheel.Handled && scroll.VerticalOffset == readingOffset, "context consumes wheel without scrolling");
-            scroll.ScrollToEnd(); Layout(420,210); Call("RefreshCompact"); Layout(420,210);
-            Check(Field<TextBlock>("compactContext").Text.Contains("新增回复"), "returning to bottom resumes new content");
-            window.Left = 120; window.Top = 140;
-            for (int i = 0; i < 25; i++)
+            Layout(a, 420, 210); Layout(b, 420, 210);
+            Check(main.Width == 1240 && main.MinWidth == 940 && main.Content is Grid,
+                "creating minis leaves main window size and content intact");
+            Check(Field<TextBlock>(a, "context").Text.Contains("回复 A") && !Field<TextBlock>(a, "context").Text.Contains("工具原文") &&
+                  Field<TextBlock>(b, "context").Text.Contains("回复 B"),
+                "each mini displays only its fixed session conversation");
+            Call(a, "Refresh", viewB);
+            Check(!Field<TextBlock>(a, "context").Text.Contains("回复 B"), "another session update cannot redirect a mini");
+            var inputA = Field<TextBox>(a, "composer"); var inputB = Field<TextBox>(b, "composer");
+            Check(inputA.Text == draftA && inputB.Text == draftB, "each session begins with its own draft");
+            inputA.Text = "编辑 A";
+            Check(draftA == "编辑 A" && draftB == "第二个会话草稿" && inputB.Text == draftB,
+                "editing one mini never changes another session draft");
+            Call(b, "SetDraft", "主窗口同步 B");
+            Check(inputB.Text == "主窗口同步 B" && draftB == "第二个会话草稿", "main window can update mini draft without a write loop");
+            Check(inputA.ActualHeight >= 48 && inputA.TransformToAncestor((Visual)a.Content).Transform(new Point(0, inputA.ActualHeight)).Y <= 210,
+                "mini composer stays fully inside expanded window");
+            a.Height = 180; Field<RowDefinition>(a, "contextRow").Height = new GridLength(500); Layout(a, 420, 180);
+            Check(inputA.ActualHeight >= 48 && inputA.TransformToAncestor((Visual)a.Content).Transform(new Point(0, inputA.ActualHeight)).Y <= 180,
+                "long context cannot push composer outside minimum window");
+            Field<RowDefinition>(a, "contextRow").Height = new GridLength(1, GridUnitType.Star);
+            a.Height = 210; a.Left = 120; a.Top = 140; Layout(a, 420, 210);
+            for (int i = 0; i < 10; i++)
             {
-                Call("ToggleCompactContext"); Layout(44,44);
-                if (window.Width != 44 || window.Height != 44 || window.Left != 496 || window.Top != 306)
-                    throw new Exception("ball must preserve bottom-right corner");
-                if (surface.Visibility != Visibility.Collapsed || Field<Border>("compactBall").Visibility != Visibility.Visible)
-                    throw new Exception("ball must hide both context and input");
-                Call("ToggleCompactContext"); Layout(420,210);
-                if (window.Width != 420 || window.Height != 210 || window.Left != 120 || window.Top != 140)
-                    throw new Exception("collapse cycles must not accumulate size or position drift");
+                Call(a, "ToggleContext"); Layout(a, 44, 44);
+                Check(a.Width == 44 && a.Height == 44 && a.Left == 496 && a.Top == 306, "mini ball preserves its bottom-right corner");
+                Call(a, "ToggleContext"); Layout(a, 420, 210);
+                Check(a.Width == 420 && a.Height == 210 && a.Left == 120 && a.Top == 140, "mini expansion returns to exact bounds");
             }
-            Check(true, "25 collapse cycles preserve exact size and bottom-right anchor with only a ball visible");
-            Call("ToggleCompactContext"); Layout(44,44);
-            window.Left += 30; window.Top += 20;
-            Call("ToggleCompactContext"); Layout(420,210);
-            Check(window.Left == 150 && window.Top == 160 && composer.Text == "继续保留草稿",
-                "moving the ball moves expanded window without losing draft");
-            window.Left = 160; window.Top = 180;
-            Call("RestoreCompact"); Layout(1100,760);
-            Check(File.Exists(positionFile), "mini position is persisted on restore");
-            typeof(MainWindow).GetField("compactPosition", flags)!.SetValue(window, null);
-            Call("Compact_Click", window, new RoutedEventArgs()); Layout(420,210);
-            Check(window.Left == 160 && window.Top == 180, "next compact entry reloads its saved position from disk");
-            Call("RestoreCompact"); Layout(1100,760);
-            Check(Field<FrameworkElement>("fullSurface").Visibility == Visibility.Visible && composer.Text == "继续保留草稿" && window.MinWidth == 940, "restoring full window preserves draft and restores size constraints");
+            Check(b.Width == 420 && b.Height == 210 && Field<TextBlock>(b, "context").Text.Contains("回复 B"),
+                "collapsing one mini does not alter another mini");
+            var bitmap = new RenderTargetBitmap(420, 210, 96, 96, PixelFormats.Pbgra32); bitmap.Render((Visual)a.Content);
+            var png = new PngBitmapEncoder(); png.Frames.Add(BitmapFrame.Create(bitmap)); using (var file = File.Create(output)) png.Save(file);
+            Call(a, "SavePosition");
+            Check(File.Exists(pathA) && !File.Exists(pathB), "each mini persists only its own position");
         }
-        finally { Call("DisposeTray"); app.Shutdown(); if (File.Exists(positionFile)) File.Delete(positionFile); }
+        finally
+        {
+            a.Close(); b.Close(); typeof(MainWindow).GetMethod("DisposeTray", flags)!.Invoke(main, null); app.Shutdown();
+            if (File.Exists(pathA)) File.Delete(pathA);
+            if (File.Exists(pathB)) File.Delete(pathB);
+        }
     }
 }

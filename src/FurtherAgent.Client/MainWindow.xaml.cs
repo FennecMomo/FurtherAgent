@@ -59,7 +59,6 @@ public partial class MainWindow : Window
         snapshotTimer.Tick += (_, _) =>
         {
             RenderConnectionHealth();
-            RefreshCompact();
             (RemoteDevice Connection, SessionView View)? next;
             lock (snapshotGate) { next = pendingSnapshot; pendingSnapshot = null; }
             if (next is { } update && remote == update.Connection && selectedId == update.View.Id) { Render(update.View); lastRenderedAt = DateTimeOffset.UtcNow; }
@@ -127,9 +126,10 @@ public partial class MainWindow : Window
             stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection, uiTheme,
             connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt,
             relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text,
-            receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes };
+            receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes, miniWindows = miniWindows.Count };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
         if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t))
+            || miniWindows.Values.Any(mini => mini.IsSending || mini.HasUnsentDraft)
             || deviceConnections.Entries.Values.Any(d => d.Attachments.Count > 0 || d.Drafts.Values.Any(t => !string.IsNullOrEmpty(t))))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
         startupRetry?.Cancel();
@@ -237,6 +237,7 @@ public partial class MainWindow : Window
     private async Task DisconnectAsync()
     {
         var disconnected = activeDevice;
+        if (disconnected is not null) CloseMinisForDevice(disconnected);
         SaveActiveDevice(); activeDevice = null; heartbeat = null;
         transferCancellation?.Cancel(); ClearAttachments();
         SaveDraft(); agent = null; ModelOverlay.Visibility = Visibility.Collapsed;
@@ -995,6 +996,6 @@ public partial class MainWindow : Window
             await DisposeLocalAdapterAsync();
             hostRegistry?.Dispose();
         }
-        finally { snapshotTimer.Stop(); DisposeTray(); closing = true; Application.Current.Shutdown(); }
+        finally { snapshotTimer.Stop(); CloseAllMinis(); DisposeTray(); closing = true; Application.Current.Shutdown(); }
     }
 }

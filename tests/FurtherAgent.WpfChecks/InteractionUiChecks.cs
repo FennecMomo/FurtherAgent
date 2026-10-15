@@ -134,17 +134,39 @@ internal static class InteractionUiChecks
                 "late receipt after native timeout preserves newly edited draft");
             adapter.Accepted = false;
             adapter.Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            Set("compactSettingsPath", System.IO.Path.Combine(System.IO.Path.GetTempPath(), "fa-compact-interaction-" + Guid.NewGuid() + ".json"));
+            double mainWidth = window.Width, mainHeight = window.Height;
             Invoke("Compact_Click", window, new RoutedEventArgs());
-            var miniComposer = (TextBox)typeof(MainWindow).GetField("compactComposer", Private)!.GetValue(window)!;
+            var mini = Application.Current.Windows.OfType<Window>().Single(w => w.Title.StartsWith("迷你 · "));
+            var miniType = mini.GetType();
+            var miniComposer = (TextBox)miniType.GetField("composer", Private)!.GetValue(mini)!;
+            var miniSend = (Button)miniType.GetField("send", Private)!.GetValue(mini)!;
+            await Until(() => miniSend.IsEnabled);
+            Require(window.Width == mainWidth && window.Height == mainHeight && window.Content is Grid,
+                "creating a mini does not shrink or replace the main window");
+            Invoke("Compact_Click", window, new RoutedEventArgs());
+            Require(Application.Current.Windows.OfType<Window>().Count(w => w.Title.StartsWith("迷你 · ")) == 1,
+                "same-session button reuses the existing mini");
             miniComposer.Text = "迷你窗口发送";
-            var miniSurface = (Grid)typeof(MainWindow).GetField("compactSurface", Private)!.GetValue(window)!;
-            miniSurface.Children.OfType<Grid>().Last().Children.OfType<Button>().Single().RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Require(composer.Text == miniComposer.Text, "mini draft is reflected in the selected main session");
+            miniSend.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             await Until(() => adapter.Sends == 7);
             adapter.Acknowledgement.SetResult();
-            await Until(() => !Busy());
+            await Until(() => !(bool)miniType.GetProperty("IsSending")!.GetValue(mini)!);
             Require(miniComposer.Text == "" && composer.Text == "", "compact send traverses real relay and clears both composers after acknowledgement");
-            Invoke("RestoreCompact");
+            Set("selectedId", "another");
+            Invoke("Render", Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = "another" })));
+            Invoke("Compact_Click", window, new RoutedEventArgs());
+            var minis = Application.Current.Windows.OfType<Window>().Where(w => w.Title.StartsWith("迷你 · ")).ToArray();
+            var secondMini = minis.Single(w => w != mini);
+            await Until(() => ((Button)miniType.GetField("send", Private)!.GetValue(secondMini)!).IsEnabled);
+            Require(minis.Length == 2 && minis.All(w => w != window) && window.Width == mainWidth,
+                "different sessions connect concurrent independent minis while main remains full size");
+            Require((string)miniType.GetField("sessionId", Private)!.GetValue(mini)! == "history" &&
+                    (string)miniType.GetField("sessionId", Private)!.GetValue(secondMini)! == "another",
+                "each mini retains its own session subscription after main switches");
+            foreach (var floating in minis) floating.Close();
+            Set("selectedId", "history");
+            Invoke("Render", Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = "history" })));
             var settings = Json.Read<AgentSettings>(await remote.Peer.CallAsync("settings", null));
             Invoke("ApplyModelSettings", settings, "history");
             Find<ComboBox>("PermissionPicker").SelectedIndex = 0;

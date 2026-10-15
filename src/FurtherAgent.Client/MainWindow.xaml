@@ -66,7 +66,7 @@
    <Grid x:Name="ConversationPage">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <DockPanel Margin="{DynamicResource HeaderMargin}">
-     <Button DockPanel.Dock="Right" Content="收缩" Click="Compact_Click" ToolTip="收缩为迷你输入窗口" AutomationProperties.Name="收缩为迷你窗口" VerticalAlignment="Top"/>
+     <Button DockPanel.Dock="Right" Content="收缩" Click="Compact_Click" ToolTip="为当前会话打开独立迷你窗口，不影响主窗口" AutomationProperties.Name="为当前会话生成迷你窗口" VerticalAlignment="Top"/>
      <Border DockPanel.Dock="Right" VerticalAlignment="Top" Margin="12,0,12,0" Padding="10,6" CornerRadius="12" BorderThickness="1" BorderBrush="{DynamicResource BrushCFD9CF}" ToolTip="当前远端连接与所选 Agent 会话状态">
       <StackPanel Orientation="Horizontal"><Ellipse x:Name="ConnectionStateDot" Width="11" Height="11" Fill="#DC2626" Margin="0,0,7,0"/><TextBlock x:Name="ConnectionStateLabel" Text="已断连" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
      </Border>
@@ -101,7 +101,7 @@
      <TextBlock Text="设置" FontSize="{DynamicResource PageTitleSize}" FontWeight="SemiBold"/><TextBlock Text="配置连接与本机共享，回到会话即可继续工作。" Foreground="{DynamicResource Brush77847B}" Margin="0,8,0,30"/>
      <TextBlock Text="迷你窗口快捷键" FontWeight="SemiBold"/>
      <DockPanel><Button DockPanel.Dock="Right" Content="保存快捷键" Click="SaveCompactHotkey_Click"/><TextBox x:Name="CompactHotkeyInput" Text="Alt+P" IsReadOnly="True" PreviewKeyDown="CompactHotkey_KeyDown" ToolTip="点击后按下新的组合键，例如 Alt+P 或 Ctrl+Shift+P"/></DockPanel>
-     <TextBlock x:Name="CompactHotkeyHint" Text="默认 Alt+P，全局生效：大窗口进入迷你模式，迷你窗口与小球相互切换。" TextWrapping="Wrap" Margin="0,0,0,18"/>
+     <TextBlock x:Name="CompactHotkeyHint" Text="默认 Alt+P，全局生效：为当前会话生成 mini 窗口；再次按下切换该窗口与小球。主窗口保持原样。" TextWrapping="Wrap" Margin="0,0,0,18"/>
      <TextBlock Text="界面风格" FontSize="{DynamicResource SectionTitleSize}" FontWeight="SemiBold"/><ComboBox x:Name="ThemePicker" SelectionChanged="Theme_Changed" AutomationProperties.Name="界面风格"><ComboBoxItem Content="Codex 风格（浅色）"/><ComboBoxItem Content="原始风格"/></ComboBox><TextBlock Text="立即生效并记住选择，不影响设备连接、会话和草稿。" Foreground="{DynamicResource Brush77847B}" Margin="0,0,0,24"/><TextBlock Text="中继服务" FontSize="{DynamicResource SectionTitleSize}" FontWeight="SemiBold"/><TextBlock Text="服务端地址" Margin="0,16,0,0"/><TextBox x:Name="ServerUrl" Text="https://furtheragent.fennecmomo.top" MinWidth="540"/><Button Content="保存地址" Click="SaveSettings_Click" HorizontalAlignment="Left"/><TextBlock Text="保存后用于下一次连接。首次通过中继配对；同一局域网优先加密直连，不可达时自动回退中继。" TextWrapping="Wrap" Foreground="{DynamicResource Brush77847B}" Margin="0,8,0,24"/>
      <TextBlock Text="当前远端" FontSize="{DynamicResource SectionTitleSize}" FontWeight="SemiBold"/><ComboBox x:Name="AgentPicker" IsEnabled="False"/><Button x:Name="DisconnectButton" Content="断开远端连接" Click="Disconnect_Click" IsEnabled="False" HorizontalAlignment="Left"/>
      <Button Content="忘记已保存连接" Click="ForgetConnection_Click" HorizontalAlignment="Left"/><TextBlock Text="成功连接后记住设备，启动时自动重连。主动断开后暂停自动连接；授权码仅当前 Windows 用户可解密。" TextWrapping="Wrap" Foreground="{DynamicResource Brush77847B}"/><Separator Margin="0,22"/><TextBlock Text="共享本机 Agent" FontSize="{DynamicResource SectionTitleSize}" FontWeight="SemiBold"/><TextBlock Text="选择要共享的本机 Agent。DSH 桌面需先安装插件；独立后台使用单独的账号与会话配置。授权码仅提供给可信任的人。" TextWrapping="Wrap" Foreground="{DynamicResource Brush77847B}" Margin="0,10"/>
