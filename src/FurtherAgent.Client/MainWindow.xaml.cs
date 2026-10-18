@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private ConnectionHeartbeat? heartbeat;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
+    private List<PermissionOption> modelPermissionOptions = [];
     private int modelSettingsGeneration;
     private string transcriptText = "";
     private CancellationTokenSource? transferCancellation;
@@ -84,6 +85,7 @@ public partial class MainWindow : Window
             }
         }
         catch { StatusBar.Text = "保存的地址无法读取，请在设置中重新保存。"; }
+        InitializeDshExecutable();
         try { uiTheme = File.Exists(SettingsFile) ? VisualTheme.Normalize(JsonNode.Parse(File.ReadAllText(SettingsFile))?["uiTheme"]?.ToString()) : VisualTheme.Codex; }
         catch { uiTheme = VisualTheme.Codex; }
         ApplyTheme(uiTheme);
@@ -101,6 +103,54 @@ public partial class MainWindow : Window
             }
         }
         catch (Exception ex) { connectionFailure = ex.GetType().Name; StatusBar.Text = "已保存连接无法解密，请重新输入授权码连接；原记录未删除。"; }
+    }
+    private void InitializeDshExecutable()
+    {
+        if (!string.IsNullOrWhiteSpace(DshExecutable.Text))
+        {
+            DshExecutableHint.Text = File.Exists(DshExecutable.Text.Trim()) ? "使用已保存的程序路径。" : "已保存的程序路径不可用，请重新选择 DeepSeek Harness.exe。";
+            return;
+        }
+        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        void AddCandidate(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            try
+            {
+                string path = Path.GetFullPath(value.Trim().Trim('"'));
+                if (Path.GetFileName(path).Equals("DeepSeek Harness.exe", StringComparison.OrdinalIgnoreCase) && File.Exists(path)) candidates.Add(path);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or System.Security.SecurityException or IOException) { }
+        }
+        foreach (var process in System.Diagnostics.Process.GetProcessesByName("DeepSeek Harness"))
+        {
+            using (process)
+                try { AddCandidate(process.MainModule?.FileName); }
+                catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) { }
+        }
+        foreach (var hive in new[] { Microsoft.Win32.Registry.CurrentUser, Microsoft.Win32.Registry.LocalMachine })
+            try
+            {
+                using var key = hive.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\App Paths\DeepSeek Harness.exe");
+                AddCandidate(key?.GetValue(null) as string);
+            }
+            catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException) { }
+        AddCandidate(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "DeepSeek Harness", "DeepSeek Harness.exe"));
+        AddCandidate(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "DeepSeek Harness", "DeepSeek Harness.exe"));
+        AddCandidate(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "DeepSeek Harness", "DeepSeek Harness.exe"));
+        if (candidates.Count == 1)
+        {
+            DshExecutable.Text = candidates.Single();
+            DshExecutableHint.Text = "已发现 DSH 程序；后台模式将使用此程序的运行时。";
+        }
+        else DshExecutableHint.Text = candidates.Count == 0 ? "未发现 DSH 程序；使用后台模式前请选择 DeepSeek Harness.exe。" : "发现多个 DSH 程序，请明确选择后台模式使用的版本。";
+    }
+    private void ChooseDshExecutable_Click(object sender, RoutedEventArgs e)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog { Title = "选择 DeepSeek Harness 程序", Filter = "DeepSeek Harness|DeepSeek Harness.exe|可执行程序|*.exe", CheckFileExists = true };
+        if (dialog.ShowDialog(this) != true) return;
+        DshExecutable.Text = dialog.FileName;
+        DshExecutableHint.Text = "已选择程序；开启共享或保存设置时会记住此路径。";
     }
     public async void StartSavedConnection()
     {
@@ -558,36 +608,64 @@ public partial class MainWindow : Window
             PromptPanel.Children.Add(new TextBlock { Text = prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind ? "Agent 需要你的回答" : "Agent 需要你的确认", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) });
             if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
             {
-                var answers = new Dictionary<string, TextBox>();
+                var answers = new Dictionary<string, Func<string[]>>();
                 foreach (var q in questions)
                 {
+                    string? header = q?["header"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(header))
+                        PromptPanel.Children.Add(new TextBlock { Text = header, FontWeight = FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap });
                     PromptPanel.Children.Add(new TextBlock { Text = q?["question"]?.ToString(), TextWrapping = TextWrapping.Wrap });
-                    var answer = new TextBox { ToolTip = "点击选项，或直接输入你的回答" };
+                    string? detail = q?["detail"]?.ToString();
+                    if (!string.IsNullOrWhiteSpace(detail))
+                    {
+                        PromptPanel.Children.Add(new TextBlock { Text = "请阅读以下内容后回答：", FontSize = 12 });
+                        PromptPanel.Children.Add(new TextBox { Text = detail, IsReadOnly = true, TextWrapping = TextWrapping.Wrap,
+                            MaxHeight = 160, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled });
+                    }
+                    bool multiSelect = q?["multiSelect"]?.GetValue<bool>() == true || q?["multiple"]?.GetValue<bool>() == true;
+                    var answer = new TextBox { ToolTip = multiSelect ? "勾选多个选项，也可以补充填写回答" : "点击选项，或直接输入你的回答", MaxLength = 4000 };
+                    var checkedOptions = new List<CheckBox>();
                     if (q?["options"] is JsonArray options)
                     {
                         var choices = new WrapPanel();
                         foreach (var option in options)
                         {
                             string label = option?["label"]?.ToString() ?? "";
-                            var choice = new Button { Content = label, ToolTip = option?["description"]?.ToString(), Padding = new Thickness(10, 6, 10, 6) };
-                            choice.Click += (_, _) => answer.Text = label;
-                            choices.Children.Add(choice);
+                            if (multiSelect)
+                            {
+                                var choice = new CheckBox { Content = label, ToolTip = option?["description"]?.ToString(), Margin = new Thickness(4, 8, 12, 8) };
+                                checkedOptions.Add(choice); choices.Children.Add(choice);
+                            }
+                            else
+                            {
+                                var choice = new Button { Content = label, ToolTip = option?["description"]?.ToString(), Padding = new Thickness(10, 6, 10, 6) };
+                                choice.Click += (_, _) => answer.Text = label;
+                                choices.Children.Add(choice);
+                            }
                         }
                         PromptPanel.Children.Add(choices);
                     }
-                    PromptPanel.Children.Add(answer); answers[q!["id"]!.ToString()] = answer;
+                    PromptPanel.Children.Add(new TextBlock { Text = multiSelect ? "可多选，也可在下方补充填写。" : "可选择一个选项，也可在下方自由填写。", FontSize = 12 });
+                    PromptPanel.Children.Add(answer);
+                    answers[q!["id"]!.ToString()] = () =>
+                    {
+                        var values = checkedOptions.Where(choice => choice.IsChecked == true).Select(choice => choice.Content.ToString()!).ToList();
+                        if (!string.IsNullOrWhiteSpace(answer.Text)) values.Add(answer.Text.Trim());
+                        return values.Distinct(StringComparer.Ordinal).ToArray();
+                    };
                 }
                 var button = new Button { Content = "提交回答" };
                 button.Click += async (_, _) => await ActionAsync(async peer =>
                 {
-                    if (answers.Values.Any(a => string.IsNullOrWhiteSpace(a.Text))) throw new ArgumentException("请填写每个问题的回答。");
-                    await peer.CallAsync("respond", new { id = prompt.Id, decision = "", response = new { answers = answers.ToDictionary(p => p.Key, p => new { answers = new[] { p.Value.Text } }) } });
+                    var values = answers.ToDictionary(item => item.Key, item => item.Value());
+                    if (values.Values.Any(value => value.Length == 0)) throw new ArgumentException("请填写每个问题的回答。");
+                    await peer.CallAsync("respond", new { id = prompt.Id, decision = "", response = new { answers = values.ToDictionary(p => p.Key, p => new { answers = p.Value }) } });
                 });
                 PromptPanel.Children.Add(button);
             }
-            else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or "hermes/approval")
+            else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or "hermes/approval" or "dsh/approval")
             {
-                PromptPanel.Children.Add(new TextBlock { Text = prompt.Kind == "hermes/approval" ? "Hermes 工具权限" : prompt.Kind.Contains("commandExecution") ? "执行命令" : "修改文件", FontWeight = FontWeights.SemiBold });
+                PromptPanel.Children.Add(new TextBlock { Text = prompt.Kind == "dsh/approval" ? "DSH 工具权限" : prompt.Kind == "hermes/approval" ? "Hermes 工具权限" : prompt.Kind.Contains("commandExecution") ? "执行命令" : "修改文件", FontWeight = FontWeights.SemiBold });
                 PromptPanel.Children.Add(new TextBlock { Text = prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail, TextWrapping = TextWrapping.Wrap });
                 var buttons = new StackPanel { Orientation = Orientation.Horizontal };
                 foreach (var (label, decision) in new[] { ("允许本次", "accept"), ("拒绝", "decline") })
@@ -726,11 +804,14 @@ public partial class MainWindow : Window
     private void ApplyModelSettings(AgentSettings settings, string id)
     {
             loadingSettings = true; modelSession = id;
-            PermissionPanel.Visibility = settings.CanChangePermissions ? Visibility.Visible : Visibility.Collapsed;
-            PermissionPicker.ItemsSource = CodexPermissions.Labels;
-            PermissionPicker.SelectedIndex = Array.IndexOf(CodexPermissions.Values, settings.Permission);
-            PermissionHint.Text = "当前：" + (PermissionPicker.SelectedIndex >= 0 ? CodexPermissions.Labels[PermissionPicker.SelectedIndex] : settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。";
-            ApplyPermissionsButton.IsEnabled = settings.CanChangePermissions;
+            modelPermissionOptions = settings.PermissionOptions ?? (agent?.Id == "codex" ? CodexPermissions.Values.Select((value, index) => new PermissionOption(value, CodexPermissions.Labels[index])).ToList() : []);
+            PermissionPanel.Visibility = settings.CanChangePermissions && modelPermissionOptions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            PermissionPicker.ItemsSource = modelPermissionOptions;
+            PermissionPicker.DisplayMemberPath = nameof(PermissionOption.Label);
+            PermissionPicker.SelectedItem = modelPermissionOptions.FirstOrDefault(option => option.Value == settings.Permission);
+            var permission = PermissionPicker.SelectedItem as PermissionOption;
+            PermissionHint.Text = "当前：" + (permission?.Label ?? settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。" + (string.IsNullOrEmpty(permission?.Description) ? "" : "\n" + permission.Description);
+            ApplyPermissionsButton.IsEnabled = settings.CanChangePermissions && modelPermissionOptions.Count > 0;
             ModelPicker.ItemsSource = settings.Models; ModelPicker.Text = settings.Model; ProviderText.Text = settings.Provider;
             ModelPicker.IsEditable = !settings.RequireModelSelection;
             ModelPicker.SelectedItem = settings.Models.FirstOrDefault(m => m.Id == settings.Model);
@@ -778,8 +859,8 @@ public partial class MainWindow : Window
     }
     private async void ApplyPermissions_Click(object sender, RoutedEventArgs e)
     {
-        if (remote is null || current?.Id != modelSession || actionBusy || PermissionPicker.SelectedIndex < 0) return;
-        string permission = CodexPermissions.Values[PermissionPicker.SelectedIndex];
+        if (remote is null || current?.Id != modelSession || actionBusy || PermissionPicker.SelectedItem is not PermissionOption selectedPermission) return;
+        string permission = selectedPermission.Value;
         ModelError.Text = "";
         await ActionAsync(async peer =>
         {

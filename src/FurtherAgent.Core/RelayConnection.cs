@@ -172,7 +172,8 @@ public sealed class DeviceHost : IAsyncDisposable
             async Task<JsonNode> Attach(string id, CancellationToken token)
             {
                 var view = WithFiles(await adapter.AttachAsync(id, token));
-                if (adapter.Info.Id == "hermes") await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
+                if (adapter.Info.Id == "hermes" || adapter.Info.Id == "dsh" && adapter.Info.CanFiles)
+                    await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
                 historySource = view; attachedSession = view.Id;
                 return Json.Node(Volatile.Read(ref paged) > 0 || adapter.Info.Id == "codex" ? HistoryPaging.Latest(view, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3) : view);
             }
@@ -204,7 +205,7 @@ public sealed class DeviceHost : IAsyncDisposable
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
                 "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1 }),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
-                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" } }),
+                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
                 "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
                 "send-files" => await SendFiles(args, token),

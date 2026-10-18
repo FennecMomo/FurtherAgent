@@ -59,18 +59,21 @@ internal sealed class ModelPage : ContentPage
                 }), save } };
         if (settings.CanChangePermissions)
         {
-            var permissions = new Picker { Title = "会话权限", ItemsSource = CodexPermissions.Labels,
-                SelectedIndex = Array.IndexOf(CodexPermissions.Values, settings.Permission) };
-            var permissionNote = Ui.Text("当前权限：" + (permissions.SelectedIndex >= 0 ? CodexPermissions.Labels[permissions.SelectedIndex] : settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。", 13);
+            var permissionOptions = settings.PermissionOptions ?? (session.Agent?.Id == "codex" ? CodexPermissions.Values.Select((value, index) => new PermissionOption(value, CodexPermissions.Labels[index])).ToList() : []);
+            var selectedPermission = permissionOptions.FirstOrDefault(option => option.Value == settings.Permission);
+            var permissions = new Picker { Title = "会话权限", ItemsSource = permissionOptions.Select(option => option.Label).ToArray(),
+                SelectedIndex = permissionOptions.FindIndex(option => option.Value == settings.Permission), IsEnabled = permissionOptions.Count > 0 };
+            var permissionNote = Ui.Text("当前权限：" + (selectedPermission?.Label ?? settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。" + (string.IsNullOrEmpty(selectedPermission?.Description) ? "" : "\n" + selectedPermission.Description), 13);
             Button? applyPermissions = null;
             applyPermissions = Ui.Button("应用权限", async () =>
             {
                 if (permissions.SelectedIndex < 0) return;
                 applyPermissions!.IsEnabled = false;
-                try { await session.ConfigurePermissionsAsync(CodexPermissions.Values[permissions.SelectedIndex]); await Navigation.PopAsync(); }
+                try { await session.ConfigurePermissionsAsync(permissionOptions[permissions.SelectedIndex].Value); await Navigation.PopAsync(); }
                 catch (Exception ex) { await DisplayAlertAsync("权限未修改", ex.Message, "知道了"); }
                 finally { applyPermissions.IsEnabled = true; }
             });
+            applyPermissions.IsEnabled = permissionOptions.Count > 0;
             stack.Children.Insert(8, permissions); stack.Children.Insert(9, permissionNote); stack.Children.Insert(10, applyPermissions);
         }
         foreach (var label in stack.Children.OfType<Label>()) Ui.TextTheme(label);

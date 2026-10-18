@@ -1,89 +1,104 @@
-# DSH 双模式接入（0.8.0）
+# DSH 双模式接入（插件 0.9.0 / FurtherAgent 0.14.16）
 
-此适配从 FurtherAgent 0.6.8 开始实现，不依赖尚未推送的 0.7.0。
-桌面与独立后台使用同一插件、同一个 Core 适配器，WPF 和 CLI 通过既有中继协议访问。
-0.8.0 交付首批会话控制能力；扩展能力仍按下述边界关闭，不能把基础联调通过当成全功能验收。
+此接入在 DeepSeek Harness 自身 Host 内运行插件，复用其原生会话服务。
+桌面与独立后台共用桥接和 Core 适配器，可由 Windows、Android 和 CLI 控制端访问。
+已核对本机 DSH 0.2.1-rc.2（构建 332895e0f7c9d4dbfb29729f5eb367fa263ff986）的实际接口。
 
-## 生命周期与安装
+## 已接入功能
 
-`scripts/Install-DshBridge.ps1 -Mode desktop` 在当前用户 DSH 桌面 profile 中添加插件。
-安装前备份 patch；插件按内容摘要放在独立目录，更新不覆盖正在使用的模块。
-首次加载或升级后需在 DSH 空闲时彻底退出桌面并重新启动。
+- 会话列表按最近活动排序，显示工作区；过滤 subagent，保留普通 fork。
+- 只读历史、实时文本与思考流、按工作区新建、归档和恢复。
+- 排队、执行中追加、停止、核对运行身份后打断并发送；不清空其他入口的原生队列。
+- 原生模型目录、思考强度、Plan/Build 和原生权限预设。模型切换会更新该 DSH 实例默认模型；Plan 变更可能在下一执行步骤生效。
+- 原生工具审批（仅允许本次/拒绝）、单选/多选/自由回答，以及原生 continued 问题的回应。
+- 通用文件上传、下载、输出文件列表和缩略图。上传文件通过本机路径供 Agent 读取；图像理解能力取决于 DSH 当前模型与工具。
+- 输出目录注册为当前会话的原生动态系统上下文，不追加到每条用户消息，不污染人类聊天记录。
+- 共用现有持久配对、多控制端、中继和局域网优先链路、增量会话同步、手机分页/本地缓存及完成通知。
 
-`scripts/Install-DshBridge.ps1 -Mode background` 准备独立后台的 patch。
-后台使用用户指定的 DSH 桌面安装包所带运行时，不使用 PATH 上可能较旧的 dsh。
-其 DSH_HOME 是 `%LOCALAPPDATA%/FurtherAgent/dsh/background-home`，不复制桌面的账号、会话或配置。
-后台需要单独配置模型账号；退出请求若发现任务或待处理队列会拒绝关闭。
+桥接的历史预算为最新序列化 UTF-8 内容约 20 MiB；超大单条保留末尾并显示截断说明，正确保留 Unicode 字符。手机仍通过既有协议先取最近约八条，再向上分页。桥接预算之前的历史不在本次远端快照中，DSH 原始历史保留。
+完成通知仅使用原生 completed 终态；失败、阻断、停止和待处理队列不误报成功。
+模型额度没有可靠原生接口时保持未知，不显示虚构数值。
 
-接入端参数：
+## 安装及加载
+
+在仓库或发布包根目录用 PowerShell 7 执行：
+
+```powershell
+pwsh -File scripts/Install-DshBridge.ps1 -Mode desktop
+```
+
+脚本备份当前用户 `.dsh/profiles/desktop/cordis.patch.yml`，仅添加或更新 FurtherAgent 插件块。
+如使用其他 DSH home，显式传 `-DshHome <目录>`。
+模块以版本和内容摘要存放于 `%LOCALAPPDATA%/FurtherAgent/dsh/plugin-0.9.0-*`，入口为 Windows 支持的 `file:///` URL；旧模块不会被覆盖。
+首次安装或升级需在 DSH 空闲时完整退出并重开，使原 Host 加载新版插件。脚本本身不重启 DSH。
+
+桌面客户端在「设置 → 共享本机 Agent」选择「DSH 桌面」，然后开启共享。
+程序选择器保留已保存路径，并从运行进程、App Paths 和常见安装位置发现可用运行时；多个候选时需要明确选择。
+独立后台选择「DSH 独立后台」，并指定正式的 DeepSeek Harness.exe；overlay 壳不能当作完整 DSH 安装。
+
+CLI 接入端：
+
+```powershell
+$env:FURTHERAGENT_BACKEND = 'dsh-desktop'
+$env:FURTHERAGENT_SERVER = 'https://你的中继地址'
+$env:FURTHERAGENT_NAME = '我的 DSH'
+.\Host\FurtherAgent.Host.exe --probe
+.\Host\FurtherAgent.Host.exe
+```
 
 | 环境变量 | 用途 |
 | --- | --- |
 | FURTHERAGENT_BACKEND | hermes（默认）、dsh-desktop、dsh-background |
-| FURTHERAGENT_DSH_EXE | 后台使用的 DSH 桌面程序路径 |
-| FURTHERAGENT_DSH_DESCRIPTOR | 显式选择现有本地插件实例；不设置时自动发现桌面或启动独立后台 |
-| FURTHERAGENT_SERVER / FURTHERAGENT_NAME | 中继与设备名称，沿用既有机制 |
+| FURTHERAGENT_DSH_EXE | 独立后台所用正式 DSH 程序的绝对路径 |
+| FURTHERAGENT_DSH_DESCRIPTOR | 可选；显式固定现有插件实例。多个实例时必须明确目标 |
+| FURTHERAGENT_SERVER / FURTHERAGENT_NAME | 中继地址与设备名称 |
+| FURTHERAGENT_IDENTITY_FILE | 可选；设备持久身份文件位置 |
 
-`FurtherAgent.Host --probe` 检查能力和会话数量；后台模式会启动独立运行时、初始化独立目录，再正常退出。
-本地连接描述包含随机凭据，只允许当前用户和 SYSTEM 访问，不能上传或加入版本库。
-插件只监听 127.0.0.1，拒绝浏览器 Origin 和缺失/错误的 Bearer 凭据。
+`--probe` 读取能力和会话数量，不连接中继、不提交 Agent 提示词；后台模式会启动并退出自己的独立运行时。
+默认桌面发现可在同一 profile 重启后恢复；显式 descriptor 固定目标，不跳到其他 profile，不另起实例接管桌面会话。
 
-## 当前实现边界
+## 审批和断线
 
-- 列表、历史、新建、发送、执行中追加、停止和模型设置已接入原生控制器。
-- Plan/Build 通过 DSH 自身 `/plan` 命令切换；归档/恢复归档使用 workspaceController，拒绝带活动任务的归档，不删除历史。
-- 查看历史仅调用 `sessionQuery.observeSession`，不调用 `resume` 或会隐式恢复冷会话的 `follow`。
-- 监听同一 Host 的 assistant-stream 事件，区分真实文本和 reasoning 增量；提交最终消息后移除临时消息。
-- 历史排除模型上下文替换副本及插件注入的 user 消息，保留人类原始对话。
-- Core 使用历史游标和流式修订号建立长轮询订阅，空闲不反复读取历史；旧插件回退为快照。断线只恢复读取，不自动重发结果未知的消息。
-- 排队、执行中追加、打断后发送分别路由；WPF 可选择发送方式，CLI 使用 `--delivery auto|queue|steer`。
-- 打断后发送在 B 端核对运行身份、停止前后队列，队列非空会拒绝提交，不清空任何消息；其他入口同时提交仍按 DSH 原生顺序处理。
-- 图片、文件、审批、提问仍未开放；不得仅凭原生接口名称宣称可用。
-- 桌面插件退出后不会另起实例接管桌面会话，不删除锁文件、不直接写会话存储。
+只对有真实远端查看者的、属于当前 Host 的 exact live root Agent 接管审批/提问。
+没有查看者时保持 DSH 本地原入口；subagent 不被插件代答。
+观察租约按控制器分别维护，旧长轮询不能复活已经释放的租约。
+断线、停止共享或租约到期时，尚未回答的请求交回原生入口；原请求已取消则不再打开失效窗口。
+回答前核对当前会话与唯一请求身份，在原生调用前预留，避免多端重复回应。
 
-## 2026-10-10 阶段证据
+短暂连接中断只恢复同一会话的读取，不重放写操作。
+发送 ACK 未知时保留原 requestId、原发送方式和 turnId；历史确认已接收后，同文重试消费原回执而不重复发送。
 
-真实桌面运行时为 0.2.0-rc.2；全局 CLI 0.1.5-rc.2 未用于接入。
-后台独立运行时探测读到 0 条会话；桌面读到 9 条既有会话。
-两条既有会话各读到 386、387 条投影消息，读取没有取得 Agent 写入权。
-专用测试会话在桌面 Host 内创建、接受一条提示词并回复 `FA_DSH_OK`，没有调用工具。
-完成后同一 Host 的 Agent 仍可查询，历史为一条用户消息和一条回复。
-
-`dotnet run --project tests/FurtherAgent.SmokeTests -c Release -- --dsh-live` 是显式真实联调入口。
-它会创建一个专用会话并提交一条无工具测试提示词，启动独立回环中继，调用真实 CLI。
-使用 `--dsh-live --controls` 可额外验证真实停止、队列与后台隔离；目前共 32 项通过，覆盖同一 Host 双读取者、CLI 中继读取/发送、模型目录、Plan/Build、
-原生归档/恢复、观察连接更新、断开后读取不重发、流式和最终回复不重复。
-实测还包括真实打断后仅提交一次、非空队列拒绝替换、后台与桌面的会话列表隔离、
-后台退出不改变桌面 Host。停止很早时 DSH 可能尚未将原始输入提交到历史，验收应检查替换消息唯一性，不能假设被取消输入一定已落盘。
-这不等同于鼠标操作或 WPF 视觉验收，也尚未覆盖两个入口同时执行写入的竞争。
-
-尚待验收：WPF 桌面视觉同步、双入口近同时发送及审批竞争、图片/文件原生附件与远程审批/提问。首批测试已验证 CLI 经中继控制同一桌面 Host、停止与队列边界、重读不重发及双模式进程隔离。桌面页面停留与交互效果没有通过模拟点击宣称已验收。
-
-实际生命周期联调通过：空闲桌面完整退出并重新启动后，原适配器按同一 profile 身份重新发现插件；独立后台 PID 和会话保持不变，重开的桌面仍看不到后台会话。默认桌面发现支持该恢复，显式指定描述文件则固定目标。常规回归 141 项、无窗口 WPF 与持久化检查 17 项通过。
-
-## 客户端入口与后台配置
-
-在「设置 → 共享本机 Agent」选择 Codex 桌面、DSH 桌面或 DSH 独立后台，然后开启共享。
-选项和 DSH 安装路径随地址保存在当前用户目录，更新程序目录不丢失。
-插件安装脚本使用 PowerShell 7：`pwsh -File scripts/Install-DshBridge.ps1 -Mode desktop`；后台改为 `background`。
-本次已在本机安装两种插件配置并验证桌面加载，不需要你再重启一次。
-
-独立后台只继承 Windows 必需环境变量，不继承模型 API key 或外部 DSH 环境覆盖。
-它可能在未登录时就展示内置模型目录，因此设置页明确提示「能列出模型不代表已配置凭据」。
-目前未复制桌面账号，也未验证后台真实模型生成；后台的进程、列表、新建和隔离已验证。
-需要配置后台时，先停止 FurtherAgent 的后台共享，再使用独立 home 启动 DSH 自身网页入口：
+## 独立后台
 
 ```powershell
-$env:DSH_HOME = Join-Path $env:LOCALAPPDATA 'FurtherAgent/dsh/background-home'
-$env:ELECTRON_RUN_AS_NODE = '1'
-$exe = 'D:/Software/DeepseekHarness/DeepSeek Harness.exe'
-$cli = Join-Path (Split-Path $exe) 'resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js'
-& $exe --expose-internals $cli --profile web --port 0
+pwsh -File scripts/Install-DshBridge.ps1 -Mode background
+$env:FURTHERAGENT_BACKEND = 'dsh-background'
+$env:FURTHERAGENT_DSH_EXE = 'E:\dsh\DeepSeek Harness.exe' # 换成实际安装位置
 ```
 
-该命令请在专用 PowerShell 窗口运行，按 DSH 提供的本地入口配置该实例，完成后退出该进程再开启 FurtherAgent 后台共享。
-不要把后台 home 改成桌面的 `.dsh`，不要让两个后台运行时同时使用同一 home。
-模型切换是 DSH 原生行为，会同步修改该实例的默认模型。Plan 切换已验证，Plan 完成时若触发原生审批或提问，仍须由所属 DSH 入口处理；FurtherAgent 0.8.0 不提供远程回应。
-图片、文件按钮按 DSH 能力禁用，Hermes/Codex 原有能力不受此限制。
+独立实例的 DSH_HOME 为 `%LOCALAPPDATA%/FurtherAgent/dsh/background-home`。
+只继承 Windows 所需环境变量，不复制桌面账号、历史或配置；需要在独立 home 的 DSH 原生入口单独配置账号。
+列出内置模型不代表已有凭据。后台有运行/排队任务时拒绝退出；桌面生命周期仍由 DSH 管理。
+不要让两个运行时使用同一个 home，也不要把后台 home 改成桌面 `.dsh`。
 
-发布包同时包含 Client、Server、Host、Cli、插件和安装脚本。当前中继透明转发，不需要为本机 DSH 接入升级或重启线上 Hermes 服务。
+## 验证边界（2026-10-18）
+
+- Node 插件离线测试 42 项通过：原生服务 stub、真实本机文件系统、回环 HTTP 鉴权和取消、20 MiB 历史及 Unicode、审批/提问/租约/并发。
+- C# 离线 HTTP 合约 22 项通过：工作区、模型、权限、文件、提问身份、原请求重试、断线恢复和旧插件能力门控。
+- 常规 SmokeTests 452 项通过，覆盖共享中继、手机分页/缓存/重连、多端控制、文件传输、完成通知及既有 Codex/Hermes 回归。
+- WPF 常规检查 27 项通过；新增设置和提问控件回归验证原生权限目录、多选答案、完整滚动详情与审批按钮。桌面解决方案构建、Android Release 编译及 APK 打包均成功，0 个警告/错误；APK v2/v3 签名验证通过。
+- 使用本机正式安装中的真实 Cordis、SystemPrompt，在独立 Electron Node 进程内验证 waterfall 回调与动态上下文注册；只创建内存 mock，未运行真实账户任务。
+- 使用正式 DSH 0.2.1-rc.2 启动 FurtherAgent 独立后台，真实加载插件 0.9.0；Host --probe 返回全部原生能力、0 条独立会话，随后正常退出，未向模型提交请求。
+- 新审批、提问、文件及设置尚未完成真实手机到 DSH 模型任务的设备验收；编译及模拟服务通过不能替代此项。
+
+复现：
+
+```powershell
+node --test tests/dsh/*.test.mjs
+dotnet run --project tests/FurtherAgent.SmokeTests -c Release -- --dsh-adapter-checks
+dotnet run --project tests/FurtherAgent.SmokeTests -c Release
+```
+
+显式真实联调入口 `--dsh-live [--controls]` 会创建专用会话并发起模型请求，应在插件加载、目标明确后运行。
+2026-10-10 的旧版 0.8.0 已验证桌面同 Host 读写和独立后台隔离；那批证据不作为本轮新增功能的真实设备验收。
+本地连接描述包含随机凭据，仅当前用户和 SYSTEM 可读，不能上传或加入 Git。插件仅监听 127.0.0.1，并拒绝浏览器 Origin 和无效 Bearer 凭据。

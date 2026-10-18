@@ -17,6 +17,12 @@ public sealed class DshAdapter : IAgentAdapter
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim gate = new(1);
     private readonly Task monitor;
+    private readonly object observationGate = new();
+    private readonly string observerId = Guid.NewGuid().ToString("N");
+    private long observerRevision;
+    private Task observationUpdate = Task.CompletedTask;
+    private string? leasedSession;
+    private bool observed;
     private string? selected;
     private CancellationTokenSource? watchLifetime;
     private long selectionGeneration, cursor = -1, streamRevision;
@@ -26,10 +32,13 @@ public sealed class DshAdapter : IAgentAdapter
     private SessionView? current;
     private string? fingerprint;
     private string? pendingText, pendingId, pendingSession;
-    private string? pendingDelivery, pendingMethod;
+    private string? pendingDelivery, pendingMethod, pendingTurnId;
+    private bool pendingAccepted;
+    private readonly HashSet<(string Session, string Request)> submittedPrompts = [];
     public AgentInfo Info => new("dsh", instanceMode == "background" ? "DSH · 独立后台" : "DSH · 桌面", IsAvailable,
         $"DSH {runtimeVersion} · 同一 Host 原生会话服务；查看历史不取得会话写入权。" + (instanceMode == "background" ? "独立后台需单独配置模型账号，模型目录不代表凭据已配置。" : ""), CanCreate: capabilities.Contains("create"), CanConfigure: capabilities.Contains("model"), CanArchive: capabilities.Contains("archive"),
-        CanChooseDelivery: capabilities.Contains("delivery"), CanInterruptSend: capabilities.Contains("interrupt-send"));
+        CanChooseDelivery: capabilities.Contains("delivery"), CanInterruptSend: capabilities.Contains("interrupt-send"),
+        CanFiles: capabilities.Contains("files"), CanThumbnails: capabilities.Contains("thumbnails"), CanWorkspaces: capabilities.Contains("workspaces"));
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
     public DshAdapter(string descriptorPath, bool followDesktopRestarts = false)
@@ -102,27 +111,100 @@ public sealed class DshAdapter : IAgentAdapter
     public async Task<IReadOnlyList<SessionInfo>> ListAsync(CancellationToken ct)
     {
         var data = await Call("list", null, ct);
-        return (data?["items"]?.AsArray() ?? []).Where(x => x?["origin"]?.ToString() != "subagent")
-            .Select(x => new SessionInfo(x!["sessionId"]!.ToString(), x["projections"]?["values"]?["title"]?.ToString() ?? x["title"]?.ToString() ?? x["sessionId"]!.ToString(),
-                DateTimeOffset.FromUnixTimeMilliseconds(x["updatedAt"]?.GetValue<long>() ?? 0).ToString("O"))).ToArray();
+        return (data?["items"]?.AsArray() ?? [])
+            .Where(x => (x?["origin"] is JsonObject origin ? origin["kind"]?.ToString() : x?["origin"]?.ToString()) != "subagent")
+            .Select(x =>
+            {
+                string id = x!["sessionId"]!.ToString();
+                var title = x["projections"]?["values"]?["title"] ?? x["title"];
+                return new SessionInfo(id, (title is JsonObject value ? value["title"] : title)?.ToString() ?? id,
+                    x["updatedAt"]?.ToString() ?? "", x["cwd"]?.ToString() ?? x["header"]?["cwd"]?.ToString() ?? "");
+            }).OrderByDescending(x => x.SortTime).ThenBy(x => x.Id, StringComparer.Ordinal).ToArray();
     }
     public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
         {
-            if (pendingId is not null && pendingSession != id) throw new IOException("上次发送结果未知，请先核对原会话。");
+            bool leaveConfirmedSession = pendingId is not null && pendingSession != id;
+            if (leaveConfirmedSession && !pendingAccepted) throw new IOException("上次发送结果未知，请先核对原会话。");
             watchLifetime?.Cancel(); selectionGeneration++;
             cursor = -1; streamRevision = 0;
             var view = await ReadSnapshot(id, ct);
-            selected = id; current = view; fingerprint = Json.Node(view).ToJsonString(); return view;
+            if (leaveConfirmedSession) ClearPending();
+            current = view; fingerprint = Json.Node(view).ToJsonString();
+            lock (observationGate)
+            {
+                selected = id; observerRevision++;
+                observationUpdate = UpdateObservationAsync(observationUpdate);
+            }
+            return view;
         }
         finally { gate.Release(); }
     }
-    public async Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct)
+    public Task<SessionInfo> CreateAsync(string id, string title, CancellationToken ct) => CreateAsync(id, title, "", ct);
+    public async Task<SessionInfo> CreateAsync(string id, string title, string cwd, CancellationToken ct)
     {
-        var result = await Call("create", new { id, title }, ct);
-        return new(result!["sessionId"]!.ToString(), title, DateTimeOffset.UtcNow.ToString("O"));
+        if (cwd.Length > 0 && !capabilities.Contains("workspaces")) throw new NotSupportedException("此 DSH 插件不支持指定工作空间，请升级插件。");
+        var result = await Call("create", new { id, title, cwd }, ct);
+        return new(result!["sessionId"]!.ToString(), result["title"]?.ToString() ?? title, DateTimeOffset.UtcNow.ToString("O"), result["cwd"]?.ToString() ?? cwd);
+    }
+    public async Task<IReadOnlyList<WorkspaceInfo>> WorkspacesAsync(CancellationToken ct)
+    {
+        RequireCapability("workspaces", "工作空间");
+        return Json.Read<WorkspaceInfo[]>(await Call("workspaces", null, ct));
+    }
+    public async Task<WorkspaceDirectories> BrowseDirectoriesAsync(string path, CancellationToken ct)
+    {
+        RequireCapability("workspaces", "浏览工作空间目录");
+        return Json.Read<WorkspaceDirectories>(await Call("browseDirectories", new { path }, ct));
+    }
+    public async Task<WorkspaceInfo> AddWorkspaceAsync(string id, string path, string folder, CancellationToken ct)
+    {
+        RequireCapability("workspaces", "新增工作空间");
+        return Json.Read<WorkspaceInfo>(await Call("addWorkspace", new { id, path, folder }, ct));
+    }
+    private void RequireCapability(string capability, string action)
+    {
+        if (!capabilities.Contains(capability)) throw new NotSupportedException($"此 DSH 插件尚未开放{action}，请升级插件。");
+    }
+    public async Task SetFileWorkspaceAsync(string outbox, CancellationToken ct)
+    {
+        RequireCapability("files", "文件传输");
+        _ = await Call("fileWorkspace", new { id = selected ?? throw new IOException("请先选择会话。"), outbox }, ct);
+    }
+    public void SetObserved(bool value)
+    {
+        lock (observationGate)
+        {
+            observed = value; observerRevision++;
+            observationUpdate = UpdateObservationAsync(observationUpdate);
+        }
+        // A long poll made before this change must not keep its old viewer lease.
+        // Cancelling it also starts a new watch immediately with the new revision.
+        try { watchLifetime?.Cancel(); } catch (ObjectDisposedException) { }
+    }
+    private async Task UpdateObservationAsync(Task previous)
+    {
+        try
+        {
+            await previous.ConfigureAwait(false);
+            string? id; bool active; long observedRevision;
+            lock (observationGate) { id = selected; active = observed; observedRevision = observerRevision; }
+            if (!capabilities.Contains("respond") || lifetime.IsCancellationRequested) return;
+            if (leasedSession is { } old && (old != id || !active))
+            {
+                _ = await Call("observe", new { id = old, observed = false, observerId, observerRevision = observedRevision }, lifetime.Token);
+                leasedSession = null;
+            }
+            if (id is not null)
+            {
+                // The bridge may accept this lease even if its acknowledgement is lost.
+                if (active) leasedSession = id;
+                _ = await Call("observe", new { id, observed = active, observerId, observerRevision = observedRevision }, lifetime.Token);
+            }
+        }
+        catch (Exception) { /* Read-only watch renews the lease after a transient connection loss. */ }
     }
     private async Task<SessionView> ReadSnapshot(string id, CancellationToken ct)
     {
@@ -131,11 +213,18 @@ public sealed class DshAdapter : IAgentAdapter
     }
     private SessionView ParseSnapshot(string id, JsonNode? node)
     {
+        var view = Json.Read<SessionView>(node);
+        if (view.Id != id) throw new IOException("DSH 返回了其他会话的快照，已拒绝切换。");
         cursor = node?["cursor"]?.GetValue<long>() ?? -1;
         streamRevision = node?["streamRevision"]?.GetValue<long>() ?? 0;
         if (pendingId is not null && id == pendingSession && (node?["acceptedRequestIds"]?.AsArray() ?? []).Any(x => x?.ToString() == pendingId))
-            pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = null;
-        return Json.Read<SessionView>(node);
+            pendingAccepted = true;
+        return view;
+    }
+    private void ClearPending()
+    {
+        pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = pendingTurnId = null;
+        pendingAccepted = false;
     }
     public Task SendAsync(string text, CancellationToken ct) => SendAsync(text, "auto", ct);
     public Task SendAsync(string text, string delivery, CancellationToken ct) => SendMutation("send", text, delivery, null, ct);
@@ -147,15 +236,26 @@ public sealed class DshAdapter : IAgentAdapter
         try
         {
             if (selected is null) throw new IOException("请先选择会话。");
+            if (pendingId is not null && !pendingAccepted && (pendingText != text || pendingMethod != method))
+                current = await ReadSnapshot(selected, ct);
+            if (pendingAccepted)
+            {
+                bool confirmsOriginal = pendingText == text;
+                ClearPending();
+                // The first acknowledgement was lost, but native history proves receipt.
+                // A retry confirms that submission rather than creating a second request.
+                if (confirmsOriginal) return;
+            }
             if (pendingId is not null && (pendingText != text || pendingMethod != method)) throw new IOException("上次发送结果未知，请先核对原消息，不能提交另一条。");
             if (pendingId is null) current = await ReadSnapshot(selected, ct);
             pendingDelivery ??= delivery == "auto" ? current?.Status == "active" ? "steer" : "queue" : delivery;
             pendingId ??= Guid.NewGuid().ToString("N"); pendingText = text;
             pendingMethod = method; pendingSession = selected;
-            try { await Call(method, new { id = selected, text, requestId = pendingId, mode = pendingDelivery, turnId }, ct); }
+            pendingTurnId ??= turnId;
+            try { await Call(method, new { id = selected, text, requestId = pendingId, mode = pendingDelivery, turnId = pendingTurnId }, ct); }
             catch (BridgeException ex) when (ex.Code == "bridge/not-submitted")
-            { pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = null; throw; }
-            pendingId = pendingText = pendingDelivery = pendingMethod = pendingSession = null;
+            { ClearPending(); throw; }
+            ClearPending();
         }
         finally { gate.Release(); }
     }
@@ -170,30 +270,69 @@ public sealed class DshAdapter : IAgentAdapter
             foreach (var model in provider?["models"]?.AsArray() ?? [])
             {
                 string id = model?["id"]?.ToString() ?? model?["model"]?.ToString() ?? "";
-                if (name.Length > 0 && id.Length > 0) models.Add(new(id, name, name + " / " + id));
+                var efforts = (model?["reasoningEfforts"] as JsonArray)?.Select(x => x?.ToString() ?? "").Where(x => x.Length > 0).Distinct(StringComparer.Ordinal).ToList();
+                if (name.Length > 0 && id.Length > 0) models.Add(new(id, name, model?["label"]?.ToString() ?? name + " / " + id,
+                    efforts, model?["defaultReasoningEffort"]?.ToString()));
             }
         }
         return new(view?["model"]?.ToString() ?? catalog?["default"]?["model"]?.ToString() ?? "",
             view?["provider"]?.ToString() ?? catalog?["default"]?["provider"]?.ToString() ?? "",
             view?["mode"]?.ToString() ?? "default", models, models.Count > 0, capabilities.Contains("plan") && view?["canChangeMode"]?.GetValue<bool>() == true,
             models.Count == 0 ? "当前 DSH 实例尚无可用模型，请为该实例单独配置模型账号；独立后台不复用桌面账号。"
-                : "DSH 原生设置：修改模型也会更新 DSH 的默认模型；执行中的 Plan 变更在下一执行步骤生效。审批和提问需在所属 DSH 入口处理。" + (instanceMode == "background" ? "独立后台需单独配置账号；能列出模型不代表已配置凭据。" : ""));
+                : "DSH 原生设置：修改模型也会更新 DSH 的默认模型；执行中的 Plan 变更在下一执行步骤生效。" + (!capabilities.Contains("respond") ? "此插件尚未开放远程审批和提问，请在所属 DSH 入口处理。" : "审批和提问通过所属 DSH Host 回应。") + (instanceMode == "background" ? "独立后台需单独配置账号；能列出模型不代表已配置凭据。" : ""),
+            view?["reasoningEffort"]?.ToString(), capabilities.Contains("reasoning") && models.Any(m => m.ReasoningEfforts?.Count > 0), RequireModelSelection: true,
+            Permission: view?["permission"]?.ToString(), CanChangePermissions: capabilities.Contains("permissions") && view?["canChangePermissions"]?.GetValue<bool>() == true,
+            PermissionOptions: settings?["permissionOptions"] is JsonArray permissions ? Json.Read<List<PermissionOption>>(permissions) : null);
     }
-    public async Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct)
+    public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => ConfigureAsync(model, provider, mode, null, ct);
+    public async Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct)
     {
-        if (pendingId is not null) throw new IOException("上次发送结果未知，请先核对原消息再修改设置。");
-        _ = await Call("configure", new { id = selected ?? throw new IOException("请先选择会话。"), provider, model, mode }, ct);
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (pendingId is not null && !pendingAccepted) throw new IOException("上次发送结果未知，请先核对原消息再修改设置。");
+            if (!string.IsNullOrEmpty(reasoningEffort)) RequireCapability("reasoning", "思考强度设置");
+            _ = await Call("configure", new { id = selected ?? throw new IOException("请先选择会话。"), provider, model, mode, reasoningEffort }, ct);
+        }
+        finally { gate.Release(); }
     }
     public async Task ArchiveAsync(string id, bool archived, CancellationToken ct)
     {
-        if (pendingId is not null) throw new IOException("上次发送结果未知，暂不能归档。");
+        if (pendingId is not null && !pendingAccepted) throw new IOException("上次发送结果未知，暂不能归档。");
         _ = await Call("archive", new { id, archived }, ct);
     }
-    public Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct) => throw new NotSupportedException("此 DSH 桥接版本尚未开放远程审批，请在所属 DSH 实例中处理。");
+    public async Task ConfigurePermissionsAsync(string permission, CancellationToken ct)
+    {
+        RequireCapability("permissions", "会话权限设置");
+        await gate.WaitAsync(ct);
+        try
+        {
+            if (pendingId is not null && !pendingAccepted) throw new IOException("上次发送结果未知，请先核对原消息再修改权限。");
+            _ = await Call("configurePermissions", new { id = selected ?? throw new IOException("请先选择会话。"), permission }, ct);
+        }
+        finally { gate.Release(); }
+    }
+    public async Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct)
+    {
+        RequireCapability("respond", "远程审批和提问");
+        await gate.WaitAsync(ct);
+        try
+        {
+            string id = selected ?? throw new IOException("请先选择会话。");
+            current = await ReadSnapshot(id, ct);
+            if (current.Prompts.All(p => p.Id != requestId) || !submittedPrompts.Add((id, requestId)))
+                throw new IOException("此确认已处理、已失效或正在提交，请刷新会话。");
+            // Reserve before I/O. An uncertain acknowledgement must not submit an approval twice.
+            _ = await Call("respond", new { id, requestId, decision, response }, ct);
+        }
+        finally { gate.Release(); }
+    }
     private async Task MonitorAsync()
     {
         try
         {
+            bool interrupted = false;
+            int failures = 0;
             while (!lifetime.IsCancellationRequested)
             {
                 string? id; long generation; object watchArgs;
@@ -202,7 +341,8 @@ public sealed class DshAdapter : IAgentAdapter
                 try
                 {
                     id = selected; generation = selectionGeneration;
-                    watchArgs = new { id, cursor, streamRevision, status = current?.Status, pendingMessages = current?.PendingMessages };
+                    lock (observationGate)
+                        watchArgs = new { id, cursor, streamRevision, status = current?.Status, pendingMessages = current?.PendingMessages, observed, observerId, observerRevision };
                     watchLifetime = watching;
                 }
                 finally { gate.Release(); }
@@ -216,10 +356,10 @@ public sealed class DshAdapter : IAgentAdapter
                     try
                     {
                         if (generation != selectionGeneration || selected != id) continue;
-                        long nextCursor = node?["cursor"]?.GetValue<long>() ?? -1;
-                        long nextRevision = node?["streamRevision"]?.GetValue<long>() ?? 0;
-                        if (nextCursor < cursor || nextCursor == cursor && nextRevision < streamRevision) continue;
+                        // Each selection generation has only one sequential watcher. Counter
+                        // eviction or plugin reload may reset a revision without an I/O failure.
                         current = ParseSnapshot(id, node);
+                        interrupted = false; failures = 0;
                         string next = Json.Node(current).ToJsonString();
                         if (next != fingerprint) { fingerprint = next; Changed?.Invoke(current); }
                     }
@@ -232,9 +372,13 @@ public sealed class DshAdapter : IAgentAdapter
                     try
                     {
                         if (generation == selectionGeneration && selected == id)
-                        { selected = null; Faulted?.Invoke("DSH 连接中断，未重发操作：" + ex.Message); }
+                        {
+                            if (!interrupted) Faulted?.Invoke("DSH 连接中断，正在恢复只读订阅，未重发操作：" + ex.Message);
+                            interrupted = true;
+                        }
                     }
                     finally { gate.Release(); }
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(15, 1 << Math.Min(failures++, 4))), lifetime.Token);
                 }
                 finally
                 {
@@ -246,5 +390,11 @@ public sealed class DshAdapter : IAgentAdapter
         }
         catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
     }
-    public async ValueTask DisposeAsync() { lifetime.Cancel(); await monitor; http.Dispose(); gate.Dispose(); lifetime.Dispose(); }
+    public async ValueTask DisposeAsync()
+    {
+        lifetime.Cancel(); await monitor;
+        Task update; lock (observationGate) update = observationUpdate;
+        await update;
+        http.Dispose(); gate.Dispose(); lifetime.Dispose();
+    }
 }

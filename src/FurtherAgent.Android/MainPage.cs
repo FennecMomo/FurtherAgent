@@ -545,27 +545,103 @@ public sealed partial class MainPage : ContentPage
             var answers = new JsonObject();
             foreach (var q in questions)
             {
+                string question = q?["question"]?.ToString() ?? "Agent 需要你的回答";
+                string? header = q?["header"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(header)) question = header + "\n" + question;
+                string? detail = q?["detail"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(detail) && !await ReviewQuestionDetailAsync(question, detail)) return;
                 string options = q?["options"] is JsonArray opts ? "\n" + string.Join("\n", opts.Select(o => $"• {o?["label"]}：{o?["description"]}")) : "";
                 string? answer;
                 var labels = (q?["options"] as JsonArray)?.Select(o => o?["label"]?.ToString() ?? "").Where(s => s.Length > 0).ToArray() ?? [];
+                if (q?["multiSelect"]?.GetValue<bool>() == true || q?["multiple"]?.GetValue<bool>() == true)
+                {
+                    var selected = await SelectMultipleAnswersAsync(question, labels);
+                    if (selected is null) return;
+                    answers[q!["id"]!.ToString()] = new JsonObject { ["answers"] = new JsonArray(selected.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray()) };
+                    continue;
+                }
                 if (labels.Length > 0)
                 {
-                    answer = await DisplayActionSheetAsync(q?["question"]?.ToString() ?? "Agent 需要你的回答", "稍后回答", null, [.. labels, "自行填写…"]);
+                    answer = await DisplayActionSheetAsync(question, "稍后回答", null, [.. labels, "自行填写…"]);
                     if (answer == "稍后回答" || answer is null) return;
-                    if (answer == "自行填写…") answer = await DisplayPromptAsync("填写回答", q?["question"] + options, "继续", "取消", maxLength: 4000);
+                    if (answer == "自行填写…") answer = await DisplayPromptAsync("填写回答", question + options, "继续", "取消", maxLength: 4000);
                 }
-                else answer = await DisplayPromptAsync("Agent 需要你的回答", q?["question"]?.ToString(), "继续", "取消", maxLength: 4000);
+                else answer = await DisplayPromptAsync("Agent 需要你的回答", question, "继续", "取消", maxLength: 4000);
                 if (string.IsNullOrWhiteSpace(answer)) return;
                 answers[q!["id"]!.ToString()] = new JsonObject { ["answers"] = new JsonArray(JsonValue.Create(answer)) };
             }
             await session.RespondAsync(prompt.Id, "", new JsonObject { ["answers"] = answers });
         }
-        else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or "hermes/approval")
+        else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or "hermes/approval" or "dsh/approval")
         {
             string detail = prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail;
-            string decision = await DisplayActionSheetAsync(prompt.Title + "\n" + detail, "稍后处理", "拒绝", "允许本次");
+            string heading = prompt.Kind == "dsh/approval" ? "DSH 工具权限" : prompt.Title;
+            string decision = await DisplayActionSheetAsync(heading + "\n" + detail, "稍后处理", "拒绝", "允许本次");
             if (decision is "允许本次" or "拒绝") await session.RespondAsync(prompt.Id, decision == "允许本次" ? "accept" : "decline");
         }
         else await DisplayAlertAsync("请在远端处理", prompt.Title + "\n" + prompt.Detail, "知道了");
     });
+    private async Task<bool> ReviewQuestionDetailAsync(string question, string detail)
+    {
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var page = new ContentPage { Title = "查看待回答内容" };
+        Ui.Theme(page);
+        bool finishing = false;
+        async Task Finish(bool reviewed)
+        {
+            if (finishing) return;
+            finishing = true;
+            try { await Navigation.PopModalAsync(); completion.TrySetResult(reviewed); }
+            catch (Exception ex) { completion.TrySetException(ex); }
+        }
+        page.Disappearing += (_, _) => { if (!finishing) completion.TrySetResult(false); };
+        var heading = Ui.Text(question, 18, true); Ui.TextTheme(heading);
+        var content = Ui.Text(detail, 14); Ui.TextTheme(content);
+        var note = Ui.Text("请阅读完整内容，再继续选择回答。", 12); Ui.TextTheme(note);
+        var cancelLabel = Ui.Text("暂不回答", 13); Ui.TextTheme(cancelLabel);
+        var continueLabel = Ui.Text("已阅读，继续回答", 13); Ui.TextTheme(continueLabel);
+        var actions = new Grid { ColumnSpacing = 16, ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto)] };
+        actions.Add(new HorizontalStackLayout { Spacing = 8, VerticalOptions = LayoutOptions.Center,
+            Children = { Ui.Button("取消", () => Finish(false)), cancelLabel } });
+        actions.Add(new HorizontalStackLayout { Spacing = 8, VerticalOptions = LayoutOptions.Center,
+            Children = { continueLabel, Ui.Button("继续回答", () => Finish(true), true) } }, 1);
+        var layout = new Grid { Padding = 20, RowSpacing = 14, RowDefinitions = [new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
+        layout.Add(heading); layout.Add(note, 0, 1);
+        layout.Add(new ScrollView { Content = content }, 0, 2); layout.Add(actions, 0, 3);
+        page.Content = layout;
+        await Navigation.PushModalAsync(page);
+        return await completion.Task;
+    }
+    private async Task<string[]?> SelectMultipleAnswersAsync(string question, string[] labels)
+    {
+        var selected = new HashSet<string>(StringComparer.Ordinal);
+        string? custom = null;
+        while (true)
+        {
+            string[] values = custom is null ? labels : [.. labels, custom];
+            string[] choices = values.Select((label, index) => (index >= labels.Length || selected.Contains(label) ? "☑ " : "☐ ") + label).ToArray();
+            string? choice = await DisplayActionSheetAsync(question + "\n可多选，也可填写一个补充回答；选完后点确认。", "稍后回答", null, [.. choices, "填写其他回答…", "确认选择"]);
+            if (choice is null or "稍后回答") return null;
+            if (choice == "确认选择")
+            {
+                var answers = labels.Where(selected.Contains).Concat(custom is null ? [] : new[] { custom }).Distinct(StringComparer.Ordinal).ToArray();
+                if (answers.Length > 0) return answers;
+                await DisplayAlertAsync("尚未回答", "请选择至少一个选项，或填写补充回答。", "继续选择");
+            }
+            else if (choice == "填写其他回答…")
+            {
+                string? value = await DisplayPromptAsync("补充回答", question, "保留", "取消", maxLength: 4000, initialValue: custom);
+                if (value is null) continue;
+                value = value.Trim();
+                if (labels.Contains(value, StringComparer.Ordinal)) { selected.Add(value); custom = null; }
+                else custom = value.Length == 0 ? null : value;
+            }
+            else
+            {
+                int index = Array.IndexOf(choices, choice);
+                if (index >= labels.Length) custom = null;
+                else if (index >= 0 && !selected.Add(labels[index])) selected.Remove(labels[index]);
+            }
+        }
+    }
 }

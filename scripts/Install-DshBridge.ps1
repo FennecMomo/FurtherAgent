@@ -2,14 +2,15 @@ param([ValidateSet('desktop','background')][string]$Mode='desktop',[string]$DshH
 $ErrorActionPreference='Stop'
 $repoRoot=Split-Path $PSScriptRoot -Parent
 $root=Join-Path $env:LOCALAPPDATA 'FurtherAgent/dsh'
-$sources=@('index.mjs','bridge.mjs','package.json') | ForEach-Object { Join-Path $repoRoot ('plugins/furtheragent-dsh/'+$_) }
+$manifest=Get-Content -LiteralPath (Join-Path $repoRoot 'plugins/furtheragent-dsh/package.json') -Raw | ConvertFrom-Json
+$sources=@($manifest.files)+@('package.json') | ForEach-Object { Join-Path $repoRoot ('plugins/furtheragent-dsh/'+$_) }
 $digest=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($sources | ForEach-Object {[IO.File]::ReadAllText($_)}) -join "`n"))).Substring(0,12).ToLowerInvariant()
-$plugin=Join-Path $root ('plugin-0.8.0-'+$digest)
+$plugin=Join-Path $root ('plugin-'+$manifest.version+'-'+$digest)
 if(!(Test-Path -LiteralPath $plugin)) {
     New-Item -ItemType Directory -Force -Path $plugin | Out-Null
     Copy-Item -LiteralPath $sources -Destination $plugin
 }
-$entry=(Join-Path $plugin 'index.mjs').Replace('\','/')
+$entry=([Uri]::new((Join-Path $plugin 'index.mjs'))).AbsoluteUri
 $instances=(Join-Path $root 'instances').Replace('\','/')
 $patch="`n# FurtherAgent same-Host bridge`n- insert:`n    - id: furtheragent-bridge`n      name: '$entry'`n      config:`n        mode: $Mode`n        directory: '$instances'`n"
 if($Mode -eq 'desktop') {

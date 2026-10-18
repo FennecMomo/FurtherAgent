@@ -1,10 +1,12 @@
 import { createServer } from 'node:http';
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { mkdir, writeFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
+import { interactions } from './interactions.mjs';
+import { workspaces } from './workspaces.mjs';
 
 const textOf = content => typeof content === 'string' ? content : (content ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('\n');
 const cleanId = value => {
@@ -12,6 +14,18 @@ const cleanId = value => {
   return value;
 };
 const rejectSubmission = message => { throw Object.assign(new Error(message), { code: 'bridge/not-submitted' }); };
+const userText = message => {
+  const text = textOf(message.content);
+  if (message.source?.kind !== 'user-question-reply') return text;
+  try {
+    const reply = JSON.parse(text);
+    if (reply.kind !== 'answer_to_pending_question' || !Array.isArray(reply.questions) || !Array.isArray(reply.answers)) return text;
+    return reply.questions.map(question => {
+      const answer = reply.answers.find(a => a.id === question.id);
+      return `${question.question}\n回答：${[...(answer?.selected ?? []), ...(answer?.custom ? [answer.custom] : [])].join('、')}`;
+    }).join('\n\n');
+  } catch { return text; }
+};
 
 // Borrow Host services; never construct a Context, Session or Agent for a read.
 export function service(ctx, config = {}) {
@@ -24,15 +38,40 @@ export function service(ctx, config = {}) {
   };
   const streams = new Map();
   const streamRevisions = new Map();
+  const changeListeners = new Map();
+  const changed = id => {
+    streamRevisions.set(id, (streamRevisions.get(id) ?? 0) + 1);
+    for (const wake of changeListeners.get(id) ?? []) wake();
+  };
   const disposers = [];
+  const interactive = interactions(ctx, changed, config);
+  const workspaceApi = workspaces(ctx);
+  const fileWorkspaces = new Map();
+  const systemPrompt = ctx.get?.('systemPrompt');
+  const canFiles = typeof systemPrompt?.context === 'function';
+  if (canFiles) disposers.push(systemPrompt.context({
+    name: 'furtheragent:file-workspace', interpolate: false,
+    order: (systemPrompt.getContextOrder?.('WORKING_DIRECTORY') ?? 0) + 1,
+    text: context => {
+      const outbox = fileWorkspaces.get(context.agent?.session.id);
+      return outbox ? `FurtherAgent 文件工作区\n请将要交付给远端用户的文件保存为此目录顶层的普通文件，每个文件不超过 100 MiB。\n输出目录：${outbox}` : '';
+    },
+  }));
+  const catalog = async () => {
+    const result = await ctx.sessionController.modelCatalog();
+    return { ...result, groups: result.groups.map(group => ({ ...group, models: group.models.map(model => ({ ...model,
+      label: model.name ?? model.id, reasoningEfforts: model.reasoning?.efforts?.map(e => e.id) ?? [],
+      defaultReasoningEffort: model.reasoning?.defaultEffort ?? null })) })) };
+  };
+  const permissionOptions = () => (ctx.get?.('permissionPresets')?.catalog().options ?? [])
+    .filter(option => option.value !== 'custom').map(option => ({ value: option.value, label: option.name, description: option.description }));
   if (ctx.on) {
     disposers.push(ctx.on('session/event', (session, event) => {
       if (event.type === 'assistant/message' || event.type === 'turn/end') streams.delete(session.id);
     }, { global: true }));
     disposers.push(ctx.on('agent/assistant-stream', ({ agent, frame }) => {
       const id = agent.session.id;
-      if (streamRevisions.size >= 64 && !streamRevisions.has(id)) streamRevisions.delete(streamRevisions.keys().next().value);
-      streamRevisions.set(id, frame.revision);
+      changed(id);
       if (frame.type === 'end') { streams.delete(id); return; }
       let state = streams.get(id);
       if (!state || state.attemptId !== frame.attemptId || frame.type === 'start') {
@@ -52,15 +91,16 @@ export function service(ctx, config = {}) {
     cleanId(id);
     const observation = await ctx.sessionQuery.observeSession(id, { signal, projectionMode: 'all' });
     try {
-      const messages = []; const byId = new Map(); const acceptedRequestIds = []; let turnId = null; let lastModel;
+      const messages = []; const byId = new Map(); const acceptedRequestIds = []; let turnId = null; let lastModel; let lastEnd;
       for (const event of observation.events) {
-        if (event.type === 'turn/start') turnId = String(event.seq);
+        if (event.type === 'turn/start') { turnId = String(event.seq); lastEnd = undefined; }
+        if (event.type === 'turn/end') lastEnd = event.data?.reason;
         if (event.type === 'model/selection') lastModel = event.data;
         if (event.type === 'request/header') lastModel = event.data?.header?.config ?? lastModel;
         if (event.type === 'user/message' && event.data?.source?.kind === 'user' && event.data.source.rpcId) acceptedRequestIds.push(event.data.source.rpcId);
         // Replacement copies belong to model context, not the human transcript.
         if (event.surfaceOp !== undefined && event.surfaceOp !== 'append') continue;
-        if (event.type === 'user/message' && event.data?.source && event.data.source.kind !== 'user') continue;
+        if (event.type === 'user/message' && event.data?.source && !['user', 'user-question-reply'].includes(event.data.source.kind)) continue;
         if (event.type === 'tool/call') {
           messages.push({ role: 'tool.call', text: event.data?.name ?? event.data?.call?.name ?? '工具调用', detail: JSON.stringify(event.data) });
           continue;
@@ -68,7 +108,7 @@ export function service(ctx, config = {}) {
         const message = event.type === 'user/message' ? event.data : event.data?.message;
         if (!['user/message', 'assistant/message', 'tool/result'].includes(event.type) || !message) continue;
         const role = event.type === 'user/message' ? 'user' : event.type === 'tool/result' ? 'tool' : 'assistant';
-        const entry = { role, text: textOf(message.content), ...(role === 'tool' ? { detail: JSON.stringify(message.content) } : {}) };
+        const entry = { role, text: role === 'user' ? userText(message) : textOf(message.content), ...(role === 'tool' ? { detail: JSON.stringify(message.content) } : {}) };
         if (message.id && byId.has(message.id)) messages[byId.get(message.id)] = entry;
         else { if (message.id) byId.set(message.id, messages.length); messages.push(entry); }
         if (role === 'assistant') for (const part of message.content ?? []) {
@@ -84,32 +124,82 @@ export function service(ctx, config = {}) {
       if (running && stream?.reasoning) messages.push({ role: 'reasoning.available', text: stream.reasoning });
       if (running && stream?.text) messages.push({ role: 'assistant', text: stream.text });
       const values = observation.projections?.values ?? {};
-      const model = values.modelSelection?.pending ?? lastModel;
+      const model = values.modelSelection?.next ?? values.modelSelection?.pending ?? values.modelSelection?.lastUsed ?? lastModel;
+      const status = running ? 'active' : pending > 0 ? 'queued' : lastEnd?.kind === 'completed' || turnId === null ? 'idle'
+        : ['error', 'blocked', 'max-tokens'].includes(lastEnd?.kind) ? 'failed' : 'interrupted';
       // Wire pending is a transition flag, not the requested boolean state.
       const plan = values.plan;
-      return { id, title: (typeof values.title === 'string' ? values.title : values.title?.title) || observation.header.title || id, cwd: observation.header.cwd ?? '', status: running ? 'active' : 'idle',
-        turnId, messages: messages.slice(-500), prompts: [], canSend: true, canStop: running,
+      // Keep a contiguous newest window within the existing 20 MiB desktop budget.
+      // Whole-message eviction is preferable to breaking JSON or a UTF-8 sequence.
+      const budget = 20 * 1024 * 1024;
+      let size = 2; let start = messages.length;
+      while (start > 0) {
+        const bytes = Buffer.byteLength(JSON.stringify(messages[start - 1]), 'utf8') + 1;
+        if (size + bytes > budget) {
+          if (start === messages.length) {
+            // An individual generated/tool message can itself exceed the window.
+            const entry = messages[start - 1];
+            let text = entry.text ?? '';
+            while (Buffer.byteLength(JSON.stringify({ role: entry.role, text }), 'utf8') > budget - 1024) {
+              let cut = Math.ceil(text.length / 8);
+              if (text.charCodeAt(cut) >= 0xdc00 && text.charCodeAt(cut) <= 0xdfff) cut++;
+              text = text.slice(cut);
+            }
+            messages[start - 1] = { role: entry.role, text: '（此条内容过长，已截取末尾）\n' + text };
+            start--;
+          }
+          break;
+        }
+        size += bytes; start--;
+      }
+      return { id, title: (typeof values.title === 'string' ? values.title : values.title?.title) || observation.header.title || id, cwd: observation.header.cwd ?? '', status,
+        turnId, messages: messages.slice(start), prompts: interactive.prompts(id, values), canSend: true, canStop: running,
         model: model?.model ?? null, provider: model?.provider ?? null, reasoningEffort: model?.reasoningEffort ?? null,
+        permission: values.permissions?.currentValue ?? null, canChangePermissions: !!ctx.get?.('permissionPresets') && (agent ? !!ctx.get?.('commands')?.find(agent, 'permission') : !!values.permissions),
         canChangeMode: agent ? !!ctx.get?.('commands')?.find(agent, 'plan') : !!values.plan,
         mode: (plan?.pending ? !plan.active : plan?.active) ? 'plan' : 'default', pendingMessages: pending, acceptedRequestIds, streamRevision: streamRevisions.get(id) ?? 0,
-        statusDetail: `DSH ${mode} · ${running ? '执行中' : '空闲'} · 待处理 ${pending} 条${plan?.pending ? ' · 模式等待下一步骤生效' : ''} · 同一 Host，会话只读订阅`, cursor: observation.cursor };
+        statusDetail: `DSH ${mode} · ${running ? '执行中' : status === 'queued' ? '排队中' : status === 'idle' ? '空闲' : status === 'failed' ? '执行失败' : '已中断'} · 待处理 ${pending} 条${plan?.pending ? ' · 模式等待下一步骤生效' : ''} · 同一 Host，会话只读订阅`, cursor: observation.cursor };
     } finally { observation[Symbol.dispose](); }
   }
   const methods = {
-    info: async () => ({ protocol: 1, mode, pid: process.pid, hostVersion: config.hostVersion ?? 'unknown',
+    info: async () => ({ protocol: 1, mode, pid: process.pid, hostVersion: config.hostVersion ?? 'unknown', bridgeVersion: config.bridgeVersion ?? 'unknown',
       activeTasks: hasActiveTasks(), instanceId: config.instanceId,
-      capabilities: ['list', 'snapshot', 'watch', 'create', 'send', 'steer', 'stop', 'model', 'plan', 'delivery', 'interrupt-send', ...(ctx.get?.('workspaceController') ? ['archive'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
+      capabilities: ['list', 'snapshot', 'watch', 'create', 'send', 'steer', 'stop', 'model', 'plan', 'delivery', 'interrupt-send', 'reasoning',
+        ...(interactive.available ? ['respond'] : []), ...(canFiles ? ['files', 'thumbnails'] : []),
+        ...(ctx.get?.('permissionPresets') ? ['permissions'] : []),
+        ...(ctx.get?.('workspaceController') ? ['archive'] : []),
+        ...(ctx.get?.('workspaceController') && ctx.get?.('workspaceRegistry') ? ['workspaces'] : [])], detail: 'Same-Host bridge; snapshots never resume an Agent.' }),
     list: async (_, signal) => {
       const result = await ctx.sessionController.list({}, signal);
       const archived = new Set(ctx.get?.('workspaceRegistry')?.archivedSessionIds ?? []);
       return { ...result, items: result.items.filter(item => !archived.has(item.sessionId)) };
     },
     snapshot: (args, signal) => snapshot(args.id, signal),
+    observe: args => { cleanId(args.id); return interactive.observe(args); },
+    respond: async (args, signal) => {
+      cleanId(args.id); cleanId(args.requestId);
+      const observation = await ctx.sessionQuery.observeSession(args.id, { signal, projectionMode: 'all' });
+      try { return await interactive.respond(args, observation.projections?.values ?? {}); }
+      finally { observation[Symbol.dispose](); }
+    },
+    workspaces: () => workspaceApi.list(),
+    browseDirectories: (args, signal) => workspaceApi.browse(args.path, signal),
+    addWorkspace: (args, signal) => workspaceApi.add(args, signal),
+    fileWorkspace: async args => {
+      cleanId(args.id);
+      if (!canFiles || typeof args.outbox !== 'string' || !isAbsolute(args.outbox)) throw new Error('Native file context is unavailable or path is invalid');
+      if (!fileWorkspaces.has(args.id) && fileWorkspaces.size >= 128) throw new Error('Too many file workspaces');
+      await mkdir(args.outbox, { recursive: true });
+      fileWorkspaces.set(args.id, args.outbox);
+      return { accepted: true };
+    },
     watch: async (args, signal) => {
       cleanId(args.id);
       signal?.throwIfAborted();
+      if (args.observerId && typeof args.observed === 'boolean') interactive.observe(args);
       let wake;
       const changed = new Promise(resolve => { wake = resolve; });
+      const wakes = changeListeners.get(args.id) ?? new Set(); wakes.add(wake); changeListeners.set(args.id, wakes);
       const releases = [
         ctx.on('session/event', session => { if (session.id === args.id) wake(); }, { global: true }),
         ctx.on('agent/assistant-stream', ({ agent }) => { if (agent.session.id === args.id) wake(); }, { global: true }),
@@ -124,23 +214,27 @@ export function service(ctx, config = {}) {
         signal?.throwIfAborted();
         await delay(50, undefined, { signal });
         return await snapshot(args.id, signal);
-      } finally { clearTimeout(timer); signal?.removeEventListener('abort', wake); for (const release of releases) release(); }
+      } finally {
+        clearTimeout(timer); signal?.removeEventListener('abort', wake); for (const release of releases) release();
+        wakes.delete(wake); if (!wakes.size) changeListeners.delete(args.id);
+      }
     },
     create: async (args, signal) => {
-      const created = await ctx.sessionController.create({ sessionId: cleanId(args.id), cwd: config.cwd || undefined }, signal);
+      const cwd = args.cwd ? await workspaceApi.directory(args.cwd) : config.cwd || undefined;
+      const created = await ctx.sessionController.create({ sessionId: cleanId(args.id), cwd }, signal);
       if (typeof args.title === 'string' && args.title.trim()) await ctx.sessionController.rename({ sessionId: created.sessionId, title: args.title });
       return created;
     },
     send: (args, signal) => {
-      if (!['queue', 'steer'].includes(args.mode)) throw new Error('Unsupported delivery mode');
-      if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) throw new Error('Invalid prompt');
+      if (!['queue', 'steer'].includes(args.mode)) rejectSubmission('Unsupported delivery mode');
+      if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) rejectSubmission('Invalid prompt');
       return ctx.sessionController.prompt({ sessionId: cleanId(args.id), requestId: cleanId(args.requestId),
         mode: args.mode === 'steer' ? 'steer' : 'followup', content: [{ type: 'text', text: args.text }] }, signal);
     },
     interruptSend: async (args, signal) => {
       const id = cleanId(args.id);
       cleanId(args.requestId);
-      if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) throw new Error('Invalid prompt');
+      if (typeof args.text !== 'string' || !args.text.trim() || args.text.length > 100000) rejectSubmission('Invalid prompt');
       const agent = ctx.agents.get(id);
       if (!agent) rejectSubmission('Session is not active in this Host');
       const messages = [...(agent.inbox?.nextTurn ?? []), ...(agent.inbox?.nextStep ?? [])];
@@ -164,8 +258,19 @@ export function service(ctx, config = {}) {
       return methods.send({ ...args, mode: 'queue' }, signal);
     },
     stop: args => ctx.sessionController.cancel({ sessionId: cleanId(args.id) }),
-    models: () => ctx.sessionController.modelCatalog(),
-    settings: async (args, signal) => ({ catalog: await ctx.sessionController.modelCatalog(), view: await snapshot(args.id, signal) }),
+    models: () => catalog(),
+    settings: async (args, signal) => ({ catalog: await catalog(), view: await snapshot(args.id, signal), permissionOptions: permissionOptions() }),
+    configurePermissions: async (args, signal) => {
+      const id = cleanId(args.id);
+      if (!permissionOptions().some(option => option.value === args.permission)) throw new Error('Unsupported DSH permission preset');
+      const resolved = await ctx.sessionController.resolveAgent(id);
+      if (resolved.error) throw resolved.error;
+      const commands = ctx.get?.('commands');
+      if (!commands?.find(resolved.agent, 'permission')) throw new Error('This DSH preset has no permission command');
+      const execution = await commands.execute(resolved.agent, '/permission ' + args.permission, [], signal);
+      if (!execution || execution.result.kind === 'error') throw new Error(execution?.result?.text ?? 'Permission command failed');
+      return { accepted: true };
+    },
     configure: async (args, signal) => {
       const id = cleanId(args.id);
       if (args.mode !== undefined && !['default', 'build', 'plan'].includes(args.mode)) throw new Error('Unsupported DSH mode');
@@ -204,7 +309,7 @@ export function service(ctx, config = {}) {
       return { accepted: true };
     },
   };
-  return { snapshot, close() { for (const dispose of disposers) dispose?.(); streams.clear(); streamRevisions.clear(); }, async call(method, args, signal) {
+  return { snapshot, close() { interactive.close(); for (const dispose of disposers) dispose?.(); streams.clear(); streamRevisions.clear(); fileWorkspaces.clear(); changeListeners.clear(); }, async call(method, args, signal) {
     if (!Object.hasOwn(methods, method)) throw new Error('Unsupported bridge method');
     return methods[method](args ?? {}, signal);
   } };

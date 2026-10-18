@@ -14,6 +14,7 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--operation-history-checks")) { OperationHistoryChecks.Run(Check); return; }
+if (args.Contains("--dsh-adapter-checks")) { await DshAdapterChecks.Run(Check); Console.WriteLine($"ALL {passed} DSH CHECKS PASSED"); return; }
 if (args.Contains("--lan-checks")) { await LanChecks.Run(Check); Console.WriteLine($"ALL {passed} LAN CHECKS PASSED"); return; }
 if (args.Contains("--codex-permission-fixture")) { Console.WriteLine(Json.Node(CodexPermissions.Values.Select(CodexPermissions.Build).ToArray()).ToJsonString()); return; }
 if (args.Contains("--codex-interaction-checks")) { await CodexInteractionChecks.Run(Check); Console.WriteLine($"ALL {passed} INTERACTION CHECKS PASSED"); return; }
@@ -79,6 +80,7 @@ await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);
 await WorkspaceChecks.Run(Check);
 await DshDiscoveryChecks.Run(Check);
+await DshAdapterChecks.Run(Check);
 SessionSyncChecks.Run(Check);
 await ThumbnailChecks.Run(Check);
 await RpcSchedulingChecks.Run(Check);

@@ -25,7 +25,7 @@ try
     string descriptor = Environment.GetEnvironmentVariable("FURTHERAGENT_DSH_DESCRIPTOR") ?? "";
     bool followDesktopRestarts = backend == "dsh-desktop" && descriptor.Length == 0;
     await using var background = backend == "dsh-background" && descriptor.Length == 0
-        ? await DshBackgroundRuntime.StartAsync(Environment.GetEnvironmentVariable("FURTHERAGENT_DSH_EXE") ?? @"D:\Software\DeepseekHarness\DeepSeek Harness.exe", lifetime.Token) : null;
+        ? await DshBackgroundRuntime.StartAsync(Environment.GetEnvironmentVariable("FURTHERAGENT_DSH_EXE") ?? throw new ArgumentException("请配置 FURTHERAGENT_DSH_EXE，指向已安装的 DeepSeek Harness.exe。"), lifetime.Token) : null;
     if (background is not null) descriptor = background.DescriptorPath;
     if (backend.StartsWith("dsh") && descriptor.Length == 0) descriptor = DshAdapter.FindDescriptor("desktop");
     string? keyFile = backend == "hermes" ? Environment.GetEnvironmentVariable("HERMES_API_KEY_FILE") : null;
