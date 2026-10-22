@@ -41,7 +41,7 @@ public partial class MainWindow : Window
     private CancellationTokenSource? transferCancellation;
     private List<RemoteFile> attachedFiles = [];
     private string? filesSession;
-    private void ClearAttachments() { attachedFiles.Clear(); AttachmentSummary.Text = ""; }
+    private void ClearAttachments() { attachedFiles.Clear(); RenderAttachments(); }
 
     private Dictionary<string, string> drafts = [];
     private static string SettingsFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "settings.json");
@@ -54,6 +54,7 @@ public partial class MainWindow : Window
         InitializeCompact();
         InitializeCompactHotkey();
         InitializeHistory();
+        InitializeAttachments();
         string version = typeof(MainWindow).Assembly.GetName().Version?.ToString(3) ?? "";
         Title = "FurtherAgent · " + version; VersionLabel.Text = version + " · 远程工作空间";
         snapshotTimer = new(System.Windows.Threading.DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromMilliseconds(250) };
@@ -178,7 +179,7 @@ public partial class MainWindow : Window
             relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text,
             receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes, miniWindows = miniWindows.Count };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
-        if (actionBusy || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t))
+        if (actionBusy || preparingAttachment || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t))
             || miniWindows.Values.Any(mini => mini.IsSending || mini.HasUnsentDraft)
             || deviceConnections.Entries.Values.Any(d => d.Attachments.Count > 0 || d.Drafts.Values.Any(t => !string.IsNullOrEmpty(t))))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
@@ -444,21 +445,19 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim thumbnailSlots = new(2);
     public FrameworkElement? CreateFileVisual(string reference)
     {
-        if (current is null || remote is null || reference.StartsWith("http", StringComparison.OrdinalIgnoreCase)) return null;
-        string name;
-        try { name = Uri.UnescapeDataString(reference.Trim().Trim('"', '\'').Replace('\\','/').Split('/')[^1]); }
-        catch (UriFormatException) { return null; }
-        if (name.StartsWith("attachment:", StringComparison.Ordinal)) name = name[11..];
-        var file = current.OutputFiles?.FirstOrDefault(f => f.Name == name || f.Id == reference);
+        if (current is null || remote is null) return null;
+        var file = RemoteFileReferences.Resolve(current.OutputFiles, reference);
         return file is null ? null : CreateFileVisual(current.Id, file);
     }
     private FrameworkElement CreateFileVisual(string session, RemoteFile file)
     {
+        var source = remote;
         var button = new Button { Content = file.Name, ToolTip = file.Name + " · 点击加载原图/保存文件", Padding = new Thickness(3), Margin = new Thickness(0,4,4,4), MaxWidth = 330 };
+        System.Windows.Automation.AutomationProperties.SetName(button, file.Name + " · 查看图片或保存文件");
         bool picture = ImageThumbnail.Supported(file.Name);
         button.Click += async (_, _) =>
         {
-            if (current?.Id != session || actionBusy) return;
+            if (current?.Id != session || remote != source || actionBusy) return;
             if (picture) await PreviewRemoteFileAsync(session, file); else await SaveRemoteFileAsync(session, file);
         };
         if (picture && agent?.CanThumbnails == true && remote is { } connection)
@@ -475,11 +474,20 @@ public partial class MainWindow : Window
                         thumbnailCache[key] = load = LoadThumbnailAsync(connection, session, file.Id);
                     }
                     var bitmap = await load;
-                    if (button.IsLoaded) button.Content = new Image { Source = bitmap, MaxWidth = 320, MaxHeight = 240, Stretch = System.Windows.Media.Stretch.Uniform };
+                    if (button.IsLoaded && remote == source) button.Content = new Image { Source = bitmap, MaxWidth = 320, MaxHeight = 240, Stretch = System.Windows.Media.Stretch.Uniform };
                 }
-                catch { button.Content = file.Name + "（缩略图不可用，点击查看原图）"; }
+                catch
+                {
+                    string key = connection.GetHashCode() + "|" + session + "|" + file.Id + "|" + file.Version;
+                    thumbnailCache.Remove(key);
+                    button.Content = file.Name + "（缩略图不可用，点击查看原图）";
+                }
             };
         }
+        var menu = new ContextMenu();
+        var saveItem = new MenuItem { Header = "另存为…" };
+        saveItem.Click += async (_, _) => { if (remote == source && current?.Id == session && !actionBusy) await SaveRemoteFileAsync(session, file); };
+        menu.Items.Add(saveItem); button.ContextMenu = menu;
         return button;
     }
     private async Task<System.Windows.Media.Imaging.BitmapSource> LoadThumbnailAsync(RemoteDevice connection, string session, string file)
@@ -501,12 +509,24 @@ public partial class MainWindow : Window
     }
     private void RenderOutputFiles(SessionView view)
     {
-        string signature = view.Id + "|" + Json.Node(view.OutputFiles ?? []).ToJsonString();
+        var referenced = view.OutputFiles?.Any(f => ImageThumbnail.Supported(f.Name)) == true ? view.Messages.Select(ChatPresentation.Display)
+            .Where(m => ChatPresentation.Kind(m) is "user" or "assistant")
+            .SelectMany(m => MarkdownView.AttachmentReferences(m.Text.Length > 30000 ? m.Text[..30000] : m.Text))
+            .Select(r => RemoteFileReferences.Resolve(view.OutputFiles, r)?.Id).OfType<string>().ToHashSet(StringComparer.Ordinal) : [];
+        string signature = view.Id + "|" + Json.Node(view.OutputFiles ?? []).ToJsonString() + "|" + string.Join("|", referenced.Order());
         if (signature == outputFilesFingerprint) return;
         bool sameSession = outputFilesFingerprint.StartsWith(view.Id + "|", StringComparison.Ordinal);
         bool expanded = sameSession && OutputFilesPanel.Children.OfType<Expander>().FirstOrDefault()?.IsExpanded == true;
         outputFilesFingerprint = signature; OutputFilesPanel.Children.Clear();
         if (view.OutputFiles is not { Count: > 0 }) return;
+        var pictures = view.OutputFiles.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal) && ImageThumbnail.Supported(f.Name) && !referenced.Contains(f.Id)).ToArray();
+        if (pictures.Length > 0)
+        {
+            OutputFilesPanel.Children.Add(new TextBlock { Text = "会话图片 · 点击查看原图，右键另存为", Foreground = System.Windows.Media.Brushes.Gray, Margin = new Thickness(0, 6, 0, 2) });
+            var gallery = new WrapPanel();
+            foreach (var file in pictures) gallery.Children.Add(CreateFileVisual(view.Id, file));
+            OutputFilesPanel.Children.Add(gallery);
+        }
         var fileRows = new StackPanel();
         OutputFilesPanel.Children.Add(new Expander { Header = $"会话文件 · {view.OutputFiles.Count} 个", IsExpanded = expanded,
             Content = new ScrollViewer { Content = fileRows, MaxHeight = 240, VerticalScrollBarVisibility = ScrollBarVisibility.Auto } });
@@ -517,7 +537,7 @@ public partial class MainWindow : Window
             var save = new Button { Content = "保存文件", Style = (Style)FindResource("Compact") };
             save.Click += async (_, _) => { if (current?.Id == view.Id && !actionBusy) await SaveRemoteFileAsync(view.Id, file); };
             row.Children.Add(save);
-            if (new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp" }.Contains(Path.GetExtension(file.Name).ToLowerInvariant()))
+            if (ImageThumbnail.Supported(file.Name))
             {
                 var preview = new Button { Content = "查看图片", Style = (Style)FindResource("Compact") };
                 preview.Click += async (_, _) => { if (current?.Id == view.Id && !actionBusy) await PreviewRemoteFileAsync(view.Id, file); };
@@ -532,6 +552,7 @@ public partial class MainWindow : Window
     { if (IsLoaded) SetSessionEnabled(!actionBusy && remote?.IsConnected == true); }
     private void SetSessionEnabled(bool enabled)
     {
+        enabled &= !preparingAttachment;
         UpdateHistoryActions();
         SendButton.IsEnabled = enabled && current is not null && current.CanSend;
         InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
@@ -575,7 +596,7 @@ public partial class MainWindow : Window
             if (remote == connection && selectedId == id)
             {
                 if (Composer.Text == text) { Composer.Clear(); SaveDraft(); }
-                AttachmentSummary.Text = attachedFiles.Count == 0 ? "" : "待发送：" + string.Join("、", attachedFiles.Select(f => f.Name));
+                RenderAttachments();
             }
         });
     }
@@ -595,7 +616,7 @@ public partial class MainWindow : Window
             if (remote == connection && selectedId == id)
             {
                 if (Composer.Text == text) { Composer.Clear(); SaveDraft(); }
-                AttachmentSummary.Text = attachedFiles.Count == 0 ? "" : "待发送：" + string.Join("、", attachedFiles.Select(f => f.Name));
+                RenderAttachments();
             }
         });
     }
@@ -885,20 +906,10 @@ public partial class MainWindow : Window
     }
     private async void Upload_Click(object sender, RoutedEventArgs e)
     {
-        if (current is null) return;
+        if (!CanAttachFiles) return;
         var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Title = "添加文件（单文件最多 100 MiB）" };
         if (dialog.ShowDialog(this) != true) return;
-        if (dialog.FileNames.Length + attachedFiles.Count > 20) { StatusBar.Text = "每条消息最多 20 个附件。"; return; }
-        string id = current.Id;
-        await TransferAsync(async (client, progress, ct) =>
-        {
-            foreach (var file in dialog.FileNames)
-            {
-                var uploaded = await client.UploadAsync(id, file, progress, ct);
-                if (current?.Id != id) return;
-                attachedFiles.Add(uploaded); AttachmentSummary.Text = "待发送：" + string.Join("、", attachedFiles.Select(f => f.Name));
-            }
-        });
+        await AttachPathsAsync(dialog.FileNames);
     }
     private async void Files_Click(object sender, RoutedEventArgs e)
     {
@@ -937,25 +948,12 @@ public partial class MainWindow : Window
     }
     private async void PasteImage_Click(object sender, RoutedEventArgs e)
     {
-        if (current is null || remote is null || actionBusy || agent?.CanFiles != true) return;
-        string path = Path.Combine(Path.GetTempPath(), "FurtherAgent-image-" + Guid.NewGuid().ToString("N") + ".png");
         try
         {
-            var bitmap = Clipboard.GetImage();
-            if (bitmap is null) { StatusBar.Text = "剪贴板中没有图片。"; return; }
-            if ((long)bitmap.PixelWidth * bitmap.PixelHeight > 40000000) throw new IOException("图片超过 4000 万像素，请先缩小。");
-            var encoder = new System.Windows.Media.Imaging.PngBitmapEncoder();
-            encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
-            using (var output = File.Create(path)) encoder.Save(output);
-            string id = current.Id;
-            await TransferAsync(async (client, progress, ct) =>
-            {
-                var uploaded = await client.UploadAsync(id, path, progress, ct);
-                attachedFiles.Add(uploaded); AttachmentSummary.Text = "待发附件：" + string.Join("、", attachedFiles.Select(f => f.Name));
-            });
+            if (Clipboard.GetDataObject() is not { } data || !TryAttachData(data)) StatusBar.Text = "剪贴板中没有图片或文件。";
+            await attachmentPreparation;
         }
         catch (Exception ex) { Error(ex); }
-        finally { if (File.Exists(path)) File.Delete(path); }
     }
     private async void PreviewImage_Click(object sender, RoutedEventArgs e)
     {

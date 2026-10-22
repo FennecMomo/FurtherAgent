@@ -10,6 +10,26 @@ namespace FurtherAgent.Client;
 // Native WPF text only: no HTML renderer, remote image fetches or embedded scripts.
 public sealed class MarkdownView : RichTextBox
 {
+    private const string InlinePattern = @"(`[^`]+`|!?\[[^\]]*\]\([^\r\n)]+\)|MEDIA:[^\s]+|attachment:[^\s]+|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|(?<!\w)_[^_]+_(?!\w))";
+    private static string? Reference(string token)
+    {
+        if (token.StartsWith('`')) return null;
+        if (token.StartsWith("MEDIA:", StringComparison.Ordinal)) return token[6..];
+        if (token.StartsWith("attachment:", StringComparison.Ordinal)) return token;
+        int split = token.IndexOf("](", StringComparison.Ordinal);
+        return split >= 0 ? token[(split + 2)..^1] : null;
+    }
+    public static IEnumerable<string> AttachmentReferences(string markdown)
+    {
+        bool fenced = false;
+        foreach (string line in markdown.Replace("\r", "").Split('\n'))
+        {
+            if (line.TrimStart().StartsWith("```")) { fenced = !fenced; continue; }
+            if (fenced) continue;
+            foreach (Match match in Regex.Matches(line, InlinePattern))
+                if (Reference(match.Value) is { } reference) yield return reference;
+        }
+    }
     static MarkdownView() => VisualTheme.IsCodexProperty.OverrideMetadata(typeof(MarkdownView),
         new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits, (d, _) => ((MarkdownView)d).Refresh()));
     public Func<string, FrameworkElement?>? AttachmentFactory { get; init; }
@@ -85,11 +105,10 @@ public sealed class MarkdownView : RichTextBox
     private void InlineText(InlineCollection output, string value)
     {
         int offset = 0;
-        foreach (Match m in Regex.Matches(value, @"(`[^`]+`|!?\[[^\]]*\]\([^\r\n)]+\)|MEDIA:[^\s]+|\*\*[^*]+\*\*|__[^_]+__|~~[^~]+~~|\*[^*]+\*|(?<!\w)_[^_]+_(?!\w))"))
+        foreach (Match m in Regex.Matches(value, InlinePattern))
         {
             output.Add(new Run(value[offset..m.Index])); string token = m.Value;
-            int attachmentSplit = token.IndexOf("](", StringComparison.Ordinal);
-            string? reference = token.StartsWith("MEDIA:") ? token[6..] : attachmentSplit >= 0 ? token[(attachmentSplit+2)..^1] : null;
+            string? reference = Reference(token);
             var attachment = reference is null ? null : AttachmentFactory?.Invoke(reference);
             if (attachment is not null) output.Add(new InlineUIContainer(attachment) { BaselineAlignment = BaselineAlignment.Center });
             else if (token.StartsWith('`')) output.Add(new Run(token[1..^1]) { FontFamily = new FontFamily("Consolas"), Background = Brushes.Gainsboro });

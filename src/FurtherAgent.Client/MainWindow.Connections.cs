@@ -36,7 +36,7 @@ public partial class MainWindow
     private DeviceContext? activeDevice;
     private bool updatingDevicePicker;
     private string devicePickerSignature = "";
-    private bool CanSwitchDevice => !actionBusy && transferCancellation is null && !workspaceBusy && !loadingSettings;
+    private bool CanSwitchDevice => !actionBusy && !preparingAttachment && transferCancellation is null && !workspaceBusy && !loadingSettings;
 
     private async Task<DeviceContext> OpenDeviceAsync(string server, string code)
     {
@@ -130,7 +130,7 @@ public partial class MainWindow
         modelSession = null; promptSignature = null; transcriptText = ""; outputFilesFingerprint = renderedOutputFilesFingerprint = "";
         Messages.ItemsSource = null; OutputFilesPanel.Children.Clear(); PromptBorder.Visibility = Visibility.Collapsed;
         Composer.Text = selectedId is null ? "" : drafts.GetValueOrDefault(selectedId, "");
-        AttachmentSummary.Text = attachedFiles.Count == 0 ? "" : "待发送：" + string.Join("、", attachedFiles.Select(f => f.Name));
+        RenderAttachments();
         SearchBox.Text = device.Search; Filter();
         WorkspaceButton.Visibility = agent?.CanWorkspaces == true ? Visibility.Visible : Visibility.Collapsed;
         AgentPicker.Items.Clear(); AgentPicker.Items.Add(agent?.Name ?? "Agent"); AgentPicker.SelectedIndex = 0;

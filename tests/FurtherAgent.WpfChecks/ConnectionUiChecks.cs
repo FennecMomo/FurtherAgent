@@ -38,11 +38,12 @@ internal static class ConnectionUiChecks
             var attachments = (List<RemoteFile>)typeof(MainWindow).GetField("attachedFiles", Private)!.GetValue(window)!;
             attachments.Add(new("a-file", "A-only.txt", 10));
             Invoke("ActivateDevice", b);
-            Require(Find<TextBox>("Composer").Text == "" && !Find<TextBlock>("AttachmentSummary").Text.Contains("A-only"), "actual desktop switch isolates drafts and attachments with identical session IDs");
+            Require(Find<TextBox>("Composer").Text == "" && Find<WrapPanel>("AttachmentPreviews").Children.Count == 0, "actual desktop switch isolates drafts and attachments with identical session IDs");
             Find<TextBox>("Composer").Text = "B 的未发送草稿";
             Set(a, "View", new SessionView("same-id", "A 更新", "A", "completed", "run", [new("assistant", "A background result")], []));
             Invoke("ActivateDevice", a);
-            Require(Find<TextBox>("Composer").Text == "A 的未发送草稿" && Find<TextBlock>("AttachmentSummary").Text.Contains("A-only.txt")
+            var card = Find<WrapPanel>("AttachmentPreviews").Children.OfType<StackPanel>().Single();
+            Require(Find<TextBox>("Composer").Text == "A 的未发送草稿" && card.Children.OfType<DockPanel>().Single().Children.OfType<TextBlock>().Single().Text == "A-only.txt"
                 && Find<ItemsControl>("Messages").ItemsSource.Cast<ChatEntry>().Single().Text == "A background result", "actual desktop switch restores retained draft, attachment and background result");
             Require(Find<ComboBox>("ConnectedDevices").Items.Count == 2 && Find<ComboBox>("ConnectedDevices").Visibility == Visibility.Visible,
                 "desktop keeps a visible selector for both retained devices");
