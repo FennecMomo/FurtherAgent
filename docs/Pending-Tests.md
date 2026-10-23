@@ -1,5 +1,18 @@
 # 待测试清单
 
+## Windows 0.14.21 / Android 0.12.11：旧接入端错误状态兼容与现场部署
+
+2026-10-23：用户指定 Codex-Home 的“创建 Unity 6000.6 2D 工程”检查。只读连接实际返回 `status=systemError`、`turnId=null`、`prompts=[]`、`statusDetail=null`，没有足够信息确认属于额度耗尽还是容量拥堵。本次补齐操控端直接识别旧接入端 `systemError` 的兼容映射；不猜测具体原因、不伪造恢复按钮。
+
+本机桌面已部署 0.14.21，控制接口确认 ready=true、connected=true，运行 EXE / Client DLL / Core DLL 与发布成品哈希一致。实际打开上述会话，Windows UI 自动化读回标题一致、状态“执行异常”，未出现继续任务按钮；没有发送消息、停止或重试任务。7 项定向检查通过，Windows 发布完成。Android 0.12.11 APK 已生成，当前未连接目标 Vivo，未安装；未修改远端 Home 接入端、未发布在线更新源。
+
+| 内容 | 当前状态 |
+| --- | --- |
+| 旧 Home 接入端返回 systemError 时桌面显示 | 已实机验证：指定会话显示“执行异常” |
+| 额度／容量原因及继续入口 | 未验证：需先更新 Home 接入端并重新读取真实错误 |
+| 手动继续恢复业务任务 | 未执行；现场检查保留故障状态 |
+| Android 0.12.11 目标手机安装与展示 | 未测试；APK 已生成，手机未通过 USB 连接 |
+
 ## Windows 0.14.20 / Android 0.12.10：Codex 模型限制恢复
 
 2026-10-23：用户确认最近在 Codex 遇到模型使用上限或通道拥堵，目前没有可定位的现场会话。根据本机 Codex 客户端代码核对 `usageLimitExceeded`、`serverOverloaded` 和 `systemError`，新增错误展示及手动继续入口。模块仓库已查询，项目无已安装模块、搜索无匹配。

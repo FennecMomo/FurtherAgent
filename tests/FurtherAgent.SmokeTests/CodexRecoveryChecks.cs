@@ -5,6 +5,8 @@ internal static class CodexRecoveryChecks
 {
     public static void Run(Action<bool, string> check)
     {
+        check(AgentIndicator.From(true, false, new SessionView("legacy", "legacy", "", "systemError", null, [], [])).Label == "执行异常",
+            "legacy host systemError is recognized directly by controllers");
         var state = JsonNode.Parse("""{"id":"thread","title":"test","cwd":"C:/test","threadRuntimeStatus":{"type":"systemError"},"turns":[{"turnId":"old","status":"inProgress","items":[]},{"turnId":"failed","status":"failed","error":{"message":"capacity","codexErrorInfo":"serverOverloaded"},"items":[{"type":"error","message":"capacity","errorInfo":"serverOverloaded","willRetry":false}]}]}""")!;
         var view = CodexDesktopAdapter.ToView(state);
         check(view.Status == "error" && view.TurnId is null && view.Messages.Any(m => m.Role == "系统" && m.Text.Contains("容量拥堵")), "terminal capacity error is visible and old running history does not block recovery");

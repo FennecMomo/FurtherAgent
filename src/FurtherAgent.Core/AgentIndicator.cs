@@ -14,7 +14,7 @@ public record AgentIndicator(string Label, string Color)
             "stopping" => new("停止中", "#D97706"),
             "waiting_for_approval" => new("等待确认", "#D97706"),
             "idle" or "ready" or "completed" or "stopped" or "interrupted" => new("空闲", "#16A34A"),
-            "error" or "failed" => new("执行异常", "#DC2626"),
+            "error" or "failed" or "systemError" => new("执行异常", "#DC2626"),
             _ => new("状态未知", "#64748B")
         };
     }
