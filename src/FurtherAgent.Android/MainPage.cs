@@ -9,12 +9,12 @@ namespace FurtherAgent.AndroidApp;
 
 public sealed partial class MainPage : ContentPage
 {
-    private readonly DeviceConnectionPool<MobileSession> connections = new();
+    private DeviceConnectionPool<MobileSession> connections => ConnectionRuntime.Connections;
     private readonly Dictionary<string, string> connectionNames = [];
     private readonly Dictionary<string, string> legacyDraftScopes = [];
     private MobileSession session = NewSession();
     public MobileSession CurrentSession => session;
-    private static MobileSession NewSession() => new(action => MainThread.BeginInvokeOnMainThread(action), new HistoryCache(Path.Combine(FileSystem.AppDataDirectory, "history-cache-v1")));
+    private static MobileSession NewSession() => ConnectionRuntime.NewSession();
     private string? activeConnection;
     private bool connectingDevice;
     private string devicesSignature = "";
@@ -42,6 +42,7 @@ public sealed partial class MainPage : ContentPage
 
     public MainPage()
     {
+        ConnectionRuntime.Changed += OnChanged;
         Title = "FurtherAgent"; Ui.Theme(this);
         Ui.TextTheme(title); Ui.TextTheme(status); Ui.TextTheme(attachments);
         composer.SetAppThemeColor(Editor.TextColorProperty, Ui.Green, Colors.White);
@@ -168,7 +169,6 @@ public sealed partial class MainPage : ContentPage
     private void OnChanged()
     {
         if (closed) return;
-        if (connections.Entries.Count == 0 && !connectingDevice) ConnectionService.Stop();
         UpdateDevices();
         var indicator = session.Indicator;
         connectionLabel.Text = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true ? "等待回答" : indicator.Label;
@@ -260,14 +260,14 @@ public sealed partial class MainPage : ContentPage
         if (!loadingDraft && draftKey.Length > 0) Preferences.Set(draftKey, composer.Text ?? "");
         if (activeConnection is { } id && session.View is { } view) Preferences.Set("last-session." + id, view.Id);
     }
-    public async Task CloseAsync()
+    public void Detach()
     {
+        Suspend();
         closed = true;
-        ConnectionService.Stop();
-        speechCancel?.Cancel();
+        ConnectionRuntime.Changed -= OnChanged;
         downloadCancel?.Cancel();
         SaveDraft(); timer.Stop();
-        try { await connections.DisposeAsync(); await session.DisposeAsync(); } catch { /* Window is already closing. */ }
+        webReady = false; lastHtml = lastSession = "";
     }
     private async Task ErrorAsync(Exception ex)
     {
@@ -292,22 +292,12 @@ public sealed partial class MainPage : ContentPage
         try
         {
             string id = DeviceConnectionPool<MobileSession>.Identity(url, code);
-            var target = await connections.OpenAsync(url, code, async () =>
-            {
-                var added = NewSession();
-                try { await added.ConnectAsync(url, code); }
-                catch { await added.DisposeAsync(); throw; }
-                added.Changed += () => { if (closed) return; if (ReferenceEquals(session, added)) OnChanged(); else UpdateDevices(); };
-                return added;
-            });
+            var target = await ConnectionRuntime.ConnectAsync(url, code, name, replaceId);
             if (closed) throw new OperationCanceledException("应用正在退出。");
             connectionNames[id] = string.IsNullOrWhiteSpace(name) ? target.DeviceName : name.Trim();
             legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
             ActivateConnection(id, target);
             Preferences.Set("server-url", url.Trim());
-            await SavedConnections.LoadAsync();
-            await SavedConnections.Store.SaveAsync(name ?? target.DeviceName, url, code, replaceId);
-            Preferences.Set("resume-connection." + id, true);
         }
         finally { connectingDevice = false; OnChanged(); }
     }
@@ -329,8 +319,7 @@ public sealed partial class MainPage : ContentPage
         SaveDraft();
         if (activeConnection is { } id)
         {
-            Preferences.Set("resume-connection." + id, false);
-            await connections.CloseAsync(id);
+            await ConnectionRuntime.DisconnectAsync(id);
         }
         var next = connections.Entries.LastOrDefault();
         if (next.Value is not null) ActivateConnection(next.Key, next.Value);
@@ -345,10 +334,11 @@ public sealed partial class MainPage : ContentPage
     }
     public async Task ResumeAsync()
     {
+        if (closed) { closed = false; ConnectionRuntime.Changed += OnChanged; timer.Start(); }
         suspended = false;
         SaveDraft();
         if (connections.Entries.Count > 0) StartConnectionService();
-        if (!interactionBusy) await Task.WhenAll(connections.Entries.Values.Select(s => s.ResumeAsync()));
+        await ConnectionRuntime.CheckConnectionsAsync();
         await RestoreSavedConnectionsAsync();
     }
     private async Task RestoreSavedConnectionsAsync()
@@ -358,24 +348,32 @@ public sealed partial class MainPage : ContentPage
         string? previous = activeConnection;
         try
         {
+            await StartConnectionServiceIfSavedAsync();
+            await ConnectionRuntime.RestoreAsync();
             var saved = await SavedConnections.LoadAsync();
             foreach (var profile in saved.Connections.OrderBy(p => p.Id == saved.SelectedId ? 1 : 0))
             {
                 string id = DeviceConnectionPool<MobileSession>.Identity(profile.Server, profile.Code);
                 if (closed || suspended || interactionBusy) break;
-                if (connections.Entries.ContainsKey(id) || !Preferences.Get("resume-connection." + id, true)) continue;
-                try
-                {
-                    await ConnectAsync(profile.Server, profile.Code, profile.Name);
-                    string thread = Preferences.Get("last-session." + id, "");
-                    if (thread.Length > 0 && session.Sessions.Any(s => s.Id == thread)) await SelectAsync(thread);
-                }
-                catch { status.Text = "正在等待已保存设备上线，稍后自动重试；可在连接页检查地址或授权码"; }
+                if (!connections.Entries.TryGetValue(id, out var target)) continue;
+                connectionNames[id] = profile.Name;
+                legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.Server.TrimEnd('/') + "\n" + profile.Code.Trim())));
+                if (previous is null) ActivateConnection(id, target);
             }
             if (previous is not null && connections.Entries.TryGetValue(previous, out var active)) ActivateConnection(previous, active);
         }
         catch { status.Text = "无法读取保存的连接，请在连接页检查"; }
         finally { restoringConnections = false; nextRestore = DateTime.UtcNow.AddSeconds(20); }
+    }
+    private async Task StartConnectionServiceIfSavedAsync()
+    {
+        try
+        {
+            var saved = await SavedConnections.LoadAsync();
+            if (!closed && !suspended && saved.Connections.Any(p => Preferences.Get("resume-connection." +
+                    DeviceConnectionPool<MobileSession>.Identity(p.Server, p.Code), true))) StartConnectionService();
+        }
+        catch { /* RestoreAsync reports a storage failure in the page status. */ }
     }
     private async Task SendAsync()
     {

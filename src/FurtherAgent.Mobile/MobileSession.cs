@@ -156,12 +156,14 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     {
         var owner = remote;
         if (owner is null) return; // Explicit disconnect must never be undone.
-        if (!Connected) owner.WakeReconnect();
+        // Read-only liveness must run even while a send is awaiting acknowledgement.
+        // If the transport died, aborting it settles the uncertain send; it is never replayed.
+        if (!await owner.CheckConnectionAsync() || remote != owner) return;
         if (!await operation.WaitAsync(0)) return; // Do not disturb an uncertain send or file transfer.
         Busy = true; Notify();
         try
         {
-            if (remote != owner || !await owner.CheckConnectionAsync()) return;
+            if (remote != owner || !owner.IsConnected) return;
             if (selected is { } id)
             {
                 var view = Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));

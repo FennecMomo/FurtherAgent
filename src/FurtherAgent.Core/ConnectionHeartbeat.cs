@@ -44,16 +44,16 @@ public sealed class ConnectionHeartbeat(RegistryClient registry, RemoteDevice re
     {
         var previous = Host;
         if (!remote.IsConnected) { Volatile.Write(ref host, previous with { State = "断线 / 重连中" }); return; }
-        var peer = remote.Peer;
         Volatile.Write(ref host, previous with { State = "检测中" });
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
-        timeout.CancelAfter(TimeSpan.FromSeconds(6));
         var watch = Stopwatch.StartNew();
         try
         {
-            // Existing hosts support agents; it reads cached adapter metadata, never starts an Agent run.
-            var agents = Json.Read<AgentInfo[]>(await peer.CallAsync("agents", null, timeout.Token));
-            if (agents.Length == 0 || peer != remote.Peer) throw new IOException("接入端尚未就绪。");
+            // New hosts answer outside the agent queue; legacy hosts use cached agents metadata.
+            if (!await remote.CheckConnectionAsync(stop.Token))
+            {
+                Volatile.Write(ref host, previous with { State = "断线 / 重连中" });
+                return;
+            }
             Volatile.Write(ref host, new("在线", DateTimeOffset.UtcNow, watch.ElapsedMilliseconds));
         }
         catch { Volatile.Write(ref host, previous with { State = remote.IsConnected ? "响应超时（可能繁忙）" : "断线 / 重连中" }); }

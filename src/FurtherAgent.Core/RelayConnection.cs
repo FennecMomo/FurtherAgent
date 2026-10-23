@@ -203,7 +203,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, args?["version"]?.GetValue<int>() is 3 ? 3 : args?["version"]?.GetValue<int>() is 2 ? 2 : 1) >= 0, version = Volatile.Read(ref paged) }),
                 "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
-                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1 }),
+                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1, transportPing = true }),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
@@ -286,21 +286,25 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
         if (lifetime.IsCancellationRequested) return;
         try { reconnectWake.Release(); } catch (SemaphoreFullException) { }
     }
-    public async Task<bool> CheckConnectionAsync()
+    public async Task<bool> CheckConnectionAsync(CancellationToken ct = default)
     {
         if (!IsConnected) { WakeReconnect(); return false; }
         var checkedPeer = Peer;
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        // Legacy hosts serialize agents behind sends. Do not mistake a long operation
+        // for a dead socket; their WebSocket keepalive still detects transport failure.
+        if (!checkedPeer.SupportsTransportPing && checkedPeer.HasPendingCalls) return true;
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token, ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(4));
         try
         {
-            await checkedPeer.CallAsync("agents", null, timeout.Token);
+            await checkedPeer.CallAsync(checkedPeer.SupportsTransportPing ? "transport-ping" : "agents", null, timeout.Token);
             return ReferenceEquals(checkedPeer, Peer) && IsConnected;
         }
         catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException
             or System.Net.WebSockets.WebSocketException or ObjectDisposedException)
         {
-            if (!lifetime.IsCancellationRequested && ReferenceEquals(checkedPeer, Peer))
+            if (!checkedPeer.SupportsTransportPing && checkedPeer.HasPendingCalls && IsConnected) return true;
+            if (!ct.IsCancellationRequested && !lifetime.IsCancellationRequested && ReferenceEquals(checkedPeer, Peer))
             { socket?.Abort(); WakeReconnect(); }
             return false;
         }
@@ -385,7 +389,11 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     }
     private static async Task EnableSync(RpcPeer peer, CancellationToken ct)
     {
-        try { await peer.CallAsync("session-sync", new { version = 1 }, ct); }
+        try
+        {
+            var capabilities = await peer.CallAsync("session-sync", new { version = 1 }, ct);
+            peer.SupportsTransportPing = capabilities?["transportPing"]?.GetValue<bool>() == true;
+        }
         catch (IOException) when (peer.Completion?.IsCompleted == false) { }
     }
     private async Task<bool> TryUpgradeAsync(CancellationToken ct)

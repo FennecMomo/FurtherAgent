@@ -77,6 +77,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     private readonly object callGate = new();
     private RpcPeer? redirect;
     public bool HasPendingCalls => !pending.IsEmpty;
+    internal bool SupportsTransportPing { get; set; }
     public event Action<string, object?>? CallSucceeded;
     // Atomically move future calls only after every submitted request has settled.
     internal bool TryRedirectTo(RpcPeer replacement, Func<bool> unchanged)
@@ -153,6 +154,9 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
                     }
                 }
                 else if (method is not null && id is null) Notification?.Invoke(method, m["args"]);
+                // Transport liveness is independent of serialized agent/file operations.
+                else if (method == "transport-ping" && id is not null)
+                    await WriteAsync(new JsonObject { ["id"] = id, ["result"] = true }, lifetime.Token);
                 else if (method is not null && !requests.Writer.TryWrite(m)) throw new IOException("请求队列已满，请稍后重试。");
             }
         }

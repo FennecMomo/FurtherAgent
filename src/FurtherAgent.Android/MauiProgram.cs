@@ -16,9 +16,9 @@ public sealed class App : Application
         var navigation = new NavigationPage(page) { BarBackgroundColor = Color.FromArgb("#183F34"), BarTextColor = Colors.White };
         NavigationPage.SetHasNavigationBar(page, false);
         var window = new Window(navigation);
-        window.Resumed += async (_, _) => await page.ResumeAsync();
+        window.Activated += async (_, _) => await page.ResumeAsync();
         window.Stopped += (_, _) => page.Suspend();
-        window.Destroying += async (_, _) => await page.CloseAsync();
+        window.Destroying += (_, _) => page.Detach();
         return window;
     }
 }
