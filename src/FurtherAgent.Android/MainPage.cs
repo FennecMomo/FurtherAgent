@@ -514,11 +514,17 @@ public sealed partial class MainPage : ContentPage
             await DownloadOutputAsync(output[index]);
         });
     }
+    private readonly DownloadedAttachments downloadedAttachments = new(Path.Combine(FileSystem.AppDataDirectory, "downloads"));
     private async Task DownloadOutputAsync(RemoteFile file)
     {
-        string dir = Path.Combine(FileSystem.CacheDirectory, "downloads", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(dir);
-        string name = Path.GetFileName(file.Name.Replace('\\', '/'));
-        string path = Path.Combine(dir, string.IsNullOrWhiteSpace(name) ? "output" : name);
+        string key = DownloadedAttachments.Key(activeConnection ?? "", session.View?.Id ?? "", file);
+        if (downloadedAttachments.Find(key) is { } existing)
+        {
+            await OpenDownloadedFileAsync(existing);
+            return;
+        }
+        string path = downloadedAttachments.NewPath(file.Name);
+        string name = Path.GetFileName(path);
         using var cancel = new CancellationTokenSource();
         downloadCancel = cancel;
         downloadStatus = status.Text = "正在读取文件信息 · 点击附件按钮可取消下载";
@@ -532,14 +538,23 @@ public sealed partial class MainPage : ContentPage
                 double percent = p.Total == 0 ? 100 : p.Completed * 100d / p.Total;
                 downloadStatus = status.Text = $"下载 {percent:N1}% · {p.Completed / 1024d:N0}/{p.Total / 1024d:N0} KB · {p.Completed / 1024d / Math.Max(1, elapsed.Elapsed.TotalSeconds):N1} KB/s";
             }), cancel.Token);
+            downloadedAttachments.Remember(key, path);
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)
         { status.Text = "下载已取消，未完成的文件已清理。"; return; }
         finally { downloadCancel = null; downloadStatus = null; RefreshButtons(); }
         status.Text = "下载完成并已校验：" + name;
         string choice = await DisplayActionSheetAsync("下载完成：" + name, "稍后", null, "打开文件", "保存或分享");
-        if (choice == "打开文件") await Launcher.Default.OpenAsync(new OpenFileRequest { File = new ReadOnlyFile(path) });
+        if (choice == "打开文件") await OpenDownloadedFileAsync(path);
         else if (choice == "保存或分享") await Share.Default.RequestAsync(new ShareFileRequest { Title = "保存或分享文件", File = new ShareFile(path) });
+    }
+    private async Task OpenDownloadedFileAsync(string path)
+    {
+        if (!await Launcher.Default.OpenAsync(new OpenFileRequest { File = new ReadOnlyFile(path) }))
+        {
+            if (await DisplayAlertAsync("无法打开文件", "没有可打开此类型文件的应用，可以保存或分享到其他应用。", "保存或分享", "取消"))
+                await Share.Default.RequestAsync(new ShareFileRequest { Title = "保存或分享文件", File = new ShareFile(path) });
+        }
     }
     private IProgress<FileProgress> Progress(string action) => new Progress<FileProgress>(p => status.Text = $"{action} {p.Completed / 1024d:N0} / {p.Total / 1024d:N0} KB");
     private async Task SettingsAsync() => await Act(async () =>

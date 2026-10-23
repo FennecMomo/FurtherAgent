@@ -936,12 +936,22 @@ public partial class MainWindow : Window
         if (RemoteFiles.SelectedItem is not RemoteFile file || current?.Id != filesSession) return;
         await SaveRemoteFileAsync(filesSession!, file);
     }
+    private readonly DownloadedAttachments downloadedAttachments = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "downloads"));
+    private string AttachmentKey(string id, RemoteFile file) => DownloadedAttachments.Key(
+        activeDevice is null ? "" : DeviceConnectionPool<DeviceContext>.Identity(activeDevice.Server, activeDevice.Code), id, file);
     private async Task SaveRemoteFileAsync(string id, RemoteFile file)
     {
+        string key = AttachmentKey(id, file);
+        if (downloadedAttachments.Find(key) is { } existing)
+        {
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(existing) { UseShellExecute = true }); }
+            catch (Exception ex) { Error(ex); }
+            return;
+        }
         var dialog = new Microsoft.Win32.SaveFileDialog { FileName = file.Name, Title = "保存文件（请选择不存在的文件名）", OverwritePrompt = true };
         if (dialog.ShowDialog(this) != true) return;
         CloseOverlays();
-        await TransferAsync(async (client, progress, ct) => { await client.DownloadAsync(id, file.Id, dialog.FileName, progress, ct); });
+        await TransferAsync(async (client, progress, ct) => { await client.DownloadAsync(id, file.Id, dialog.FileName, progress, ct); downloadedAttachments.Remember(key, dialog.FileName); });
     }
     private void SaveServerAddress(string server)
     {
@@ -972,12 +982,17 @@ public partial class MainWindow : Window
         if (!new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp" }.Contains(Path.GetExtension(file.Name).ToLowerInvariant()))
         { FilesStatus.Text = "此格式不支持图片预览，请下载后打开。"; return; }
         if (file.Size > 10 * 1024 * 1024) { FilesStatus.Text = "图片预览限制为 10 MiB，请下载原文件。"; return; }
-        string path = Path.Combine(Path.GetTempPath(), "FurtherAgent-preview-" + Guid.NewGuid().ToString("N"));
+        string key = AttachmentKey(id, file);
+        string path = downloadedAttachments.Find(key) ?? downloadedAttachments.NewPath(file.Name);
         try
         {
             await TransferAsync(async (client, progress, ct) =>
             {
-                await client.DownloadAsync(id, file.Id, path, progress, ct);
+                if (!File.Exists(path))
+                {
+                    await client.DownloadAsync(id, file.Id, path, progress, ct);
+                    downloadedAttachments.Remember(key, path);
+                }
                 var bitmap = new System.Windows.Media.Imaging.BitmapImage();
                 using (var input = File.OpenRead(path))
                 {
@@ -993,7 +1008,6 @@ public partial class MainWindow : Window
             });
         }
         catch (Exception ex) { Error(ex); }
-        finally { if (File.Exists(path)) File.Delete(path); }
     }
     private void Error(Exception ex) => StatusBar.Text = "操作失败：" + ex.Message;
     private string ArchiveIndexPath => Path.Combine(Path.GetDirectoryName(SettingsFile)!, "archived-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(ServerUrl.Text.TrimEnd('/') + "|" + remote?.Device?.Name))) + ".json");

@@ -17,6 +17,7 @@ if (args.Contains("--operation-history-checks")) { OperationHistoryChecks.Run(Ch
 if (args.Contains("--connection-recovery-smoke")) { await ConnectionRecoveryChecks.Run(Check); return; }
 if (args.Contains("--direct-network-smoke")) { await DirectNetworkChecks.Run(Check); return; }
 if (args.Contains("--mobile-completion-smoke")) { await CompletionChecks.MobileSmoke(Check); return; }
+if (args.Contains("--attachment-cache-checks")) { AttachmentCacheChecks.Run(Check); return; }
 if (args.Contains("--codex-recovery-checks")) { CodexRecoveryChecks.Run(Check); return; }
 if (args.Contains("--dsh-adapter-checks")) { await DshAdapterChecks.Run(Check); Console.WriteLine($"ALL {passed} DSH CHECKS PASSED"); return; }
 if (args.Contains("--lan-checks")) { await LanChecks.Run(Check); Console.WriteLine($"ALL {passed} LAN CHECKS PASSED"); return; }
