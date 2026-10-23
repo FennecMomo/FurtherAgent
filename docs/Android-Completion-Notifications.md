@@ -23,9 +23,9 @@
 
 `--mobile-completion-smoke` 仅检查真实隔离本机中继上的移动会话事件链路：切走会话后的完成事件、重复空闲快照不重复提醒、当前会话完成事件出口、断开后不投递旧事件。4 项通过。
 
-Android 编译、APK 与真机结果分开记录，详见 [待测试清单](Pending-Tests.md)。Vivo Android 13 的授权、横幅/声音、锁屏和点击跳转未实机验收，不把编译或协议检查当作系统通知已在手机上验证成功。
+Android 编译、APK 与真机结果分开记录，详见 [待测试清单](Pending-Tests.md)。2026-10-23 连接真机后确认目标为 Vivo V2403A、Android 16（此前 Android 13 为用户口述，现以设备回读为准）。授权、横幅/声音、锁屏和点击跳转未实机验收，不把编译或协议检查当作系统通知已在手机上验证成功。
 
-交付：Android Release 编译通过并生成签名 APK `FurtherAgent-Android-0.12.9.apk`，安装包旁附本报告和待测试清单。未安装到目标 Vivo，未发布在线更新源；没有修改或重启桌面端及接入端。
+交付：Android Release 编译通过并生成签名 APK `FurtherAgent-Android-0.12.9.apk`，安装包旁附本报告和待测试清单。2026-10-23 经用户授权尝试 USB 覆盖安装，Android 返回 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`：手机现装 0.12.5 的签名与本机 APK 不一致，本机已找到的 Android 开发密钥也不匹配。安装失败后回读仍为 0.12.5 / 1205，未卸载、未清除数据。需找到匹配的原签名，或由用户明确接受清除手机端资料后卸载重装；当前不能视为已交付到手机。未发布在线更新源；没有修改或重启桌面端及接入端。
 
 实现位置：`MobileSession.cs`、`ConnectionRuntime.cs`、`Platforms/Android/CompletionNotifications.cs`、`MainActivity.cs`、`MainPage.Notifications.cs`、`ConnectionPage.cs`。
 
