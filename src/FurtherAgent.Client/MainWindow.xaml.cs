@@ -460,7 +460,7 @@ public partial class MainWindow : Window
             if (current?.Id != session || remote != source || actionBusy) return;
             if (picture) await PreviewRemoteFileAsync(session, file); else await SaveRemoteFileAsync(session, file);
         };
-        if (picture && agent?.CanThumbnails == true && remote is { } connection)
+        if (picture && ImageThumbnail.CanRequest(agent) && remote is { } connection)
         {
             button.Content = "加载缩略图…";
             button.Loaded += async (_, _) =>

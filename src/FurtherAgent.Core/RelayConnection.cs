@@ -205,7 +205,7 @@ public sealed class DeviceHost : IAsyncDisposable
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
                 "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1, transportPing = true }),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
-                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id == "hermes" || adapter.Info.CanThumbnails } }),
+                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id is "hermes" or "codex" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
                 "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
                 "send-files" => await SendFiles(args, token),

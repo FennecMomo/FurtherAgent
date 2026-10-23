@@ -13,10 +13,12 @@ public static class Transcript
 {
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder().UsePipeTables().DisableHtml().Build();
     private static string E(string text) => WebUtility.HtmlEncode(text);
-    private sealed class SafeLink : HtmlObjectRenderer<LinkInline>
+    private sealed class SafeLink(SessionView view) : HtmlObjectRenderer<LinkInline>
     {
         protected override void Write(HtmlRenderer renderer, LinkInline link)
         {
+            var file = RemoteFileReferences.Resolve(view.OutputFiles, link.Url ?? "");
+            if (file is not null) { renderer.Write(AttachmentHtml(file)); return; }
             bool allowed = Uri.TryCreate(link.Url, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" or "attachment";
             if (allowed) { renderer.Write("<a href=\""); renderer.WriteEscapeUrl(link.Url); renderer.Write("\">"); }
             renderer.WriteChildren(link);
@@ -33,14 +35,21 @@ public static class Transcript
             if (allowed) renderer.Write("</a>");
         }
     }
-    private static string MarkdownHtml(string text)
+    private static string MarkdownHtml(string text, SessionView view)
     {
         using var writer = new StringWriter();
         var renderer = new HtmlRenderer(writer); Pipeline.Setup(renderer);
         renderer.ObjectRenderers.RemoveAll(r => r is LinkInlineRenderer or AutolinkInlineRenderer);
-        renderer.ObjectRenderers.Add(new SafeLink()); renderer.ObjectRenderers.Add(new SafeAutoLink());
+        renderer.ObjectRenderers.Add(new SafeLink(view)); renderer.ObjectRenderers.Add(new SafeAutoLink());
         renderer.Render(Markdown.Parse(text, Pipeline));
         return writer.ToString();
+    }
+    private static string AttachmentHtml(RemoteFile file)
+    {
+        string link = "attachment:" + Uri.EscapeDataString(file.Id), label = E(file.Name);
+        return ImageThumbnail.Supported(file.Name)
+            ? $"<a class='attachment-image' href='{E(link)}'><img data-attachment='{E(file.Id)}' data-version='{E(file.Version)}' alt='{label}' width='320' height='240'><span>{label} · 点击打开原图</span></a>"
+            : $"<a href='{E(link)}'>{label}</a>";
     }
     public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false)
     {
@@ -67,7 +76,7 @@ public static class Transcript
             string text = entry.Text.Length <= 8000 ? entry.Text : entry.Text[..8000] + "\n[长内容显示已截断，可复制原文或在电脑查看]";
             // Large tool output and compaction summaries are plain text, not Markdown trees.
             string content;
-            try { content = kind is "tool" or "reasoning" or "system" || entry.Text.Length > 8000 ? "<pre class='plain'>" + E(text) + "</pre>" : MarkdownHtml(text); }
+            try { content = kind is "tool" or "reasoning" or "system" || entry.Text.Length > 8000 ? "<pre class='plain'>" + E(text) + "</pre>" : MarkdownHtml(text, view); }
             catch (Exception) { content = "<pre class='plain'>" + E(text) + "</pre>"; }
             bool operation = kind is "tool" or "reasoning" or "system";
             if (operation && !operationGroup)
@@ -88,6 +97,9 @@ public static class Transcript
         if (readingOlder) html.Append("<p class='history'><a href='fa-history://latest'>回到最新记录</a></p>");
         if (view.OutputFiles is { Count: > 0 })
         {
+            foreach (var picture in view.OutputFiles.Where(f => ImageThumbnail.Supported(f.Name)))
+                if (!html.ToString().Contains("data-attachment='" + E(picture.Id) + "'", StringComparison.Ordinal))
+                    html.Append(AttachmentHtml(picture));
             html.Append($"<aside class='files'><details id='session-files'><summary>会话文件 · {view.OutputFiles.Count} 个</summary><div class='file-list'>");
             foreach (var file in view.OutputFiles)
                 html.Append($"<p><a href='attachment:{Uri.EscapeDataString(file.Name)}'>{E(file.Name)} · {file.Size / 1024d:N0} KB · 下载</a></p>");
@@ -103,10 +115,19 @@ public static class Transcript
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
 <style>
 :root{color-scheme:light dark;--bg:#fff;--card:#fff;--operations:#f5f6f7;--text:#202428;--muted:#708176;--line:#e0e7df;--user:#e4efe7}*{box-sizing:border-box}body{margin:0;padding:12px 18px 20px;background:var(--bg);color:var(--text);font:16px/1.65 system-ui,sans-serif;overflow-wrap:anywhere}article{margin:0 0 20px}.user{background:var(--user);border-radius:20px;padding:12px 15px;margin-left:28px}.assistant{padding:0;margin:0 0 24px}.copy{display:block;width:44px;padding:10px 0;font-size:12px;text-decoration:none;color:var(--muted)}.user .copy{padding-bottom:0}p{margin:8px 0}p:first-child{margin-top:0}p:last-child{margin-bottom:0}h1,h2,h3{font-size:18px;line-height:1.4}pre{overflow-x:auto;background:var(--bg);padding:12px;border-radius:9px;font:12px/1.65 monospace;white-space:pre}code{font:13px monospace;background:var(--bg)}table{display:block;overflow-x:auto;border-collapse:collapse;font-size:13px}td,th{border:1px solid var(--line);padding:7px 10px;min-width:70px}blockquote{margin:10px 0;border-left:3px solid #81ad93;padding-left:12px;color:var(--muted)}a{color:#428062}img{max-width:100%}details{margin:10px 0;font-size:13px;color:var(--muted)}.operations{background:var(--operations);border-radius:12px;padding:12px 14px}.operation{border-top:1px solid var(--line);padding:8px 0}summary{min-height:24px;line-height:24px}summary{cursor:pointer}.empty{text-align:center;padding:64px 20px;color:var(--muted)}.empty b{color:var(--text);font-size:20px}ul,ol{padding-left:22px}@media(prefers-color-scheme:dark){:root{--bg:#101c17;--card:#182820;--operations:#182820;--text:#e4ece6;--muted:#a1b4a7;--line:#2b4034;--user:#264637}}
+.attachment-image{display:block;margin:12px 0;max-width:320px}.attachment-image img{display:block;object-fit:contain;border-radius:10px;background:var(--operations)}.attachment-image span{display:block;font-size:12px;color:var(--muted)}
 .file-list{max-height:240px;overflow:auto}.files>details>summary{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .history{text-align:center;font-size:12px;color:var(--muted)}pre.plain{white-space:pre-wrap;word-break:break-word}
 </style></head><body><main id="chat"></main><script>
 let armed=false,loading=false;
+const attachmentImages=new Map();
+function setAttachmentImage(id,version,data){
+ if(id)attachmentImages.set(JSON.stringify([id,version]),data);
+ for(const image of document.querySelectorAll('img[data-attachment]')){
+  const source=attachmentImages.get(JSON.stringify([image.dataset.attachment,image.dataset.version]));
+  if(source)image.src=source;
+ }
+}
 function older(){if(!loading&&document.getElementById('older')){loading=true;location.href='fa-history://older';}}
 addEventListener('touchmove',()=>{armed=true;if(scrollY<30)older();},{passive:true});
 addEventListener('wheel',e=>{armed=true;if(e.deltaY<0&&scrollY<30)older();},{passive:true});
@@ -140,7 +161,8 @@ function renderTranscript(html,reset,prepend){
  const anchor=[...chat.querySelectorAll('section')].find(x=>x.getBoundingClientRect().bottom>0);
  const aid=anchor?.id,ay=anchor?.getBoundingClientRect().top;
  const template=document.createElement('template');template.innerHTML=html;
- if(reset)chat.replaceChildren(template.content);else patchChildren(chat,template.content);
+ if(reset){attachmentImages.clear();chat.replaceChildren(template.content);}else patchChildren(chat,template.content);
+ setAttachmentImage('', '', '');
  armed=false;loading=false;const version=++renderVersion;
  requestAnimationFrame(()=>{
   if(version!==renderVersion)return;

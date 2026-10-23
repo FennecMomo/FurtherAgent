@@ -3,6 +3,8 @@ namespace FurtherAgent.Core;
 public record FileThumbnail(string Data, int Width, int Height, string Version, string MediaType = "image/jpeg");
 public static class ImageThumbnail
 {
+    // Older Codex hosts serve files/thumbnail but omit the capability flag.
+    public static bool CanRequest(AgentInfo? agent) => agent?.CanThumbnails == true || agent is { Id: "codex", CanFiles: true };
     public const int MaxEncodedBytes = 64 * 1024;
     public static bool Supported(string name) => new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp" }.Contains(Path.GetExtension(name).ToLowerInvariant());
     public static FileThumbnail Create(string path, string version)

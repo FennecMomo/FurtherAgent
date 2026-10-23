@@ -158,7 +158,7 @@ public sealed partial class MainPage : ContentPage
             {
                 string name = Uri.UnescapeDataString(args.Url["attachment:".Length..]);
                 var output = await session.ListOutputFilesAsync();
-                var file = output.FirstOrDefault(f => f.Name == name)
+                var file = RemoteFileReferences.Resolve(output, name)
                     ?? throw new IOException("附件尚未生成或已移除，请稍后重试。");
                 await DownloadOutputAsync(file);
             });
@@ -252,10 +252,42 @@ public sealed partial class MainPage : ContentPage
             bool prepend = prependHistory; prependHistory = false;
             await transcript.EvaluateJavaScriptAsync($"renderTranscript({JsonSerializer.Serialize(html)}, {(reset ? "true" : "false")}, {(prepend ? "true" : "false")});");
             lastHtml = html; lastSession = view.Id;
+            if (!preview) _ = LoadImagePreviewsAsync(renderingSession, view);
         }
         catch (Exception ex) { status.Text = "记录显示失败，可重新选择会话：" + ex.Message; }
         finally { rendering = false; }
     }
+    private readonly Dictionary<string, string> imagePreviews = [];
+    private readonly HashSet<string> loadingImagePreviews = [];
+    private readonly SemaphoreSlim imagePreviewSlots = new(2);
+    private async Task LoadImagePreviewsAsync(MobileSession owner, SessionView view)
+    {
+        if (!ImageThumbnail.CanRequest(owner.Agent)) return;
+        string connection = activeConnection ?? "";
+        foreach (var file in (view.OutputFiles ?? []).Where(f => ImageThumbnail.Supported(f.Name)))
+        {
+            string key = DownloadedAttachments.Key(connection, view.Id, file);
+            if (!loadingImagePreviews.Add(key)) continue;
+            await imagePreviewSlots.WaitAsync();
+            try
+            {
+                if (session != owner || session.View?.Id != view.Id) return;
+                if (!imagePreviews.TryGetValue(key, out string? data))
+                {
+                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+                    var thumbnail = await owner.ThumbnailAsync(view.Id, file, timeout.Token);
+                    data = "data:image/jpeg;base64," + thumbnail.Data;
+                    if (imagePreviews.Count >= 64) imagePreviews.Remove(imagePreviews.Keys.First());
+                    imagePreviews[key] = data;
+                }
+                if (session == owner && session.View?.Id == view.Id && webReady)
+                    await transcript.EvaluateJavaScriptAsync($"setAttachmentImage({JsonSerializer.Serialize(file.Id)},{JsonSerializer.Serialize(file.Version)},{JsonSerializer.Serialize(data)});");
+            }
+            catch { /* Leave the attachment clickable if the thumbnail is unavailable. */ }
+            finally { imagePreviewSlots.Release(); loadingImagePreviews.Remove(key); }
+        }
+    }
+
     public void SaveDraft()
     {
         if (!loadingDraft && draftKey.Length > 0) Preferences.Set(draftKey, composer.Text ?? "");

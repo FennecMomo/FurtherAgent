@@ -1,9 +1,7 @@
-using FurtherAgent.Core;
-
-namespace FurtherAgent.Client;
+namespace FurtherAgent.Core;
 
 // References resolve only against metadata supplied by the attached session.
-internal static class RemoteFileReferences
+public static class RemoteFileReferences
 {
     public static RemoteFile? Resolve(IEnumerable<RemoteFile>? files, string reference)
     {

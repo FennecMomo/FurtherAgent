@@ -295,6 +295,16 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         catch (TimeoutException) { Status += " · 文件列表读取超时，可点附件重试"; }
     }
 
+    public async Task<FileThumbnail> ThumbnailAsync(string sessionId, RemoteFile file, CancellationToken ct = default)
+    {
+        var result = await new FileTransferClient(Peer).ThumbnailAsync(sessionId, file.Id, ct);
+        if (result.MediaType != "image/jpeg" || result.Width <= 0 || result.Height <= 0 || result.Width > 320 || result.Height > 240 ||
+            result.Data.Length > (ImageThumbnail.MaxEncodedBytes + 2) / 3 * 4)
+            throw new IOException("缩略图数据无效。");
+        Convert.FromBase64String(result.Data);
+        return result;
+    }
+
     public Task DownloadAsync(RemoteFile file, string destination, IProgress<FileProgress> progress, CancellationToken ct = default) => Run(async () =>
     {
         if (View is null) throw new IOException("请先打开会话。");

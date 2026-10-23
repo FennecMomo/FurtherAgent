@@ -1,4 +1,4 @@
-﻿using System.Windows.Documents;
+using System.Windows.Documents;
 using FurtherAgent.Client;
 using FurtherAgent.Core;
 using System.Windows;
@@ -14,6 +14,17 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        if (args.Contains("--image-markdown-checks"))
+        {
+            var file = new RemoteFile("outbox/gate-flow-after-draining.png", "gate-flow-after-draining.png", 982314);
+            var image = new MarkdownView { AttachmentFactory = reference => RemoteFileReferences.Resolve([file], reference) is null ? null : new Image(),
+                Markdown = "![合闸后逐步退水的实际画面](D:/Projects/PersonalWorks/ValleyTest/Validation/gate-flow-after-draining.png)" };
+            Require(image.Document.Blocks.OfType<Paragraph>().SelectMany(p => p.Inlines).OfType<InlineUIContainer>().Count() == 1,
+                "ValleyTest actual image reference creates an inline WPF image");
+            Require(!new TextRange(image.Document.ContentStart, image.Document.ContentEnd).Text.Contains("!["),
+                "Image Markdown punctuation is not rendered as filename text");
+            return;
+        }
         if (args.Length == 2 && args[0] == "--images") { ImageUiChecks.Run(args[1]); return; }
         if (args.Contains("--hotkey")) { HotkeyUiChecks.Run(); return; }
         if (args.Length == 2 && args[0] == "--compact") { CompactUiChecks.Run(args[1]); return; }
