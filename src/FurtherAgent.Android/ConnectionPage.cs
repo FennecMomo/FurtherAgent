@@ -10,6 +10,7 @@ internal sealed class ConnectionPage : ContentPage
     private readonly Entry code = new() { Placeholder = "远端显示的授权码", IsPassword = true, IsTextPredictionEnabled = false };
     private readonly Picker saved = new() { Title = "选择已保存的连接" };
     private readonly Label message = Ui.Text("", 12);
+    private readonly Label notificationStatus = Ui.Text("", 12);
     private readonly Switch autoConnect = new() { IsToggled = true };
     private string? editing;
     private bool busy;
@@ -70,6 +71,8 @@ internal sealed class ConnectionPage : ContentPage
             }),
             message, Ui.Text("支持同时连接多个设备，在主页上方切换。切换不会断开其他设备，草稿按设备和会话分别保留。手动断开或退出程序才会关闭连接，远端任务不受影响。", 12),
             Action("语音设置", () => Navigation.PushAsync(new SpeechSettingsPage())),
+            notificationStatus,
+            Action("会话完成通知设置", () => { CompletionNotifications.OpenSettings(); return Task.CompletedTask; }),
             Action("检查应用更新", () => Navigation.PushAsync(new UpdatePage())),
             Action("清理会话缓存", async () => { await home.CurrentSession.ClearCacheAsync(); message.Text = "会话缓存已清理，草稿、附件和连接保留。"; }),
             Action("断开当前查看的设备", async () => { await home.DisconnectCurrentAsync(); message.Text = "已断开该设备，其他连接与远端任务继续。"; }),
@@ -79,6 +82,11 @@ internal sealed class ConnectionPage : ContentPage
         Content = new ScrollView { Content = stack };
         Loaded += async (_, _) => { try { await ReloadAsync(); } catch { message.Text = "保存的连接无法读取，原资料未删除。"; } };
     }
+    protected override void OnAppearing()
+    {
+        base.OnAppearing(); RefreshNotificationStatus();
+    }
+    internal void RefreshNotificationStatus() => notificationStatus.Text = CompletionNotifications.PermissionSummary;
     private async Task ReloadAsync(string? selected = null)
     {
         var state = await SavedConnections.LoadAsync();

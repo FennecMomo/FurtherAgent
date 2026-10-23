@@ -16,6 +16,12 @@ internal static class ConnectionRuntime
     private static Task<MobileSession> OpenCoreAsync(string url, string code) => Connections.OpenAsync(url, code, async () =>
     {
         var added = NewSession();
+        string id = DeviceConnectionPool<MobileSession>.Identity(url, code);
+        added.Completed += completion =>
+        {
+            if (Connections.Entries.TryGetValue(id, out var current) && ReferenceEquals(current, added))
+                CompletionNotifications.Show(id, added.DeviceName, completion);
+        };
         try { await added.ConnectAsync(url, code); }
         catch { await added.DisposeAsync(); throw; }
         added.Changed += () => Changed?.Invoke();

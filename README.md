@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**Android 0.12.9：会话完成系统通知。** 手机接收与桌面相同的完成事件；后台或查看其他会话时通知，点击返回对应设备和会话。补充 Android 13 通知权限与连接管理中的通知设置入口，保留已有后台连接和固定直连修复。修改报告与验证边界见 [Android 会话完成通知](docs/Android-Completion-Notifications.md)。
+
 **0.14.19 / Android 0.12.8：应用固定直连。** FurtherAgent 自身的 HTTP 与 WebSocket 请求忽略系统代理，不自动回退到代理节点。使用 TUN 的机器在安装时由 Agent 配置 FurtherAgent 优先 DIRECT 规则并核对 DNS；直接复制 [安装 Agent 标准提示词](docs/Install-Direct-Network-Prompt.md)。说明见 [固定直连策略](docs/Network-Connection-Design.md)，验证边界见 [待测试清单](docs/Pending-Tests.md)。
 
 **0.14.18 / Android 0.12.7：后台连接与断线恢复。** Android 连接改由应用持有，窗口销毁不再断开；前台服务持有唤醒锁并恢复保存的连接。共用连接层增加不受 Agent 长操作阻塞的传输心跳，静默失联触发自动重连，保留手动断开和不重发消息的语义。Vivo Android 13 实机验收仍待进行，见 [待测试清单](docs/Pending-Tests.md)。[VPN 通用方案](docs/Network-Connection-Design.md)仅为设计建议，本次未改变代理默认行为。

@@ -22,3 +22,4 @@ $hash = (Get-FileHash -LiteralPath $delivery -Algorithm SHA256).Hash
 "$hash  $([IO.Path]::GetFileName($delivery))" | Set-Content -LiteralPath "$delivery.sha256" -Encoding utf8
 Write-Output "APK: $delivery"
 Write-Output "SHA256: $hash"
+Copy-Item -LiteralPath (Join-Path $projectRoot 'docs/Android-Completion-Notifications.md'), (Join-Path $projectRoot 'docs/Pending-Tests.md') -Destination $outputDirectory -Force

@@ -126,6 +126,7 @@ public sealed partial class MainPage : ContentPage
         {
             if (!suspended && pendingRender && webReady && !rendering) { pendingRender = false; await RenderAsync(); }
             if (!suspended && DateTime.UtcNow >= nextRestore) await RestoreSavedConnectionsAsync();
+            if (!suspended) await OpenPendingCompletionAsync();
         };
         Loaded += async (_, _) => await RestoreSavedConnectionsAsync();
         timer.Start(); RefreshButtons();
@@ -288,6 +289,7 @@ public sealed partial class MainPage : ContentPage
     public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null)
     {
         if (connectingDevice || interactionBusy || session.Busy) throw new IOException("请等待当前操作结束再切换设备。");
+        CompletionNotifications.CancelPending();
         SaveDraft(); connectingDevice = true; StartConnectionService();
         try
         {
@@ -298,6 +300,7 @@ public sealed partial class MainPage : ContentPage
             legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
             ActivateConnection(id, target);
             Preferences.Set("server-url", url.Trim());
+            await CompletionNotifications.RequestPermissionOnceAsync();
         }
         finally { connectingDevice = false; OnChanged(); }
     }
@@ -316,6 +319,7 @@ public sealed partial class MainPage : ContentPage
     public async Task DisconnectCurrentAsync()
     {
         if (session.Busy || interactionBusy || connectingDevice) throw new IOException("请等待当前操作结束再断开。");
+        CompletionNotifications.CancelPending();
         SaveDraft();
         if (activeConnection is { } id)
         {
@@ -325,9 +329,14 @@ public sealed partial class MainPage : ContentPage
         if (next.Value is not null) ActivateConnection(next.Key, next.Value);
         else { session = NewSession(); activeConnection = null; scope = ""; OnChanged(); }
     }
-    public async Task SelectAsync(string id) { SaveDraft(); await session.SelectAsync(id); OnChanged(); }
+    public async Task SelectAsync(string id)
+    {
+        if (!openingCompletion) CompletionNotifications.CancelPending();
+        SaveDraft(); await session.SelectAsync(id); OnChanged();
+    }
     public Task PreviewAsync()
     {
+        CompletionNotifications.CancelPending();
         SaveDraft(); session = NewSession(); activeConnection = null; scope = "";
         preview = true; OnChanged();
         return Task.CompletedTask;
@@ -340,6 +349,8 @@ public sealed partial class MainPage : ContentPage
         if (connections.Entries.Count > 0) StartConnectionService();
         await ConnectionRuntime.CheckConnectionsAsync();
         await RestoreSavedConnectionsAsync();
+        if (connections.Entries.Count > 0) await CompletionNotifications.RequestPermissionOnceAsync();
+        await OpenPendingCompletionAsync();
     }
     private async Task RestoreSavedConnectionsAsync()
     {
@@ -361,6 +372,7 @@ public sealed partial class MainPage : ContentPage
                 if (previous is null) ActivateConnection(id, target);
             }
             if (previous is not null && connections.Entries.TryGetValue(previous, out var active)) ActivateConnection(previous, active);
+            if (connections.Entries.Count > 0) await CompletionNotifications.RequestPermissionOnceAsync();
         }
         catch { status.Text = "无法读取保存的连接，请在连接页检查"; }
         finally { restoringConnections = false; nextRestore = DateTime.UtcNow.AddSeconds(20); }

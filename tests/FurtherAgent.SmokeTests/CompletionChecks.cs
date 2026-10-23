@@ -1,9 +1,61 @@
 using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json.Nodes;
 using FurtherAgent.Core;
+using FurtherAgent.Mobile;
 
 internal static class CompletionChecks
 {
+    public static async Task MobileSmoke(Action<bool, string> check)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0); listener.Start();
+        int port = ((IPEndPoint)listener.LocalEndpoint).Port; listener.Stop();
+        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../../"));
+        var start = new ProcessStartInfo("dotnet") { UseShellExecute = false, CreateNoWindow = true,
+            RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add(Path.Combine(root, "src/FurtherAgent.Server/bin/Release/net10.0/FurtherAgent.Server.dll"));
+        start.ArgumentList.Add("--urls"); start.ArgumentList.Add($"http://127.0.0.1:{port}");
+        using var server = Process.Start(start)!; server.BeginOutputReadLine(); server.BeginErrorReadLine();
+        try
+        {
+            string url = $"http://127.0.0.1:{port}";
+            using var registry = new RegistryClient(url);
+            for (int i = 0; ; i++)
+            {
+                try { await registry.CheckHealthAsync(default); break; }
+                catch { if (i >= 40) throw; await Task.Delay(100); }
+            }
+            var adapters = new ConcurrentDictionary<string, Adapter>();
+            await using var host = new DeviceHost(registry, () => new Adapter(adapters), enableLan: false);
+            await host.StartAsync("mobile completion fixture");
+            await using var mobile = new MobileSession(a => a());
+            var received = new ConcurrentQueue<SessionCompletion>();
+            mobile.Completed += received.Enqueue;
+            await mobile.ConnectAsync(url, host.Lease!.Code);
+            await mobile.SelectAsync("a");
+            await adapters["a"].SendAsync("fixture", default);
+            await mobile.SelectAsync("b");
+            adapters["a"].Emit("idle");
+            await Until(() => received.Count == 1);
+            check(received.Single().SessionId == "a" && mobile.View?.Id == "b",
+                "mobile delivers background session completion without switching or mixing the current view");
+            adapters["a"].Emit("idle"); adapters["b"].Emit("idle");
+            await Task.Delay(250);
+            check(received.Count == 1, "duplicate terminal snapshots and old idle history do not alert again");
+            await adapters["b"].SendAsync("fixture", default);
+            adapters["b"].Emit("idle");
+            await Until(() => received.Count == 2);
+            check(received.Last().SessionId == "b", "mobile exposes selected-session completion for native foreground/background policy");
+            await mobile.DisconnectAsync();
+            await adapters["b"].SendAsync("fixture", default); adapters["b"].Emit("idle");
+            await Task.Delay(150);
+            check(received.Count == 2, "disconnected mobile does not deliver stale completion events");
+        }
+        finally { if (!server.HasExited) { server.Kill(true); await server.WaitForExitAsync(); } }
+    }
+
     public static void States(Action<bool, string> check)
     {
         SessionView View(string status, string? turn = "one") => new("a", "任务 A", "", status, turn, [], []);

@@ -16,9 +16,20 @@ public sealed class App : Application
         var navigation = new NavigationPage(page) { BarBackgroundColor = Color.FromArgb("#183F34"), BarTextColor = Colors.White };
         NavigationPage.SetHasNavigationBar(page, false);
         var window = new Window(navigation);
-        window.Activated += async (_, _) => await page.ResumeAsync();
+        window.Activated += async (_, _) =>
+        {
+            CompletionNotifications.CurrentPage = page; CompletionNotifications.Foreground = true;
+            (navigation.CurrentPage as ConnectionPage)?.RefreshNotificationStatus();
+            await page.ResumeAsync();
+        };
+        window.Deactivated += (_, _) => CompletionNotifications.Foreground = false;
         window.Stopped += (_, _) => page.Suspend();
-        window.Destroying += (_, _) => page.Detach();
+        window.Destroying += (_, _) =>
+        {
+            page.Detach();
+            if (ReferenceEquals(CompletionNotifications.CurrentPage, page))
+            { CompletionNotifications.CurrentPage = null; CompletionNotifications.Foreground = false; }
+        };
         return window;
     }
 }

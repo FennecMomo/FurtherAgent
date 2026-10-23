@@ -16,6 +16,7 @@ void Check(bool condition, string name)
 if (args.Contains("--operation-history-checks")) { OperationHistoryChecks.Run(Check); return; }
 if (args.Contains("--connection-recovery-smoke")) { await ConnectionRecoveryChecks.Run(Check); return; }
 if (args.Contains("--direct-network-smoke")) { await DirectNetworkChecks.Run(Check); return; }
+if (args.Contains("--mobile-completion-smoke")) { await CompletionChecks.MobileSmoke(Check); return; }
 if (args.Contains("--dsh-adapter-checks")) { await DshAdapterChecks.Run(Check); Console.WriteLine($"ALL {passed} DSH CHECKS PASSED"); return; }
 if (args.Contains("--lan-checks")) { await LanChecks.Run(Check); Console.WriteLine($"ALL {passed} LAN CHECKS PASSED"); return; }
 if (args.Contains("--codex-permission-fixture")) { Console.WriteLine(Json.Node(CodexPermissions.Values.Select(CodexPermissions.Build).ToArray()).ToJsonString()); return; }

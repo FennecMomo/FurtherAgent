@@ -62,6 +62,9 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private string? selected;
     private string? pendingCreate;
     public event Action? Changed;
+    public event Action<SessionCompletion>? Completed;
+    private readonly HashSet<string> seenCompletions = [];
+    private readonly Queue<string> completionOrder = new();
     public AgentSettings? Settings { get; private set; }
     public AgentInfo? Agent { get; private set; }
     public SessionView? View { get; private set; }
@@ -102,6 +105,19 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         Status = "正在连接中继…"; Notify();
         owner.Notification += (method, node) =>
         {
+            if (method == "session-completed" && node is not null)
+            {
+                var completion = Json.Read<SessionCompletion>(node);
+                dispatch(() =>
+                {
+                    if (remote != owner || string.IsNullOrWhiteSpace(completion.EventId)
+                        || string.IsNullOrWhiteSpace(completion.SessionId) || !seenCompletions.Add(completion.EventId)) return;
+                    completionOrder.Enqueue(completion.EventId);
+                    if (completionOrder.Count > 512) seenCompletions.Remove(completionOrder.Dequeue());
+                    Completed?.Invoke(completion);
+                });
+                return;
+            }
             if (method != "session" || node is null) return;
             var incoming = Json.Read<SessionView>(node);
             dispatch(() => { if (remote == owner && selecting is null && incoming.Id == selected) { Accept(incoming); Notify(); } });
