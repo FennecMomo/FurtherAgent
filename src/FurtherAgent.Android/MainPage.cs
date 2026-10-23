@@ -550,7 +550,12 @@ public sealed partial class MainPage : ContentPage
     private async Task RespondAsync() => await Act(async () =>
     {
         var prompt = session.View?.Prompts.FirstOrDefault(); if (prompt is null) return;
-        if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
+        if (prompt.Kind == CodexRecovery.Kind)
+        {
+            if (await DisplayAlertAsync(prompt.Title, prompt.Detail, "继续任务（新一轮）", "稍后处理"))
+                await session.RespondAsync(prompt.Id, "continue");
+        }
+        else if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
         {
             var answers = new JsonObject();
             foreach (var q in questions)

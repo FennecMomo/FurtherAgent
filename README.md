@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.14.20 / Android 0.12.10：Codex 模型限制恢复。** 显示额度用尽、模型容量拥堵及原始错误；已失败的最新轮次提供“继续任务（新一轮）”，可先切换可用模型再继续。修复历史遗留运行轮次阻止修改模型的问题。源码与必要检查完成情况见 [待测试清单](docs/Pending-Tests.md)；运行端部署状态单独记录。
+
 **Android 0.12.9：会话完成系统通知。** 手机接收与桌面相同的完成事件；后台或查看其他会话时通知，点击返回对应设备和会话。补充 Android 13 通知权限与连接管理中的通知设置入口，保留已有后台连接和固定直连修复。修改报告与验证边界见 [Android 会话完成通知](docs/Android-Completion-Notifications.md)。
 
 **0.14.19 / Android 0.12.8：应用固定直连。** FurtherAgent 自身的 HTTP 与 WebSocket 请求忽略系统代理，不自动回退到代理节点。使用 TUN 的机器在安装时由 Agent 配置 FurtherAgent 优先 DIRECT 规则并核对 DNS；直接复制 [安装 Agent 标准提示词](docs/Install-Direct-Network-Prompt.md)。说明见 [固定直连策略](docs/Network-Connection-Design.md)，验证边界见 [待测试清单](docs/Pending-Tests.md)。

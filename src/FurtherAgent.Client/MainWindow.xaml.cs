@@ -627,7 +627,14 @@ public partial class MainWindow : Window
         foreach (var prompt in prompts)
         {
             PromptPanel.Children.Add(new TextBlock { Text = prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind ? "Agent 需要你的回答" : "Agent 需要你的确认", FontWeight = FontWeights.Bold, Margin = new Thickness(0, 0, 0, 6) });
-            if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
+            if (prompt.Kind == CodexRecovery.Kind)
+            {
+                PromptPanel.Children.Add(new TextBlock { Text = prompt.Title + "\n" + prompt.Detail, TextWrapping = TextWrapping.Wrap });
+                var retry = new Button { Content = "继续任务（新一轮）" };
+                retry.Click += async (_, _) => await ActionAsync(async peer => { await peer.CallAsync("respond", new { id = prompt.Id, decision = "continue" }); });
+                PromptPanel.Children.Add(retry);
+            }
+            else if (prompt.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind && prompt.Payload?["questions"] is JsonArray questions)
             {
                 var answers = new Dictionary<string, Func<string[]>>();
                 foreach (var q in questions)

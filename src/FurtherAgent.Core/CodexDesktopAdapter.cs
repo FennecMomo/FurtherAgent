@@ -259,6 +259,26 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     }
     public async Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct)
     {
+        if (requestId.StartsWith("codex-recovery:", StringComparison.Ordinal))
+        {
+            if (decision != "continue") throw new ArgumentException("无效恢复操作。");
+            await answerWrites.WaitAsync(ct);
+            try
+            {
+                lock (gate)
+                {
+                    var view = ToView(state ?? throw new IOException("请先选择会话。"));
+                    if (submittedQuestions.Contains(requestId) || view.TurnId is not null ||
+                        !view.Prompts.Any(p => p.Id == requestId && p.Kind == CodexRecovery.Kind))
+                        throw new IOException("该任务状态已变化，请刷新后再操作。");
+                    // Reserve before submission: an uncertain receipt must not replay this action.
+                    submittedQuestions.Add(requestId);
+                }
+                await SendMessageAsync(CodexRecovery.ContinueText, false, ct);
+            }
+            finally { answerWrites.Release(); }
+            return;
+        }
         if (requestId.StartsWith("codex-async:", StringComparison.Ordinal))
         {
             await answerWrites.WaitAsync(ct);
@@ -314,6 +334,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                     "userMessage" => CodexQuestions.DisplayReply(string.Join("\n", item?["content"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? [])),
                     "steeringUserMessage" => CodexQuestions.DisplayReply(string.Join("\n", item?["input"]?.AsArray().Where(c => Text(c?["type"]) == "text").Select(c => Text(c?["text"])) ?? [])),
                     "agentMessage" => Text(item?["text"]),
+                    "error" => CodexRecovery.ErrorText(item),
                     "reasoning" => Text(item?["summary"] ?? item?["text"] ?? item?["content"]),
                     "commandExecution" => Text(item?["command"]) + "\n" + Text(item?["aggregatedOutput"]),
                     "mcpToolCall" => Text(item?["server"]) + "/" + Text(item?["tool"]) + " · " + Text(item?["status"]),
@@ -325,7 +346,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
                 {
                     string? detail = kind is "userMessage" or "steeringUserMessage" or "agentMessage" or "contextCompaction" ? null : item?.ToJsonString();
                     if (detail?.Length > 20000) detail = detail[..20000] + "\n[详情截断]";
-                    var entry = new ChatEntry(kind is "userMessage" or "steeringUserMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : kind == "contextCompaction" ? "系统" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail);
+                    var entry = new ChatEntry(kind is "userMessage" or "steeringUserMessage" ? "你" : kind == "agentMessage" ? "Codex" : kind == "reasoning" ? "推理摘要" : kind is "contextCompaction" or "error" ? "系统" : "工具", content.Length > 20000 ? content[..20000] + "\n[输出截断，请在桌面查看全文]" : content, detail);
                     messages.Add(entry);
                 }
             }
@@ -334,9 +355,15 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         var prompts = (s["requests"]?.AsArray() ?? []).Select(r => new PendingPrompt(Text(r?["id"]), Text(r?["method"]),
             Text(r?["method"]), r?["params"]?.ToJsonString() ?? "", r?["params"]?.DeepClone())).ToList();
         prompts.AddRange(CodexQuestions.Pending(turns));
-        var last = turns.LastOrDefault(t => Text(t["status"]) == "inProgress");
-        return new(Text(s["id"]), Text(s["title"]), Text(s["cwd"]), Text(s["threadRuntimeStatus"]?["type"]),
+        var latest = turns.LastOrDefault();
+        var last = Text(latest?["status"]) == "inProgress" ? latest : null;
+        string runtime = Text(s["threadRuntimeStatus"]?["type"]);
+        var recovery = CodexRecovery.Pending(latest, runtime);
+        if (recovery is not null) prompts.Add(recovery);
+        string detailText = CodexRecovery.ErrorText(latest?["error"]);
+        return new(Text(s["id"]), Text(s["title"]), Text(s["cwd"]), runtime == "systemError" ? "error" : runtime,
             last is null ? null : Text(last["turnId"]), messages, prompts,
+            StatusDetail: recovery?.Detail ?? (detailText.Length == 0 ? null : detailText),
             Model: Text(s["latestCollaborationMode"]?["settings"]?["model"] ?? s["latestModel"]), Mode: Text(s["latestCollaborationMode"]?["mode"]));
     }
     internal static string Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var text) ? text : n?.ToJsonString() ?? "";
