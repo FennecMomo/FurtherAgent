@@ -21,7 +21,8 @@ public sealed class RegistryClient : IDisposable
         var uri = new Uri(url.TrimEnd('/') + '/');
         if (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback))
             throw new ArgumentException("公网配对服务必须使用 HTTPS；HTTP 仅允许本机测试。");
-        http = new HttpClient { BaseAddress = uri, Timeout = TimeSpan.FromSeconds(10) };
+        http = DirectNetwork.CreateHttpClient(TimeSpan.FromSeconds(10));
+        http.BaseAddress = uri;
     }
     public async Task<T> PostAsync<T>(string path, object value, CancellationToken ct = default)
     {
@@ -43,7 +44,8 @@ public sealed class RegistryClient : IDisposable
         var socket = new ClientWebSocket();
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
         socket.Options.KeepAliveTimeout = TimeSpan.FromSeconds(15);
-        try { await socket.ConnectAsync(uri.Uri, ct); return new WebSocketTransport(socket); }
+        // Use the same explicit direct handler for HTTP and WebSocket handshakes.
+        try { await socket.ConnectAsync(uri.Uri, http, ct); return new WebSocketTransport(socket); }
         catch { socket.Dispose(); throw; }
     }
     public void Dispose() => http.Dispose();

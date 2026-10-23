@@ -53,7 +53,7 @@ public sealed partial class HermesAdapter : IAgentAdapter
         if (uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
             throw new ArgumentException("Hermes 地址不能包含凭据、查询串或片段。");
         if (string.IsNullOrWhiteSpace(key)) throw new ArgumentException("未配置 Hermes API key。");
-        http = new HttpClient(handler ?? new HttpClientHandler { AllowAutoRedirect = false })
+        http = new HttpClient(handler ?? DirectNetwork.CreateHandler(allowAutoRedirect: false))
         { BaseAddress = uri, Timeout = Timeout.InfiniteTimeSpan };
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", key.Trim());
         if (stateDirectory is not null) runStore = new HermesRunStore(stateDirectory, uri.AbsoluteUri, key.Trim());

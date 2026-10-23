@@ -1,33 +1,25 @@
-# 网络连接通用方案（待实施）
+# FurtherAgent 固定直连策略
 
-2026-10-23：根据用户说明，VPN 部分需要面向所有使用者的通用方案。本次不修改机器的代理、路由、DNS 或 VPN 配置，也不强制修改产品默认连接方式。
+2026-10-23，Windows 0.14.19 / Android 0.12.8。用户已确定：应用自身忽略系统代理；安装 Agent 为 VPN 的 TUN 模式添加 FurtherAgent 直连规则。此策略取代此前三种连接模式的提案，不自动回退到代理。
 
-## 建议的产品行为
+## 应用行为
 
-1. 连接设置提供三种模式：**自动（建议默认）**、**直连**、**系统代理**。
-2. 自动模式先对 FurtherAgent 中继尝试直连，失败后使用系统代理；只在握手和只读连通性探测阶段选择路径。连上后保持当前路径，不在正常消息发送过程中频繁切换。
-3. 用户明确选择直连时，HTTP 与 WebSocket 统一忽略系统 HTTP 代理；明确选择系统代理时，两者统一遵从系统配置。配置按客户端保存，不修改全局网络。
-4. 诊断区显示当前应用连接路径（局域网、中继直连、中继经代理）、最近心跳和重连状态。TUN 开启时提示系统路由可能仍通过 VPN，不把 `UseProxy=false` 显示成“已绕过 VPN”。
-5. 不管使用哪条路径，失效连接都应自动重连、重新订阅原会话；保留草稿和发送结果不确定的状态。自动恢复只能重做连接、鉴权和只读同步，不自动重放发消息、执行命令、上传提交等有副作用的操作。
+- `DirectNetwork` 为应用自身的 HTTP 请求创建 `UseProxy=false` 的处理器，忽略系统代理及 HTTP_PROXY / HTTPS_PROXY / ALL_PROXY 等代理环境设置。
+- 中继健康检查、注册、配对与 WebSocket 握手使用同一个直连 HTTP 客户端。覆盖 Windows 主窗口、Mini、独立 Host、CLI 和 Android 的共用中继连接。
+- Android 更新检查与下载、Fun-ASR 连接及 Hermes API 连接同样使用明确的直连处理器；DSH API 原已禁用代理。
+- 不修改操作系统代理，不修改 Codex / Hermes / DSH 自身访问模型服务的网络设置。
+- 服务不可达时保留原有超时、心跳和自动重连逻辑，不尝试代理，不自动重发用户消息。
 
-## 为什么不能承诺所有 VPN 都能绕过
+## 安装阶段的 TUN 规则
 
-| 网络模式 | 应用能做什么 | 边界 |
-| --- | --- | --- |
-| 系统 HTTP 代理 | 为中继 HTTP、WebSocket 使用同一组明确的代理选项 | 可以在应用内实现直连 |
-| TUN / 全局路由 VPN | 识别存在虚拟网卡并解释路径；提供常见 VPN 的按应用分流说明 | 忽略 HTTP 代理不能绕过内核路由；需 VPN 支持排除进程、分流或目标地址路由排除 |
-| VPN 内的 DIRECT 规则 | 让 VPN 核心不再把目标流量交给代理节点 | 流量可能仍经过 VPN 核心，不能保证核心退出或虚拟网卡故障时继续联网 |
-| 系统强制 VPN / 断网保护 | 及时提示网络不可用并等待恢复 | 应用不能保证绕过操作系统或 VPN 的阻断策略 |
+应用里的 `UseProxy=false` 不能改变 TUN 路由。安装者应使用 [安装 Agent 标准提示词](Install-Direct-Network-Prompt.md)，识别 VPN 产品及实际生效配置，将 FurtherAgent 进程和实际服务域名设为优先 DIRECT，并确认相关 DNS 不依赖代理节点。
 
-不建议把某台电脑的网关、网卡序号或中继 IP 写死，也不默认添加系统路由。网卡切换、企业 VPN、DNS 假 IP、IPv6 和域名地址变更都会让这种做法失效。
+提示词要求使用持久覆写配置、保留其他软件规则、验证生效规则与实际连接路径。只写入规则文件不能算验证通过。没有安装 VPN 的设备无需创建 VPN 配置。
 
-需要“VPN 核心停止也完全不受影响”的用户，应使用 VPN 官方支持的应用排除能力，并检查对应 DNS 是否也能独立解析。产品可以提供常见客户端的操作指南；不能用一条通用开关对所有 VPN 作此保证。
+目标是消除 FurtherAgent 对 VPN 远端代理节点的依赖。TUN 核心、物理网络、DNS 或 FurtherAgent 服务本身故障仍需由状态提示和重连处理。
 
-## 本次实现与边界
+## 验证边界
 
-- 已实现的是共用连接层的独立心跳、超时触发重连及 Android 生命周期修复。
-- 新接入端通过握手声明独立传输心跳能力，心跳不排在 Agent 长操作后。旧接入端保留原有兼容读取；有未完成操作时依靠 WebSocket 保活，不因串行排队错误终止任务。
-- **上述三种连接模式、自动路径选择及 VPN 检测提示尚未实现**，原有代理行为保持不变。
-- 本次没有关闭用户 VPN，没有执行真实 VPN 切换测试。
+应用层使用隔离本机中继及不可用的进程内默认代理做必要冒烟检查，不改变真实系统代理。真实 TUN 规则由安装 Agent 按目标机器执行和验证；本次没有修改当前电脑的 VPN 配置。真机和真实 VPN 项目见 [待测试清单](Pending-Tests.md)。
 
-技术依据：[Microsoft WebSocket 自定义 HTTP 处理器](https://learn.microsoft.com/dotnet/fundamentals/networking/websockets)、[Mihomo TUN 路由和 DNS 说明](https://github.com/MetaCubeX/Meta-Docs/blob/main/docs/config/inbound/tun.en.md)。
+技术依据：[Microsoft WebSocket 自定义 HTTP 处理器](https://learn.microsoft.com/en-us/dotnet/fundamentals/networking/websockets)、[Mihomo 规则](https://wiki.metacubex.one/config/rules/)、[Mihomo DNS 策略](https://wiki.metacubex.one/config/dns/)。

@@ -1,6 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json.Nodes;
+using FurtherAgent.Core;
 
 namespace FurtherAgent.Mobile;
 
@@ -24,6 +25,7 @@ public sealed class FunAsrClient
         lifetime.CancelAfter(TimeSpan.FromMinutes(4));
         var ct = lifetime.Token;
         using var socket = new ClientWebSocket();
+        using var http = DirectNetwork.CreateHttpClient();
         socket.Options.SetRequestHeader("Authorization", "Bearer " + apiKey.Trim());
         socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(15);
         string id = Guid.NewGuid().ToString();
@@ -33,7 +35,7 @@ public sealed class FunAsrClient
         try
         {
             using (var connect = CancellationTokenSource.CreateLinkedTokenSource(ct))
-            { connect.CancelAfter(TimeSpan.FromSeconds(10)); await socket.ConnectAsync(endpoint, connect.Token).ConfigureAwait(false); }
+            { connect.CancelAfter(TimeSpan.FromSeconds(10)); await socket.ConnectAsync(endpoint, http, connect.Token).ConfigureAwait(false); }
             await SendAsync(new { header = new { action = "run-task", task_id = id, streaming = "duplex" },
                 payload = new { task_group = "audio", task = "asr", function = "recognition", model = "fun-asr-realtime",
                     parameters = new { format = "pcm", sample_rate = 16000, language_hints = new[] { "zh" }, max_sentence_silence = 800 }, input = new { } } });

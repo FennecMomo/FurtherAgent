@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.14.19 / Android 0.12.8：应用固定直连。** FurtherAgent 自身的 HTTP 与 WebSocket 请求忽略系统代理，不自动回退到代理节点。使用 TUN 的机器在安装时由 Agent 配置 FurtherAgent 优先 DIRECT 规则并核对 DNS；直接复制 [安装 Agent 标准提示词](docs/Install-Direct-Network-Prompt.md)。说明见 [固定直连策略](docs/Network-Connection-Design.md)，验证边界见 [待测试清单](docs/Pending-Tests.md)。
+
 **0.14.18 / Android 0.12.7：后台连接与断线恢复。** Android 连接改由应用持有，窗口销毁不再断开；前台服务持有唤醒锁并恢复保存的连接。共用连接层增加不受 Agent 长操作阻塞的传输心跳，静默失联触发自动重连，保留手动断开和不重发消息的语义。Vivo Android 13 实机验收仍待进行，见 [待测试清单](docs/Pending-Tests.md)。[VPN 通用方案](docs/Network-Connection-Design.md)仅为设计建议，本次未改变代理默认行为。
 
 **0.14.17：补齐主聊天窗口图片与附件交互。** 支持拖拽图片/文件、Ctrl+V 粘贴图片或文件，待发附件自动显示缩略图并可逐项移除；已交付的远端图片没有正文图片标记时也自动显示预览，正文引用出现后去除备用预览，避免重复。预览仍只请求有界缩略图，点击后才加载原图，右键可另存为。详见 [文件与图片交互](docs/File-Transfer.md)。

@@ -1,5 +1,23 @@
 # 待测试清单
 
+## Windows 0.14.19 / Android 0.12.8：固定直连
+
+2026-10-23：应用层采用固定直连，撤销“自动回退到系统代理”的提案。安装 Agent 的 TUN 配置提示词随发布包交付，本机 VPN 配置未修改。
+
+必要检查：`--direct-network-smoke` 的 3 项检查已通过，验证故障默认代理确实会阻断普通请求，而 FurtherAgent 中继 HTTP、配对、Host / Control WebSocket 与 RPC 心跳不会访问该代理。测试只设置测试进程的默认代理，没有改系统设置。
+
+Windows Client / Host / Server / CLI 发布构建与 Android APK 打包已完成。本机桌面已切换 0.14.19，通过本机控制通道确认启动就绪并恢复连接；运行 EXE、Client DLL、Core DLL 与发布成品哈希一致。Android 0.12.8 APK 尚未安装到目标手机、未发布到在线更新源。安装 Agent 提示词已随 Windows 发布包交付。
+
+| 内容 | 当前状态 |
+| --- | --- |
+| 真实 VPN 的 TUN 模式下命中 FurtherAgent DIRECT 规则及目标域名直连 DNS | 未测试；由安装 Agent 在目标机器配置并核对 |
+| 不同 VPN 产品、全局模式例外、订阅刷新及重启后持久性 | 未测试 |
+| 远端代理节点故障时，TUN DIRECT 连接继续工作 | 未测试；未主动停用或破坏用户 VPN |
+| Android 0.12.8 在 Vivo Android 13 上更新、语音及后台恢复 | 未测试；APK 不等于目标手机已升级 |
+| Hermes 实际 API、Fun-ASR 实际语音、更新服务器下载的直连链路 | 未测试；本次仅改用统一直连处理器并编译 |
+
+参考：[固定直连策略](Network-Connection-Design.md)、[安装 Agent 标准提示词](Install-Direct-Network-Prompt.md)。
+
 ## Android 0.12.7 / Windows 0.14.18：后台连接与断线恢复
 
 更新日期：2026-10-23。按项目约定，仅执行必要编译、启动与关键连接恢复冒烟检查；以下项目均尚未验收，全面测试由用户决定何时开展。
@@ -19,4 +37,4 @@
 | 与旧接入端混用时，长操作不被旧版串行心跳误判为掉线 | 旧版 Host / 新版客户端 | 未测试；兼容分支保留 WebSocket 保活 |
 | 长期运行的耗电、发热、后台通知体验 | Android 真机 | 未测试，属于后续效果与持续运行测试 |
 
-VPN 通用连接策略见 [Network-Connection-Design.md](Network-Connection-Design.md)。其中连接模式选择、自动直连回退及 VPN 分流指南是方案，尚未实现。
+0.14.18 时的 VPN 方案已由后续固定直连策略取代，见 [Network-Connection-Design.md](Network-Connection-Design.md)。

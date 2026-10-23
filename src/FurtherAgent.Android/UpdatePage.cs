@@ -1,4 +1,5 @@
 using FurtherAgent.Mobile;
+using FurtherAgent.Core;
 
 namespace FurtherAgent.AndroidApp;
 
@@ -38,7 +39,7 @@ internal sealed class UpdatePage : ContentPage
             {
                 var url = AppUpdate.Https(address.Text?.Trim() ?? "").AbsoluteUri;
                 Preferences.Set("android-update-url", url);
-                using var http = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+                using var http = DirectNetwork.CreateHttpClient(Timeout.InfiniteTimeSpan);
                 message.Text = "正在检查版本…";
                 using var checkTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancel.Token);
                 checkTimeout.CancelAfter(TimeSpan.FromSeconds(20));
