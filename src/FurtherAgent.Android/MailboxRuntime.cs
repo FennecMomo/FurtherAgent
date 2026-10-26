@@ -222,4 +222,3 @@ internal static class MailboxRuntime
     }
     private static void Notify(Entry entry) => MainThread.BeginInvokeOnMainThread(() => Changed?.Invoke(entry.Profile.Id));
 }
-
