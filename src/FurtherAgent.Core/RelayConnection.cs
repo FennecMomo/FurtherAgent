@@ -154,7 +154,7 @@ public sealed class DeviceHost : IAsyncDisposable
             int incremental = 0;
             int paged = 0;
             SessionView? historySource = null;
-            bool lastIncremental = false;
+            int lastIncremental = 0;
             var sync = new SessionSyncEncoder();
             var updates = Channel.CreateBounded<SessionView>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
             var completions = Channel.CreateBounded<SessionCompletion>(new BoundedChannelOptions(128) { FullMode = BoundedChannelFullMode.Wait });
@@ -203,7 +203,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, args?["version"]?.GetValue<int>() is 3 ? 3 : args?["version"]?.GetValue<int>() is 2 ? 2 : 1) >= 0, version = Volatile.Read(ref paged) }),
                 "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
-                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, 1) >= 0, version = 1, transportPing = true }),
+                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, args?["version"]?.GetValue<int>() >= 2 ? 2 : 1) >= 0, version = Volatile.Read(ref incremental), transportPing = true }),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id is "hermes" or "codex" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
@@ -242,14 +242,14 @@ public sealed class DeviceHost : IAsyncDisposable
                     await foreach (var view in updates.Reader.ReadAllAsync(pumping.Token))
                     {
                         if (view.Id != attachedSession) continue;
-                        bool mode = Volatile.Read(ref incremental) == 1;
-                        if (mode != lastIncremental) { sync = new SessionSyncEncoder(); lastIncremental = mode; }
+                        int mode = Volatile.Read(ref incremental);
+                        if (mode != lastIncremental) { sync = new SessionSyncEncoder(textDeltas: mode >= 2); lastIncremental = mode; }
                         var enriched = WithFiles(view);
                         historySource = enriched;
                         if (Volatile.Read(ref paged) > 0 || adapter.Info.Id == "codex") enriched = HistoryPaging.Latest(enriched, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3);
                         var update = sync.Encode(enriched);
                         if (update is not null)
-                            await peer.NotifyAsync(mode ? "session-update" : "session", mode ? (object)update : enriched);
+                            await peer.NotifyAsync(mode > 0 ? "session-update" : "session", mode > 0 ? (object)update : enriched);
                         await Task.Delay(500, pumping.Token);
                     }
                 }
@@ -391,7 +391,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     {
         try
         {
-            var capabilities = await peer.CallAsync("session-sync", new { version = 1 }, ct);
+            var capabilities = await peer.CallAsync("session-sync", new { version = 2 }, ct);
             peer.SupportsTransportPing = capabilities?["transportPing"]?.GetValue<bool>() == true;
         }
         catch (IOException) when (peer.Completion?.IsCompleted == false) { }
