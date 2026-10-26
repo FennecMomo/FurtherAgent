@@ -26,11 +26,12 @@ public static class OperationGroups
         Flush(); return result;
     }
 
-    // A user-visible batch is eight prose entries even when an older host pages raw tools.
+    // Bound each user action even when an older host supplies tool-only pages.
+    // Return a contiguous partial batch instead of fetching indefinitely for eight prose entries.
     public static async Task<HistoryPage> LoadBatchAsync(string session, HistoryWindow cursor,
         Func<int, Task<HistoryPage>> fetch)
     {
-        var entries = new List<ChatEntry>(); int before = cursor.Start, count = 0;
+        var entries = new List<ChatEntry>(); int before = cursor.Start, count = 0, requests = 0, bytes = 0;
         do
         {
             var page = await fetch(before);
@@ -38,9 +39,11 @@ public static class OperationGroups
                 page.Start < 0 || page.Start >= before || page.Start + page.Messages.Count != page.End || page.Total != cursor.Total)
                 throw new IOException("历史分页不匹配，请返回最新后重试。");
             entries.InsertRange(0, page.Messages);
+            requests++;
+            bytes += System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(page, Json.Options).Length;
             count += page.Messages.Count(HistoryPaging.IsConversation);
             before = page.Start;
-        } while (before > 0 && count < HistoryPaging.BatchSize);
+        } while (before > 0 && count < HistoryPaging.BatchSize && requests < 2 && bytes < HistoryPaging.MaxPageBytes);
         return new(session, cursor.Revision, before, cursor.Start, cursor.Total, entries);
     }
 

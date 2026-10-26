@@ -34,6 +34,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Completion-Notifications.md') 
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Codex-Interaction-And-Permissions-QA.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Background-Connection-And-State.md'), (Join-Path $repoRoot 'docs/Pending-Tests.md'), (Join-Path $repoRoot 'docs/Network-Connection-Design.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Install-Direct-Network-Prompt.md') -Destination (Join-Path $releaseDir 'docs') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Text-Delta-Sync.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Compress-Archive -Path (Join-Path $releaseDir '*') -DestinationPath $zip -Force
 Get-FileHash -LiteralPath $zip -Algorithm SHA256
 if (-not $SkipDesktopUpdate) {

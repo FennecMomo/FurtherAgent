@@ -28,7 +28,7 @@ public static class SessionActions
             {
                 async Task<SessionView> Read()
                 {
-                    var view = Json.Read<SessionView>(await peer.CallAsync("attach", new { id = expected.Id }, deadline.Token));
+                    var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(peer, "attach", new { id = expected.Id }, deadline.Token));
                     if (view.Id != expected.Id || view.TurnId != expected.TurnId)
                         throw new IOException("远端运行已变化，未发送新消息。请刷新后确认。");
                     return view;

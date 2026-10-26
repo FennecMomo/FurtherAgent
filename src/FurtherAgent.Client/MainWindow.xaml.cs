@@ -357,7 +357,7 @@ public partial class MainWindow : Window
         PromptBorder.Visibility = Visibility.Collapsed; SessionTitle.Text = session.Title; SessionMeta.Text = "正在读取远端会话…";
         try
         {
-            var view = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = session.Id }));
+            var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = session.Id }));
             if (version != selectionVersion)
             {
                 if (device is not null && device != activeDevice && device.SelectedId == session.Id) device.View = view;
@@ -805,7 +805,7 @@ public partial class MainWindow : Window
             foreach (var group in workspaceGroups.Where(g => WorkspaceGroup.Key(g.Path) == WorkspaceGroup.Key(result.Cwd))) group.IsExpanded = true;
             sessions = new[] { result }.Concat(sessions.Where(x => x.Id != result.Id)).ToArray(); SearchBox.Clear(); Filter();
             CloseOverlays(); ShowConversations(); StatusBar.Text = "新会话已创建，可以发送第一条消息。";
-            try { Render(Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = result.Id }))); }
+            try { Render(Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = result.Id }))); }
             catch (Exception ex) { selectedId = null; StatusBar.Text = "会话已创建，但打开失败。请在列表中重新选择该会话：" + ex.Message; }
         }
         catch (Exception ex) { if (current is null) selectedId = null; createRequestId ??= Guid.NewGuid().ToString("N"); NewError.Text = ex.Message; Error(ex); }
@@ -1058,7 +1058,7 @@ public partial class MainWindow : Window
                 await ActionAsync(async peer =>
                 {
                     SaveDraft(); ClearAttachments(); selectedId = null; current = null; Messages.ItemsSource = null; transcriptText = ""; OutputFilesPanel.Children.Clear(); outputFilesFingerprint = renderedOutputFilesFingerprint = "";
-                    await peer.CallAsync("attach", new { id });
+                    await SessionHistory.ReadAsync(peer, "attach", new { id });
                     await peer.CallAsync("archive", new { session = id, archived = false });
                     var rows = ArchiveIndex(); rows.RemoveAll(x => x.Id == id); SaveArchiveIndex(rows);
                     selectedId = null; current = null; await RefreshAsync(); dialog.Close();

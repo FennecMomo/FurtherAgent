@@ -42,9 +42,22 @@ internal static class OperationHistoryChecks
             requests++;
             return Task.FromResult(HistoryPaging.Page(view, before, legacy.Revision, true));
         }).GetAwaiter().GetResult();
-        check(requests > 8 && batch.Messages.Count(HistoryPaging.IsConversation) >= 8,
-            "one user batch crosses many legacy tool-only pages until eight prose items arrive");
+        check(requests == 2 && batch.Messages.Count(HistoryPaging.IsConversation) < 8 && batch.Start < legacy.Start,
+            "one user action stops after two legacy tool-only pages and keeps its progress");
         check(batch.Messages.Count == batch.End - batch.Start, "legacy aggregation preserves all operations and raw cursors");
+        var legacyAll = batch.Messages.Concat(legacy.Messages).ToList();
+        int legacyBefore = batch.Start, legacyBatches = 0;
+        while (legacyBefore > 0)
+        {
+            var remaining = OperationGroups.LoadBatchAsync(view.Id, new(legacy.Revision, legacyBefore, legacy.Total), before =>
+                Task.FromResult(HistoryPaging.Page(view, before, legacy.Revision, true))).GetAwaiter().GetResult();
+            if (remaining.End != legacyBefore || remaining.Start >= legacyBefore || ++legacyBatches > messages.Count)
+                throw new Exception("Legacy history did not progress contiguously");
+            legacyAll.InsertRange(0, remaining.Messages); legacyBefore = remaining.Start;
+        }
+        check(legacyAll.Count == legacy.Total && legacyAll.Where(HistoryPaging.IsConversation).Select(m => m.Text)
+            .SequenceEqual(Enumerable.Range(0, 40).Select(i => "正文 " + i)),
+            "repeated bounded legacy batches preserve all messages and operations without gaps");
         var deletion = OperationSummary.Display(new("工具", "SECRET OUTPUT", """{"type":"fileChange","changes":[{"path":"report.doc","kind":{"type":"delete"}}]}"""));
         check(deletion.Text == "删除文件 report.doc" && deletion.Detail is null, "structured deletion renders a human action without payload");
         var tool = OperationSummary.Display(new("工具", "SECRET", """{"type":"mcpToolCall","tool":"tool_analysis","arguments":{"secret":"hidden"}}"""));
@@ -66,7 +79,32 @@ internal static class OperationHistoryChecks
         check(HistoryPaging.Page(view).Messages.All(HistoryPaging.IsConversation), "legacy v1 clients retain prose-only history");
         var v2 = HistoryPaging.Page(view, includeOperations: true);
         check(v2.Messages.Count == 8 && v2.Messages.All(m => m.Operations is null), "legacy v2 clients retain the existing flat schema");
-        var toolsOnly = HistoryPaging.Page(view with { Messages = messages.Where(m => !HistoryPaging.IsConversation(m)).ToList() }, includeOperations:true, conversationBudget:true);
-        check(toolsOnly.Start == 0 && toolsOnly.Messages.Sum(m => m.Operations!.Count) == 2800, "tool-only sessions stay visible and bounded");
+        var toolsOnlyView = view with { Messages = messages.Where(m => !HistoryPaging.IsConversation(m)).ToList() };
+        var toolsOnly = HistoryPaging.Page(toolsOnlyView, includeOperations:true, conversationBudget:true);
+        int toolCount = toolsOnly.Messages.Sum(m => m.Operations!.Count);
+        while (toolsOnly.Start > 0)
+        {
+            var olderTools = HistoryPaging.Page(toolsOnlyView, toolsOnly.Start, toolsOnly.Revision, true, true);
+            if (olderTools.Start >= toolsOnly.Start || olderTools.End != toolsOnly.Start) throw new Exception("Tool-only history did not progress");
+            toolCount += olderTools.Messages.Sum(m => m.Operations!.Count); toolsOnly = olderTools;
+        }
+        check(toolCount == 2800, "tool-only sessions stay visible across bounded contiguous pages");
+        var oversizedView = new SessionView("oversized", "", "", "idle", null,
+            [new("assistant", "older reply"), .. Enumerable.Range(0, 256).Select(_ => new ChatEntry("tool:" + new string('中', 160), "output"))], []);
+        var oversized = HistoryPaging.Page(oversizedView, includeOperations: true, conversationBudget: true);
+        check(System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(oversized.Messages, Json.Options).Length > HistoryPaging.MaxPageBytes &&
+            oversized.Start < oversized.End && oversized.Messages.Count == 1 && oversized.Messages[0].Operations?.Count == 256,
+            "an oversized operation group is returned alone instead of an empty non-progressing page");
+        var beforeOversized = HistoryPaging.Page(oversizedView, oversized.Start, oversized.Revision, true, true);
+        check(beforeOversized.End == oversized.Start && beforeOversized.Messages.Single().Text == "older reply",
+            "the page after an oversized entry still reaches adjacent older history");
+        int oversizedRequests = 0;
+        var oversizedBatch = OperationGroups.LoadBatchAsync(oversizedView.Id, new(oversized.Revision, oversized.End, oversized.Total), before =>
+        {
+            oversizedRequests++;
+            return Task.FromResult(HistoryPaging.Page(oversizedView, before, oversized.Revision, true, true));
+        }).GetAwaiter().GetResult();
+        check(oversizedRequests == 1 && oversizedBatch.Start == oversized.Start,
+            "a batch reaching the byte target stops without requesting another page");
     }
 }

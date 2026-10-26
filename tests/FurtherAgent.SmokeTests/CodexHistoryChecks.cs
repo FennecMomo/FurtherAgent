@@ -45,12 +45,12 @@ internal static class CodexHistoryChecks
         var full = CodexDesktopAdapter.ToView(parsed);
         var view = HistoryPaging.Latest(full);
         check(JsonSerializer.SerializeToUtf8Bytes(view.Messages, Json.Options).Length <= HistoryPaging.MaxPageBytes,
-            "escaped Unicode page fits 1 MiB serialized budget");
-        check(view.Messages.Count == 8 && full.Messages.Count == 650 && view.Messages[^1].Text.StartsWith("0649:"),
-            "first page holds eight latest records while host retains older records");
+            "escaped Unicode page fits the smaller serialized budget");
+        check(view.Messages.Count is > 0 and <= 8 && full.Messages.Count == 650 && view.Messages[^1].Text.StartsWith("0649:"),
+            "first page holds the bounded latest records while host retains older records");
         int first = int.Parse(view.Messages[0].Text[..4]);
         check(view.Messages.Select((m, i) => m.Text.StartsWith($"{first + i:D4}:")).All(v => v), "retained history stays chronological");
-        check(view.History?.Start == 642 && view.TurnId == "turn" && view.Prompts.Single().Id == "approval" && view.Model == "model",
+        check(view.History?.Start == 650 - view.Messages.Count && view.TurnId == "turn" && view.Prompts.Single().Id == "approval" && view.Model == "model",
             "truncation preserves active turn, approval and model metadata");
         using (var relayFrame = new MemoryStream())
         {
@@ -61,7 +61,7 @@ internal static class CodexHistoryChecks
         }
         StatePatches.Apply(parsed, JsonNode.Parse("""[{"op":"replace","path":["turns",0,"items",0,"text"],"value":"old updated"},{"op":"replace","path":["turns",0,"items",649,"text"],"value":"latest updated"}]""")!.AsArray());
         bool stale = false;
-        try { HistoryPaging.Page(CodexDesktopAdapter.ToView(parsed), 642, view.History!.Revision); } catch (IOException) { stale = true; }
+        try { HistoryPaging.Page(CodexDesktopAdapter.ToView(parsed), view.History!.Start, view.History.Revision); } catch (IOException) { stale = true; }
         check(stale, "rewritten history rejects stale page cursor");
         int before = 650, count = 0;
         while (before > 0) { var page = HistoryPaging.Page(full, before); count += page.Messages.Count; before = page.Start; }

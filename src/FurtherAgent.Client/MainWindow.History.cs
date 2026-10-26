@@ -61,7 +61,7 @@ public partial class MainWindow
             var page = await OperationGroups.LoadBatchAsync(view.Id, cursor, async before =>
             {
                 if (remote != connection || version != selectionVersion || selectedId != view.Id) throw new OperationCanceledException();
-                return Json.Read<HistoryPage>(await connection.Peer.CallAsync("history", new { session = view.Id, before, revision = cursor.Revision }));
+                return Json.Read<HistoryPage>(await SessionHistory.ReadAsync(connection.Peer, "history", new { session = view.Id, before, revision = cursor.Revision }));
             });
             if (remote != connection || version != selectionVersion || selectedId != view.Id || History != reader) return;
             PrependHistory(page);

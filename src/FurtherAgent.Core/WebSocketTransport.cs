@@ -33,7 +33,9 @@ public sealed class WebSocketTransport(WebSocket socket) : IConnectionTransport
         var bytes = JsonSerializer.SerializeToUtf8Bytes(message, Json.Options);
         if (bytes.Length > Frames.MaxBytes) throw new IOException("中继消息超过允许长度。");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        timeout.CancelAfter(TimeSpan.FromSeconds(15));
+        // Legacy history responses can be large; a fixed short write budget cuts off
+        // slow but progressing transfers. Keep ordinary RPCs bounded and honor caller cancellation.
+        timeout.CancelAfter(TimeSpan.FromSeconds(bytes.Length <= 128 * 1024 ? 15 : Math.Min(120, 15 + bytes.Length / 8192d)));
         await writes.WaitAsync(timeout.Token);
         try { await socket.SendAsync(bytes.AsMemory(), WebSocketMessageType.Text, true, timeout.Token); Interlocked.Add(ref sentBytes, bytes.Length); }
         finally { writes.Release(); }

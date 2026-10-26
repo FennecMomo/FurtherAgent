@@ -14,6 +14,8 @@ void Check(bool condition, string name)
     Console.WriteLine("PASS: " + name); passed++;
 }
 if (args.Contains("--operation-history-checks")) { OperationHistoryChecks.Run(Check); return; }
+if (args.Contains("--slow-history-smoke")) { await SlowHistoryChecks.Run(Check); return; }
+if (args.Contains("--history-transfer-heartbeat-smoke")) { await HistoryTransferHeartbeatChecks.Run(Check); return; }
 if (args.Contains("--text-delta-checks")) { SessionSyncChecks.Run(Check); SessionSyncChecks.RunTextDeltas(Check); return; }
 if (args.Contains("--text-delta-recovery-smoke")) { await TextDeltaRecoveryChecks.Run(Check); return; }
 if (args.Contains("--connection-recovery-smoke")) { await ConnectionRecoveryChecks.Run(Check); return; }

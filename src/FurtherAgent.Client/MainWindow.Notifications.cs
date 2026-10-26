@@ -68,7 +68,7 @@ public partial class MainWindow
         SessionTitle.Text = completion.Title; SessionMeta.Text = "正在打开已完成的会话…";
         try
         {
-            var view = Json.Read<SessionView>(await device.Remote.Peer.CallAsync("attach", new { id = completion.SessionId }));
+            var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(device.Remote.Peer, "attach", new { id = completion.SessionId }));
             if (activeDevice != device || version != selectionVersion) return false;
             Render(view); Filter(); return true;
         }

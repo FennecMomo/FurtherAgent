@@ -7,7 +7,9 @@ namespace FurtherAgent.Core;
 public static class HistoryPaging
 {
     public const int BatchSize = 8;
-    public const int MaxPageBytes = 1024 * 1024;
+    // Normal serialized-message target. An individual retained entry may exceed it;
+    // include that entry alone so pagination always advances without losing history.
+    public const int MaxPageBytes = 128 * 1024;
     private sealed record Index(string Revision, List<ChatEntry> Messages, int[] Sizes);
     private static readonly ConditionalWeakTable<SessionView, Index> Indexes = new();
     private static readonly ConditionalWeakTable<SessionView, Index> OperationIndexes = new();
@@ -37,8 +39,9 @@ public static class HistoryPaging
         int end = before ?? index.Messages.Count;
         if (end < 0 || end > index.Messages.Count) throw new ArgumentException("历史游标无效。");
         int start = end, bytes = 2, conversations = 0;
-        while (start > 0 && (conversationBudget ? conversations < BatchSize : end - start < BatchSize) && bytes + index.Sizes[start - 1] < MaxPageBytes)
+        while (start > 0 && (conversationBudget ? conversations < BatchSize : end - start < BatchSize))
         {
+            if (start < end && bytes + index.Sizes[start - 1] > MaxPageBytes) break;
             bytes += index.Sizes[--start];
             if (IsConversation(index.Messages[start])) conversations++;
         }

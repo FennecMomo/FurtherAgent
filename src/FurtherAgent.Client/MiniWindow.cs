@@ -212,7 +212,7 @@ internal sealed class MiniWindow : Window
                 if (closed) return;
                 try
                 {
-                    var restored = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = sessionId }, lifetime.Token));
+                    var restored = Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = sessionId }, lifetime.Token));
                     attached = true; sessionConnecting = false; Refresh(restored);
                 }
                 catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException) { if (!closed) SetStatus("重连后读取会话失败：" + ex.Message); }
@@ -221,7 +221,7 @@ internal sealed class MiniWindow : Window
             if (closed) return;
             try { await OperationGroups.NegotiateAsync(connection.Peer); } catch (IOException) { }
             agent = Json.Read<AgentInfo[]>(await connection.Peer.CallAsync("agents", null, lifetime.Token)).FirstOrDefault(a => a.Available);
-            var loaded = Json.Read<SessionView>(await connection.Peer.CallAsync("attach", new { id = sessionId }, lifetime.Token));
+            var loaded = Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = sessionId }, lifetime.Token));
             attached = true; sessionConnecting = false; Refresh(loaded);
         }
         catch (OperationCanceledException) when (closed) { }

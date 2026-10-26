@@ -114,7 +114,8 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
             Emit("connected", new { device = remote.Device!.Name });
             if (seconds > 0 && command is "send" or "interrupt-send" or "watch")
                 remote.Notification += (method, node) => { if (method == "session" && node?["id"]?.ToString() == session) Emit("session", node); };
-            async Task<JsonNode?> Call(string method, object? value) => await peer.CallAsync(method, value, ct);
+            async Task<JsonNode?> Call(string method, object? value) => method is "attach" or "history"
+                ? await SessionHistory.ReadAsync(peer, method, value, ct) : await peer.CallAsync(method, value, ct);
             if (command is "probe" or "agents")
             {
                 Emit("agents", await Call("agents", null));
@@ -130,6 +131,8 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
             }
             else
             {
+                try { await OperationGroups.NegotiateAsync(peer); }
+                catch (IOException) when (peer.Completion?.IsCompleted == false) { /* Legacy hosts keep their existing snapshot protocol. */ }
                 var view = await Call("attach", new { id = session });
                 if (command is "read" or "watch") Emit("session", view);
                 if (command == "settings") Emit("settings", await Call("settings", null));

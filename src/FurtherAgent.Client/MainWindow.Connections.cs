@@ -94,7 +94,7 @@ public partial class MainWindow
             try { await OperationGroups.NegotiateAsync(device.Remote.Peer); } catch (IOException) { /* Legacy history fallback. */ }
             device.Sessions = Json.Read<List<SessionInfo>>(await device.Remote.Peer.CallAsync("sessions", null));
             if (activeDevice == device ? selectedId != id || version != selectionVersion : device.SelectedId != id) return;
-            var view = id is null ? null : Json.Read<SessionView>(await device.Remote.Peer.CallAsync("attach", new { id }));
+            var view = id is null ? null : Json.Read<SessionView>(await SessionHistory.ReadAsync(device.Remote.Peer, "attach", new { id }));
             if (activeDevice == device)
             {
                 if (version != selectionVersion) return;

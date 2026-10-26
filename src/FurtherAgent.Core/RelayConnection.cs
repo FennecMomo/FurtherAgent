@@ -175,7 +175,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 if (adapter.Info.Id == "hermes" || adapter.Info.Id == "dsh" && adapter.Info.CanFiles)
                     await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
                 historySource = view; attachedSession = view.Id;
-                return Json.Node(Volatile.Read(ref paged) > 0 || adapter.Info.Id == "codex" ? HistoryPaging.Latest(view, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3) : view);
+                return Json.Node(Volatile.Read(ref paged) > 0 || adapter.Info.Id is "codex" or "dsh" ? HistoryPaging.Latest(view, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3) : view);
             }
             string FileSession(JsonNode? args)
             {
@@ -246,7 +246,7 @@ public sealed class DeviceHost : IAsyncDisposable
                         if (mode != lastIncremental) { sync = new SessionSyncEncoder(textDeltas: mode >= 2); lastIncremental = mode; }
                         var enriched = WithFiles(view);
                         historySource = enriched;
-                        if (Volatile.Read(ref paged) > 0 || adapter.Info.Id == "codex") enriched = HistoryPaging.Latest(enriched, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3);
+                        if (Volatile.Read(ref paged) > 0 || adapter.Info.Id is "codex" or "dsh") enriched = HistoryPaging.Latest(enriched, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3);
                         var update = sync.Encode(enriched);
                         if (update is not null)
                             await peer.NotifyAsync(mode > 0 ? "session-update" : "session", mode > 0 ? (object)update : enriched);
@@ -290,6 +290,8 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     {
         if (!IsConnected) { WakeReconnect(); return false; }
         var checkedPeer = Peer;
+        var checkedSocket = socket;
+        long receivedBefore = checkedSocket?.ReceivedBytes ?? 0;
         // Legacy hosts serialize agents behind sends. Do not mistake a long operation
         // for a dead socket; their WebSocket keepalive still detects transport failure.
         if (!checkedPeer.SupportsTransportPing && checkedPeer.HasPendingCalls) return true;
@@ -303,6 +305,11 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
         catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException
             or System.Net.WebSockets.WebSocketException or ObjectDisposedException)
         {
+            // A large JSON response must finish before the reader can dispatch a pong.
+            // Receiving new fragments proves liveness; a stalled connection still fails the probe.
+            if (!ct.IsCancellationRequested && !lifetime.IsCancellationRequested && IsConnected &&
+                ReferenceEquals(checkedPeer, Peer) && ReferenceEquals(checkedSocket, socket) &&
+                (checkedSocket?.ReceivedBytes ?? 0) > receivedBefore) return true;
             if (!checkedPeer.SupportsTransportPing && checkedPeer.HasPendingCalls && IsConnected) return true;
             if (!ct.IsCancellationRequested && !lifetime.IsCancellationRequested && ReferenceEquals(checkedPeer, Peer))
             { socket?.Abort(); WakeReconnect(); }
@@ -406,7 +413,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             direct = await LanHost.ConnectAsync(pairing, ct); if (direct is null) return false;
             candidate = NewPeer(direct); await EnableSync(candidate, ct);
             if (historyMode > 0) await candidate.CallAsync("history-mode", new { version = historyMode }, ct);
-            if (attached is { } id) await candidate.CallAsync("attach", new { id }, ct);
+            if (attached is { } id) await SessionHistory.ReadAsync(candidate, "attach", new { id }, ct);
             if (!previous.TryRedirectTo(candidate, () => Peer == previous && Interlocked.Read(ref selectionRevision) == revision)) return false;
             socket = direct; Peer = candidate; ConnectionKind = "局域网直连";
             direct = null; candidate = null;

@@ -45,7 +45,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             var part = cache is null ? null : await cache.ReadPageAsync(cacheScope, view.Id, h.Revision, before);
             if (part is null)
             {
-                part = Json.Read<HistoryPage>(await Peer.CallAsync("history", new { session = view.Id, revision = h.Revision, before }));
+                part = Json.Read<HistoryPage>(await SessionHistory.ReadAsync(Peer, "history", new { session = view.Id, revision = h.Revision, before }));
                 if (cache is not null) await cache.SavePageAsync(cacheScope, part);
             }
             return part;
@@ -152,7 +152,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             await NegotiateAsync(owner.Peer);
             var agent = Json.Read<AgentInfo[]>(await owner.Peer.CallAsync("agents", null)).FirstOrDefault(a => a.Available);
             var sessions = Sorted(await owner.Peer.CallAsync("sessions", null));
-            SessionView? view = id is null ? null : Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));
+            SessionView? view = id is null ? null : Json.Read<SessionView>(await SessionHistory.ReadAsync(owner.Peer, "attach", new { id }));
             if (remote != owner || revision != generation) return;
             Agent = agent; Sessions = sessions; if (view is not null) Accept(view, true); Status = "已恢复连接 · " + owner.ConnectionKind + " · 未重发任何操作";
             await RefreshFilesCoreAsync();
@@ -164,7 +164,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public Task RefreshAsync() => Run(async () =>
     {
         Sessions = Sorted(await Peer.CallAsync("sessions", null));
-        if (selected is { } id) Accept(Json.Read<SessionView>(await Peer.CallAsync("attach", new { id })), true);
+        if (selected is { } id) Accept(Json.Read<SessionView>(await SessionHistory.ReadAsync(Peer, "attach", new { id })), true);
         await RefreshFilesCoreAsync();
     });
 
@@ -182,7 +182,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             if (remote != owner || !owner.IsConnected) return;
             if (selected is { } id)
             {
-                var view = Json.Read<SessionView>(await owner.Peer.CallAsync("attach", new { id }));
+                var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(owner.Peer, "attach", new { id }));
                 if (remote == owner && selected == id) Accept(view);
             }
         }
@@ -200,7 +200,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             var saved = cache is null ? null : await cache.ReadLatestAsync(cacheScope, id);
             if (saved is not null && saved.Id == id)
             { View = saved with { CanSend = false, CanStop = false, Prompts = [] }; Status = "显示本地缓存 · 正在同步最新状态…"; Notify(); }
-            var view = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id }));
+            var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(Peer, "attach", new { id }));
             if (revision != generation) return;
             selected = id; Settings = null; Accept(view, true); Status = "已同步最新记录";
             await RefreshFilesCoreAsync();
@@ -215,7 +215,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         pendingCreate ??= Guid.NewGuid().ToString("N");
         var created = Json.Read<SessionInfo>(await Peer.CallAsync("create", new { id = pendingCreate, title = "手机新会话" }));
         pendingCreate = null;
-        var view = Json.Read<SessionView>(await Peer.CallAsync("attach", new { id = created.Id }));
+        var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(Peer, "attach", new { id = created.Id }));
         ++generation; selected = created.Id; Accept(view, true);
         Sessions = Sorted(await Peer.CallAsync("sessions", null));
     });
