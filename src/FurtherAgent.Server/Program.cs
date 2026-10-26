@@ -1,9 +1,12 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.RateLimiting;
 using FurtherAgent.Core;
+using FurtherAgent.Server;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSingleton(_ => new MailboxStore());
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 4096);
 builder.Services.AddRateLimiter(options =>
 {
@@ -18,6 +21,7 @@ app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSecond
 var gate = new object();
 var devices = new Dictionary<string, RelayDevice>();
 var tickets = new Dictionary<string, Ticket>();
+var mailboxes = app.Services.GetRequiredService<MailboxStore>();
 string Token() => Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 string Normalize(string? code) => (code ?? "").Replace("-", "").Replace(" ", "").ToUpperInvariant();
 void Clean()
@@ -38,7 +42,18 @@ async Task<WebSocketTransport?> Accept(HttpContext context)
     { context.Response.StatusCode = 400; return null; }
     return new WebSocketTransport(await context.WebSockets.AcceptWebSocketAsync());
 }
-app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.9.1", mode = "relay" }));
+app.MapMailboxes(mailboxes, input =>
+{
+    lock (gate)
+    {
+        Clean(); string code = Normalize(input);
+        if (code.Length == 32) code = devices.FirstOrDefault(p => p.Value.LegacyCode == code).Key ?? code;
+        if (!devices.TryGetValue(code, out var device)) throw new MailboxException(503, "设备尚未在线配对，请先连接设备一次。");
+        if (device.Control?.IsOpen != true) throw new MailboxException(503, "首次绑定留言箱需要设备在线，已有留言凭据可在设备离线时继续使用。");
+        return new MailboxOnlineDevice(code, device.Name);
+    }
+});
+app.MapGet("/health", () => Results.Ok(new { status = "ok", version = "0.9.1", mode = "relay", softwareVersion = typeof(MailboxStore).Assembly.GetName().Version?.ToString(3), mailboxVersion = 1, persistentMailbox = true }));
 app.MapPost("/devices", (DeviceRegistration input) =>
 {
     if (string.IsNullOrWhiteSpace(input.Name) || input.Name.Length > 100) return Results.BadRequest("设备名称无效。");
@@ -50,6 +65,10 @@ app.MapPost("/devices", (DeviceRegistration input) =>
             string fixedCode;
             try { fixedCode = DeviceIdentity.Code(identity); } catch (ArgumentException) { return Results.BadRequest("设备身份无效。"); }
             identity = identity.ToUpperInvariant();
+            try { mailboxes.RegisterDevice(fixedCode, input.Name, identity); }
+            catch (MailboxException ex) { return Results.Json(new { error = ex.Message }, statusCode: ex.StatusCode); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+            { return Results.Json(new { error = "留言存储暂不可用，请稍后重试。" }, statusCode: 503); }
             if (devices.TryGetValue(fixedCode, out var existing))
             {
                 if (!CryptographicOperations.FixedTimeEquals(System.Text.Encoding.ASCII.GetBytes(existing.Secret), System.Text.Encoding.ASCII.GetBytes(identity)))
@@ -65,6 +84,10 @@ app.MapPost("/devices", (DeviceRegistration input) =>
         string code;
         do { code = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)); } while (devices.ContainsKey(code));
         var device = new RelayDevice(input.Name, Token(), DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, 8));
+        try { mailboxes.RegisterDevice(code, input.Name, device.Secret); }
+        catch (MailboxException ex) { return Results.Json(new { error = ex.Message }, statusCode: ex.StatusCode); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        { return Results.Json(new { error = "留言存储暂不可用，请稍后重试。" }, statusCode: 503); }
         devices.Add(code, device);
         return Results.Ok(new DeviceLease(code, device.Secret, device.Expires));
     }

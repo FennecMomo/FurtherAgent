@@ -44,7 +44,7 @@ internal static class ConnectionRuntime
             if (Connections.Entries.Count == 0)
             {
                 var saved = await SavedConnections.LoadAsync();
-                if (!saved.Connections.Any(p => Preferences.Get("resume-connection." +
+                if (!MailboxRuntime.HasBindings && !saved.Connections.Any(p => Preferences.Get("resume-connection." +
                         DeviceConnectionPool<MobileSession>.Identity(p.Server, p.Code), true))) ConnectionService.Stop();
             }
             throw;
@@ -60,7 +60,7 @@ internal static class ConnectionRuntime
             Preferences.Set("resume-connection." + id, false);
             await Connections.CloseAsync(id);
             var saved = await SavedConnections.LoadAsync();
-            if (Connections.Entries.Count == 0 && !saved.Connections.Any(p => Preferences.Get(
+            if (Connections.Entries.Count == 0 && !MailboxRuntime.HasBindings && !saved.Connections.Any(p => Preferences.Get(
                     "resume-connection." + DeviceConnectionPool<MobileSession>.Identity(p.Server, p.Code), true)))
                 ConnectionService.Stop();
         }
@@ -73,7 +73,7 @@ internal static class ConnectionRuntime
         try
         {
             var saved = await SavedConnections.LoadAsync();
-            if (Connections.Entries.Count == 0 && !saved.Connections.Any(p => Preferences.Get(
+            if (Connections.Entries.Count == 0 && !MailboxRuntime.HasBindings && !saved.Connections.Any(p => Preferences.Get(
                     "resume-connection." + DeviceConnectionPool<MobileSession>.Identity(p.Server, p.Code), true)))
             {
                 ConnectionService.Stop();

@@ -51,12 +51,12 @@ public static class Transcript
             ? $"<a class='attachment-image' href='{E(link)}'><img data-attachment='{E(file.Id)}' data-version='{E(file.Version)}' alt='{label}' width='320' height='240'><span>{label} · 点击打开原图</span></a>"
             : $"<a href='{E(link)}'>{label}</a>";
     }
-    public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false)
+    public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false, int conversationLimit = 32)
     {
         var html = new StringBuilder();
         if (hasOlder) html.Append("<p class='history'><a id='older' href='fa-history://older'>上滑或点此加载更早的记录</a></p>");
         else html.Append("<p class='history'>已到已加载历史的开头</p>");
-        int renderCount = OperationGroups.TakeConversations(view.Messages, 32).Count;
+        int renderCount = OperationGroups.TakeConversations(view.Messages, conversationLimit).Count;
         bool operationGroup = false;
         for (int i = 0; i < renderCount; i++)
         {

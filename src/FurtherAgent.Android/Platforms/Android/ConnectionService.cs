@@ -66,7 +66,8 @@ public sealed class ConnectionService : Service
         {
             while (!ct.IsCancellationRequested)
             {
-                try { await MainThread.InvokeOnMainThreadAsync(ConnectionRuntime.RestoreAsync); }
+                try { await Task.WhenAll(MainThread.InvokeOnMainThreadAsync(ConnectionRuntime.RestoreAsync),
+                    MainThread.InvokeOnMainThreadAsync(MailboxRuntime.PollAllAsync)); }
                 catch { /* Secure storage can be temporarily unavailable before device unlock. */ }
                 await Task.Delay(TimeSpan.FromSeconds(20), ct);
             }

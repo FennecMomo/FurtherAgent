@@ -9,6 +9,8 @@ namespace FurtherAgent.AndroidApp;
 internal static class CompletionNotifications
 {
     private const string Channel = "session-completed";
+    private const string MailboxChannel = "mailbox-messages", OpenMailboxAction = "top.fennecmomo.furtheragent.OPEN_MAILBOX";
+    public static string? PendingMailbox { get; private set; }
     private const string OpenAction = "top.fennecmomo.furtheragent.OPEN_COMPLETION";
     private const string ConnectionExtra = "completion-connection", SessionExtra = "completion-session";
     private const string AskedKey = "completion-notifications-permission-asked";
@@ -20,9 +22,13 @@ internal static class CompletionNotifications
     private static Context Context => global::Android.App.Application.Context;
     private static NotificationManager Manager => (NotificationManager)Context.GetSystemService(global::Android.Content.Context.NotificationService)!;
 
-    private static void EnsureChannel() => Manager.CreateNotificationChannel(
-        new NotificationChannel(Channel, "会话完成提醒", NotificationImportance.High)
+    private static void EnsureChannel()
+    {
+        Manager.CreateNotificationChannel(new NotificationChannel(Channel, "会话完成提醒", NotificationImportance.High)
         { Description = "后台或查看其他会话时，提醒远端任务已完成。" });
+        Manager.CreateNotificationChannel(new NotificationChannel(MailboxChannel, "新留言提醒", NotificationImportance.High)
+        { Description = "留言箱收到新回复时提醒；不会触发远端 Agent 任务。" });
+    }
 
     public static async Task RequestPermissionOnceAsync()
     {
@@ -85,8 +91,39 @@ internal static class CompletionNotifications
         catch { /* Notification delivery must not terminate the connection's event dispatcher. */ }
     }
 
+    public static void ShowMailbox(string profileId, string name, string text)
+    {
+        if (Foreground && MailboxRuntime.ViewingProfile == profileId) return;
+        try
+        {
+            EnsureChannel();
+            if (!Manager.AreNotificationsEnabled()) return;
+            var intent = new Intent(Context, typeof(MainActivity)).SetAction(OpenMailboxAction)
+                .SetData(global::Android.Net.Uri.Parse("furtheragent://mailbox/" + profileId))
+                .SetFlags(ActivityFlags.ClearTop | ActivityFlags.SingleTop).PutExtra(ConnectionExtra, profileId);
+            var open = PendingIntent.GetActivity(Context, 1, intent, PendingIntentFlags.UpdateCurrent | PendingIntentFlags.Immutable);
+            string preview = text.Replace('\r', ' ').Replace('\n', ' ');
+            if (preview.Length > 120) preview = preview[..120] + "…";
+            var notification = new Notification.Builder(Context, MailboxChannel)
+                .SetSmallIcon(global::Android.Resource.Drawable.StatNotifyChat)
+                .SetContentTitle(name + " · 新留言").SetContentText(preview)
+                .SetContentIntent(open).SetAutoCancel(true).SetCategory(Notification.CategoryMessage)
+                .SetVisibility(NotificationVisibility.Private).Build();
+            Manager.Notify("mailbox-" + profileId, 4202, notification);
+        }
+        catch { /* A refused notification never interrupts mailbox delivery. */ }
+    }
+    public static void ClearMailboxPending(string id) { if (PendingMailbox == id) PendingMailbox = null; }
+
     public static void ReceiveIntent(Intent? intent)
     {
+        if (intent?.Action == OpenMailboxAction)
+        {
+            string? id = intent.GetStringExtra(ConnectionExtra);
+            intent.RemoveExtra(ConnectionExtra); intent.SetAction(null);
+            if (id is { Length: 64 } && id.All(char.IsAsciiHexDigit)) PendingMailbox = id;
+            return;
+        }
         if (intent?.Action != OpenAction) return;
         string? connection = intent.GetStringExtra(ConnectionExtra), session = intent.GetStringExtra(SessionExtra);
         intent.RemoveExtra(ConnectionExtra); intent.RemoveExtra(SessionExtra); intent.SetAction(null);

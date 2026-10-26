@@ -14,9 +14,9 @@ public sealed class CompletionToastWindow : Window
     private readonly DispatcherTimer timer = new() { Interval = TimeSpan.FromSeconds(5) };
     public event EventHandler? OpenRequested;
 
-    public CompletionToastWindow(string sender, string preview)
+    public CompletionToastWindow(string sender, string preview, string title = "会话执行完成", string actionText = "点击打开会话")
     {
-        Title = "会话执行完成";
+        Title = title;
         Width = 340;
         Height = 112;
         ResizeMode = ResizeMode.NoResize;
@@ -37,7 +37,7 @@ public sealed class CompletionToastWindow : Window
             Foreground = new SolidColorBrush(Color.FromRgb(27, 43, 67)) });
         stack.Children.Add(new TextBlock { Text = preview, FontSize = 12, TextTrimming = TextTrimming.CharacterEllipsis,
             Foreground = new SolidColorBrush(Color.FromRgb(83, 100, 123)), Margin = new Thickness(0, 7, 0, 0) });
-        stack.Children.Add(new TextBlock { Text = "点击打开会话", FontSize = 11,
+        stack.Children.Add(new TextBlock { Text = actionText, FontSize = 11,
             Foreground = new SolidColorBrush(Color.FromRgb(40, 103, 217)), Margin = new Thickness(0, 7, 0, 0) });
         border.Child = stack;
         Content = border;

@@ -5,6 +5,7 @@ namespace FurtherAgent.AndroidApp;
 public sealed partial class MainPage
 {
     private Button deviceButton = null!;
+    private Button mailboxButton = null!;
     private Grid drawerLayer = null!;
     private Border drawerPanel = null!;
     private VerticalStackLayout drawerItems = null!;
@@ -50,8 +51,9 @@ public sealed partial class MainPage
         drawerSearch = new SearchBar { Placeholder = "搜索会话", FontSize = 14 };
         drawerSearch.TextChanged += (_, _) => RenderDrawer();
         drawerItems = new VerticalStackLayout { Spacing = 2 };
+        mailboxButton = TextAction("留言", () => OpenMailboxAsync());
         var top = new VerticalStackLayout { Spacing = 8, Children = { drawerDevice, drawerSearch,
-            TextAction("新建会话", NewConversationAsync) } };
+            TextAction("新建会话", NewConversationAsync), mailboxButton } };
         var bottom = new VerticalStackLayout { Children = {
             TextAction("刷新会话", async () => { await Act(session.RefreshAsync); RenderDrawer(); }),
             TextAction("连接管理", async () => { CloseDrawer(); await OpenConnectionAsync(); }),
@@ -74,6 +76,7 @@ public sealed partial class MainPage
     }
     private void RenderDrawer()
     {
+        UpdateMailboxBadge();
         drawerDevice.Text = $"{session.DeviceName} · {session.Indicator.Label} ▾";
         drawerItems.Children.Clear();
         string query = drawerSearch.Text?.Trim() ?? "";

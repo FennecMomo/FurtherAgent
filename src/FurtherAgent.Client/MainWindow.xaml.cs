@@ -71,6 +71,7 @@ public partial class MainWindow : Window
             tray = new System.Windows.Forms.NotifyIcon { Icon = (System.Drawing.Icon)icon.Clone(), Text = "FurtherAgent", Visible = true };
         var menu = new System.Windows.Forms.ContextMenuStrip();
         menu.Items.Add("打开 FurtherAgent", null, (_, _) => Dispatcher.Invoke(RestoreFromTray));
+        menu.Items.Add("留言", null, (_, _) => Dispatcher.Invoke(() => OpenMailbox()));
         menu.Items.Add("退出", null, (_, _) => Dispatcher.Invoke(() => { exitRequested = true; Close(); }));
         tray.ContextMenuStrip = menu;
         tray.DoubleClick += (_, _) => Dispatcher.Invoke(RestoreFromTray);
@@ -104,6 +105,7 @@ public partial class MainWindow : Window
             }
         }
         catch (Exception ex) { connectionFailure = ex.GetType().Name; StatusBar.Text = "已保存连接无法解密，请重新输入授权码连接；原记录未删除。"; }
+        InitializeMailbox();
     }
     private void InitializeDshExecutable()
     {
@@ -1076,6 +1078,7 @@ public partial class MainWindow : Window
     }
     private void DisposeTray()
     {
+        CloseMailboxes();
         CloseCompletionToasts();
         if (tray is null) return;
         tray.Visible = false; tray.ContextMenuStrip?.Dispose(); tray.Icon?.Dispose(); tray.Dispose(); tray = null;

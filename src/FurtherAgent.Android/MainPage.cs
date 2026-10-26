@@ -126,7 +126,7 @@ public sealed partial class MainPage : ContentPage
         {
             if (!suspended && pendingRender && webReady && !rendering) { pendingRender = false; await RenderAsync(); }
             if (!suspended && DateTime.UtcNow >= nextRestore) await RestoreSavedConnectionsAsync();
-            if (!suspended) await OpenPendingCompletionAsync();
+            if (!suspended) { UpdateMailboxBadge(); await OpenPendingMailboxAsync(); await OpenPendingCompletionAsync(); }
         };
         Loaded += async (_, _) => await RestoreSavedConnectionsAsync();
         timer.Start(); RefreshButtons();

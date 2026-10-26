@@ -8,6 +8,7 @@ public static class CliRunner
     private const string Help = """
 FurtherAgent.Cli <command> [options]
 Commands: probe, agents, sessions, read, create, settings, configure, send, interrupt-send, watch, stop, respond, files, upload, download, thumbnail, archive, unarchive
+Independent mailbox: mailbox accounts|status|read|reply|mark-read (mailbox --help for options; no model invocation)
 Connection: --server URL (or FURTHERAGENT_SERVER); --code-file PATH
             Authorization code is read from FURTHERAGENT_CODE or FURTHERAGENT_CODE_FILE if no file option is supplied.
 Session:    --session ID (required for read/settings/configure/send/watch/stop/respond)
@@ -37,6 +38,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
     };
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter error, CancellationToken ct = default)
     {
+        if (args.FirstOrDefault() == "mailbox") return await MailboxCli.RunAsync(args[1..], output, error, ct);
         string? code = null;
         object outputLock = new();
         void Emit(string type, object? data)

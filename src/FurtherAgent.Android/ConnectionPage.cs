@@ -70,6 +70,7 @@ internal sealed class ConnectionPage : ContentPage
                 await ReloadAsync(); message.Text = "所选连接已删除。";
             }),
             message, Ui.Text("支持同时连接多个设备，在主页上方切换。切换不会断开其他设备，草稿按设备和会话分别保留。手动断开或退出程序才会关闭连接，远端任务不受影响。", 12),
+            Action("留言（支持对方离线）", () => home.OpenMailboxAsync(editing)),
             Action("语音设置", () => Navigation.PushAsync(new SpeechSettingsPage())),
             notificationStatus,
             Action("会话完成通知设置", () => { CompletionNotifications.OpenSettings(); return Task.CompletedTask; }),

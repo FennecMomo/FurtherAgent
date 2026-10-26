@@ -41,6 +41,7 @@ public sealed class DeviceHost : IAsyncDisposable
             _ = DeviceIdentity.LoadOrCreate(path);
             identityLock = DeviceIdentity.Lock(path);
             identitySecret = DeviceIdentity.LoadOrCreate(path);
+            MailboxAgentAccount.Register(name, registry.ServerIdentity, path);
             if (enableLan && Environment.GetEnvironmentVariable("FURTHERAGENT_LAN") != "0")
             {
                 try { lan = new LanHost(name, path, identitySecret, ServePeerAsync); lan.Start(); Status?.Invoke($"局域网接入已启用，端口 {lan.Port}。"); }

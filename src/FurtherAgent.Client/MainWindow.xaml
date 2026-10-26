@@ -42,6 +42,7 @@
      </DockPanel>
      <ComboBox x:Name="ConnectedDevices" DisplayMemberPath="Label" SelectionChanged="ConnectedDevice_Changed" Visibility="Collapsed" Margin="4,0,4,8" ToolTip="切换已连接设备，其他连接继续保持" AutomationProperties.Name="切换已连接设备"/>
      <Button x:Name="NewButton" Content="{DynamicResource NewChatLabel}" Style="{StaticResource SidebarPrimary}" Click="New_Click" ToolTip="连接远端后新建会话"/>
+     <Button x:Name="MailboxButton" Content="留言" Style="{StaticResource SidebarAction}" Click="Mailbox_Click" ToolTip="留言收件箱，等待对方方便时查看和回复"/>
      <Button x:Name="WorkspaceButton" Style="{StaticResource SidebarAction}" Content="＋  添加工作空间" Click="Workspace_Click" ToolTip="选择远端已有目录，或在远端创建文件夹" Visibility="Collapsed"/>
      <Button Content="{DynamicResource ArchiveLabel}" Click="RestoreArchive_Click" Style="{StaticResource SidebarAction}"/><Button Content="会话" Click="Conversations_Click" HorizontalContentAlignment="Left" Visibility="{DynamicResource OriginalOnly}"/>
      <TextBlock Visibility="{DynamicResource OriginalOnly}" Text="搜索会话 / 工作空间" Foreground="{DynamicResource Brush738079}" Margin="8,12,0,0"/><TextBox x:Name="SearchBox" Visibility="{DynamicResource SearchVisibility}" TextChanged="Search_Changed" ToolTip="搜索会话标题或远端工作目录" AutomationProperties.Name="搜索会话"/>
