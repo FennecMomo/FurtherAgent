@@ -94,14 +94,23 @@ internal static class CompactUiChecks
                 "long context cannot push composer outside minimum window");
             Field<RowDefinition>(a, "contextRow").Height = new GridLength(1, GridUnitType.Star);
             a.Height = 210; a.Left = 120; a.Top = 140; Layout(a, 420, 210);
+            var ball = Field<Border>(a, "ball");
             for (int i = 0; i < 10; i++)
             {
                 Call(a, "ToggleContext"); Layout(a, 44, 44);
                 Check(a.Width == 44 && a.Height == 44 && a.Left == 496 && a.Top == 306, "mini ball preserves its bottom-right corner");
-                Check(Math.Abs(a.Opacity - 0.3) < 0.001, "collapsed ball uses 30 percent opacity");
+                Check(a.AllowsTransparency && a.Background == Brushes.Transparent && Math.Abs(a.Opacity - 0.18) < 0.001,
+                    "collapsed ball uses 18 percent opacity over a transparent window background");
+                if (i == 0)
+                {
+                    Call(a, "Refresh", viewA with { Title = "更新后的标题", StatusDetail = "更新后的状态" });
+                    Check(ball.ToolTip is null, "refreshing the collapsed ball does not expose a session tooltip");
+                    ball.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent });
+                    Check(ball.Visibility == Visibility.Visible, "an uncaptured left button release cannot expand the ball");
+                }
                 Call(a, "ToggleContext"); Layout(a, 420, 210);
                 Check(a.Width == 420 && a.Height == 210 && a.Left == 120 && a.Top == 140, "mini expansion returns to exact bounds");
-                Check(Math.Abs(a.Opacity - 1) < 0.001, "expanded mini returns to full opacity");
+                Check(a.Background == Brushes.White && Math.Abs(a.Opacity - 1) < 0.001, "expanded mini returns to an opaque window");
             }
             Check(b.Width == 420 && b.Height == 210 && Field<TextBlock>(b, "context").Text.Contains("回复 B"),
                 "collapsing one mini does not alter another mini");

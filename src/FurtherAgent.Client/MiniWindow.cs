@@ -35,7 +35,7 @@ internal sealed class MiniWindow : Window
     private readonly Border statusBadge = new() { Background = Brushes.WhiteSmoke, CornerRadius = new CornerRadius(8), Padding = new Thickness(5, 2, 5, 2), Margin = new Thickness(4, 0, 4, 0), VerticalAlignment = VerticalAlignment.Center };
     private readonly RowDefinition contextRow = new() { Height = new GridLength(1, GridUnitType.Star), MinHeight = 40 };
     private readonly System.Windows.Threading.DispatcherTimer positionTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
-    private bool closed, collapsed, sending, settingDraft, dragging, ballDragged, attached, sessionConnecting = true, followLatest = true;
+    private bool closed, collapsed, sending, settingDraft, dragging, attached, sessionConnecting = true, followLatest = true;
     private int scrollRevision;
     private Point ballPress;
     private double dragY, dragOffset;
@@ -45,6 +45,7 @@ internal sealed class MiniWindow : Window
 
     public bool IsSending => sending;
     public bool HasUnsentDraft => !string.IsNullOrWhiteSpace(composer.Text);
+    private static bool BallModifiersHeld => Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Alt);
     private void SetStatus(string message) { title.ToolTip = message; send.ToolTip = message; }
 
     public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
@@ -57,6 +58,7 @@ internal sealed class MiniWindow : Window
         Title = "迷你 · " + sessionTitle;
         Width = 420; Height = 210; MinWidth = 280; MinHeight = 180;
         WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResize; ShowInTaskbar = false; Topmost = true;
+        AllowsTransparency = true;
         Background = Brushes.White;
         WindowChrome.SetWindowChrome(this, new WindowChrome { CaptionHeight = 0, ResizeBorderThickness = new Thickness(5), GlassFrameThickness = new Thickness(0), UseAeroCaptionButtons = false });
         Left = SystemParameters.WorkArea.Right - Width - 30 - cascade;
@@ -120,20 +122,38 @@ internal sealed class MiniWindow : Window
         Grid.SetColumn(send, 1); input.Children.Add(send);
         Grid.SetRow(input, 3); surface.Children.Add(input);
 
-        ball = new Border { Visibility = Visibility.Collapsed, Background = Brushes.LightGray, CornerRadius = new CornerRadius(22), Width = 44, Height = 44, Cursor = Cursors.Hand,
-            Focusable = true, ToolTip = sessionTitle + " · 点击展开，按住拖动", Child = new TextBlock { Text = "•", FontSize = 24, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.DimGray } };
-        AutomationProperties.SetName(ball, "展开迷你窗口：" + sessionTitle);
+        ball = new Border { Visibility = Visibility.Collapsed, Background = Brushes.LightGray, CornerRadius = new CornerRadius(22), Width = 44, Height = 44,
+            Child = new TextBlock { Text = "•", FontSize = 24, HorizontalAlignment = HorizontalAlignment.Center, VerticalAlignment = VerticalAlignment.Center, Foreground = Brushes.DimGray } };
+        AutomationProperties.SetName(ball, "迷你窗口小圆点");
         root.Children.Add(ball);
-        ball.MouseLeftButtonDown += (_, e) => { ballPress = e.GetPosition(ball); ballDragged = false; ball.CaptureMouse(); e.Handled = true; };
+        ball.MouseLeftButtonDown += (_, e) =>
+        {
+            e.Handled = true;
+            if (!BallModifiersHeld) return;
+            ballPress = e.GetPosition(ball);
+            ball.CaptureMouse();
+        };
         ball.MouseMove += (_, e) =>
         {
-            if (e.LeftButton != MouseButtonState.Pressed || !ball.IsMouseCaptured) return;
+            if (!ball.IsMouseCaptured) return;
+            if (e.LeftButton != MouseButtonState.Pressed || !BallModifiersHeld)
+            {
+                ball.ReleaseMouseCapture();
+                return;
+            }
             var point = e.GetPosition(ball);
             if (Math.Abs(point.X - ballPress.X) + Math.Abs(point.Y - ballPress.Y) < 5) return;
-            ballDragged = true; ball.ReleaseMouseCapture(); DragMove(); SavePosition();
+            ball.ReleaseMouseCapture(); DragMove(); SavePosition();
+            e.Handled = true;
         };
-        ball.MouseLeftButtonUp += (_, e) => { ball.ReleaseMouseCapture(); if (!ballDragged) ToggleContext(); e.Handled = true; };
-        ball.KeyDown += (_, e) => { if (e.Key is Key.Enter or Key.Space) { ToggleContext(); e.Handled = true; } };
+        ball.MouseLeftButtonUp += (_, e) =>
+        {
+            e.Handled = true;
+            if (!ball.IsMouseCaptured) return;
+            bool expand = BallModifiersHeld && ball.InputHitTest(e.GetPosition(ball)) is not null;
+            ball.ReleaseMouseCapture();
+            if (expand) ToggleContext();
+        };
         surface.SizeChanged += (_, _) => { if (!collapsed) contextRow.MaxHeight = Math.Max(40, surface.ActualHeight - 96); };
         positionTimer.Tick += (_, _) => { positionTimer.Stop(); SavePosition(); };
         LocationChanged += (_, _) => { if (!closed) { positionTimer.Stop(); positionTimer.Start(); } };
@@ -166,6 +186,7 @@ internal sealed class MiniWindow : Window
     public void ToggleContext()
     {
         EndDrag();
+        if (ball.IsMouseCaptured) ball.ReleaseMouseCapture();
         double right = Left + Width, bottom = Top + Height;
         if (!collapsed)
         {
@@ -173,11 +194,11 @@ internal sealed class MiniWindow : Window
             surface.Visibility = Visibility.Collapsed; ball.Visibility = Visibility.Visible;
             MinWidth = MinHeight = 44; ResizeMode = ResizeMode.NoResize;
             Width = Height = 44; Left = right - 44; Top = bottom - 44;
-            SetBallRegion(true); Opacity = 0.3; ball.Focus();
+            Background = Brushes.Transparent; Opacity = 0.18;
         }
         else
         {
-            collapsed = false; Opacity = 1; SetBallRegion(false); ball.Visibility = Visibility.Collapsed; surface.Visibility = Visibility.Visible;
+            collapsed = false; Background = Brushes.White; Opacity = 1; ball.Visibility = Visibility.Collapsed; surface.Visibility = Visibility.Visible;
             ResizeMode = expandedResizeMode; MinWidth = 280; MinHeight = 180;
             Width = expandedSize.Width; Height = expandedSize.Height;
             Left = right - Width; Top = bottom - Height; if (followLatest) ScrollToLatestAfterLayout(); composer.Focus();
@@ -235,7 +256,7 @@ internal sealed class MiniWindow : Window
     {
         if (update.Id != sessionId || closed) return;
         view = update;
-        if (!string.IsNullOrWhiteSpace(update.Title)) { Title = "迷你 · " + update.Title; title.Text = update.Title; SetStatus(update.Title); ball.ToolTip = update.Title + " · 点击展开，按住拖动"; }
+        if (!string.IsNullOrWhiteSpace(update.Title)) { Title = "迷你 · " + update.Title; title.Text = update.Title; SetStatus(update.Title); }
         UpdateRunStatus();
         send.IsEnabled = attached && remote?.IsConnected == true && !sending && update.CanSend;
         composer.IsEnabled = send.IsEnabled;
@@ -298,9 +319,7 @@ internal sealed class MiniWindow : Window
         string detail = view?.StatusDetail is { Length: > 0 } description ? " · " + description : "";
         string hint = indicator.Label + detail;
         statusBadge.ToolTip = hint;
-        ball.ToolTip = (view?.Title ?? sessionId) + " · " + hint + " · 点击展开，按住拖动";
         AutomationProperties.SetName(statusBadge, "会话状态：" + indicator.Label);
-        AutomationProperties.SetName(ball, "展开迷你窗口：" + (view?.Title ?? sessionId) + "，" + indicator.Label);
     }
 
     private void EndDrag()
@@ -342,17 +361,4 @@ internal sealed class MiniWindow : Window
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
     }
-
-    private void SetBallRegion(bool enabled)
-    {
-        var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
-        if (handle == IntPtr.Zero) return;
-        if (!enabled) { SetWindowRgn(handle, IntPtr.Zero, true); return; }
-        var dpi = VisualTreeHelper.GetDpi(this);
-        var region = CreateEllipticRgn(0, 0, (int)Math.Round(44 * dpi.DpiScaleX), (int)Math.Round(44 * dpi.DpiScaleY));
-        if (SetWindowRgn(handle, region, true) == 0) DeleteObject(region);
-    }
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern IntPtr CreateEllipticRgn(int left, int top, int right, int bottom);
-    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern int SetWindowRgn(IntPtr window, IntPtr region, bool redraw);
-    [System.Runtime.InteropServices.DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr handle);
 }
