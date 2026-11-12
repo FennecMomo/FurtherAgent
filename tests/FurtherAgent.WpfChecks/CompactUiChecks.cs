@@ -21,10 +21,10 @@ internal static class CompactUiChecks
         string draftA = "第一个会话草稿", draftB = "第二个会话草稿";
         var viewA = new SessionView("a", "会话 A", "", "idle", null, [new("user", "问题 A"), new("tool", "不显示工具原文"), new("assistant", "回复 A")], []);
         var viewB = new SessionView("b", "会话 B", "", "idle", null, [new("assistant", "回复 B")], []);
-        Window Create(string id, SessionView view, string path, Func<string> read, Action<string> write) =>
-            (Window)Activator.CreateInstance(type, "https://example.test", "fixture", id, view.Title, view, path, read, write, (Action)(() => { }), 0)!;
-        var a = Create("a", viewA, pathA, () => draftA, text => draftA = text);
-        var b = Create("b", viewB, pathB, () => draftB, text => draftB = text);
+        Window Create(string id, SessionView view, string path, Func<string> read, Action<string> write, int shortcutSlot) =>
+            (Window)Activator.CreateInstance(type, "https://example.test", "fixture", id, view.Title, view, path, read, write, (Action)(() => { }), shortcutSlot, 0)!;
+        var a = Create("a", viewA, pathA, () => draftA, text => draftA = text, 1);
+        var b = Create("b", viewB, pathB, () => draftB, text => draftB = text, 10);
         T Field<T>(Window window, string name) => (T)type.GetField(name, flags)!.GetValue(window)!;
         void Call(Window window, string name, params object[] args) => type.GetMethod(name, flags | BindingFlags.Public)!.Invoke(window, args);
         void Check(bool condition, string text) { if (!condition) throw new Exception(text); Console.WriteLine("PASS: " + text); }
@@ -36,6 +36,8 @@ internal static class CompactUiChecks
         try
         {
             Layout(a, 420, 210); Layout(b, 420, 210);
+            Check(Field<TextBlock>(a, "title").Text == "1 · 会话 A" && Field<TextBlock>(b, "title").Text == "0 · 会话 B",
+                "expanded mini titles show their numeric shortcuts with zero as the tenth slot");
             Check(Field<TextBlock>(a, "statusLabel").Text == "连接中", "mini shows connection progress before its own session attaches");
             Check(main.Width == 1240 && main.MinWidth == 940 && main.Content is Grid,
                 "creating minis leaves main window size and content intact");
@@ -104,6 +106,7 @@ internal static class CompactUiChecks
                 if (i == 0)
                 {
                     Call(a, "Refresh", viewA with { Title = "更新后的标题", StatusDetail = "更新后的状态" });
+                    Check(Field<TextBlock>(a, "title").Text == "1 · 更新后的标题", "session title refresh preserves the shortcut digit");
                     Check(ball.ToolTip is null, "refreshing the collapsed ball does not expose a session tooltip");
                     ball.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.MouseLeftButtonUpEvent });
                     Check(ball.Visibility == Visibility.Visible, "an uncaptured left button release cannot expand the ball");

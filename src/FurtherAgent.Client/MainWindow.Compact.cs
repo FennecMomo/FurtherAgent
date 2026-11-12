@@ -8,7 +8,11 @@ namespace FurtherAgent.Client;
 
 public partial class MainWindow
 {
+    private const int MaxMiniWindows = 10;
     private readonly Dictionary<(DeviceContext Device, string Session), MiniWindow> miniWindows = [];
+
+    private int FindAvailableMiniShortcutSlot() => Enumerable.Range(1, MaxMiniWindows)
+        .Except(miniWindows.Values.Select(mini => mini.ShortcutSlot)).FirstOrDefault();
 
     private void InitializeCompact()
     {
@@ -30,6 +34,14 @@ public partial class MainWindow
         var key = (device, selectedId);
         if (miniWindows.TryGetValue(key, out var existing)) { existing.RestoreAndActivate(); return; }
 
+        int shortcutSlot = FindAvailableMiniShortcutSlot();
+        if (shortcutSlot == 0)
+        {
+            MessageBox.Show(this, $"已打开 {MaxMiniWindows} 个迷你窗口。请先关闭至少 1 个迷你窗口，再打开新的。",
+                "迷你窗口已达上限", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
         string identity = device.Server + "|" + device.Code + "|" + selectedId;
         string suffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16];
         string positionPath = Path.Combine(Path.GetDirectoryName(SettingsFile)!, "compact-window-" + suffix + ".json");
@@ -41,9 +53,14 @@ public partial class MainWindow
                 device.Drafts[session] = text;
                 if (activeDevice == device && selectedId == session && Composer.Text != text) Composer.Text = text;
             },
-            RestoreFromTray, (miniWindows.Count % 8) * 28);
+            RestoreFromTray, shortcutSlot, (miniWindows.Count % 8) * 28);
         miniWindows.Add(key, mini);
-        mini.Closed += (_, _) => miniWindows.Remove(key);
+        CancelCompactHotkeySequence();
+        mini.Closed += (_, _) =>
+        {
+            miniWindows.Remove(key);
+            CancelCompactHotkeySequence();
+        };
         mini.Show();
         _ = mini.StartAsync();
     }

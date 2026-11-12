@@ -45,17 +45,25 @@ internal sealed class MiniWindow : Window
 
     public bool IsSending => sending;
     public bool HasUnsentDraft => !string.IsNullOrWhiteSpace(composer.Text);
+    public int ShortcutSlot { get; }
     private static bool BallModifiersHeld => Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Alt);
     private void SetStatus(string message) { title.ToolTip = message; send.ToolTip = message; }
 
+    private void SetSessionTitle(string sessionTitle)
+    {
+        title.Text = $"{ShortcutSlot % 10} · {sessionTitle}";
+        Title = "迷你 · " + title.Text;
+    }
+
     public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
-        string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int cascade = 0)
+        string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade = 0)
     {
         this.server = server; this.code = code; this.sessionId = sessionId; this.positionPath = positionPath;
         if (string.IsNullOrWhiteSpace(sessionTitle)) sessionTitle = sessionId;
         this.readDraft = readDraft; this.writeDraft = writeDraft; this.showMain = showMain;
         view = initialView;
-        Title = "迷你 · " + sessionTitle;
+        ShortcutSlot = shortcutSlot;
+        SetSessionTitle(sessionTitle);
         Width = 420; Height = 210; MinWidth = 280; MinHeight = 180;
         WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.CanResize; ShowInTaskbar = false; Topmost = true;
         AllowsTransparency = true;
@@ -87,7 +95,7 @@ internal sealed class MiniWindow : Window
         statusContent.Children.Add(statusDot); statusContent.Children.Add(statusLabel);
         statusBadge.Child = statusContent;
         DockPanel.SetDock(statusBadge, Dock.Right); header.Children.Add(statusBadge);
-        title.Text = sessionTitle; title.ToolTip = sessionTitle;
+        title.ToolTip = sessionTitle;
         title.MouseLeftButtonDown += (_, e) => { if (e.ButtonState == MouseButtonState.Pressed) { DragMove(); e.Handled = true; } };
         header.Children.Add(title); surface.Children.Add(header);
 
@@ -256,7 +264,7 @@ internal sealed class MiniWindow : Window
     {
         if (update.Id != sessionId || closed) return;
         view = update;
-        if (!string.IsNullOrWhiteSpace(update.Title)) { Title = "迷你 · " + update.Title; title.Text = update.Title; SetStatus(update.Title); }
+        if (!string.IsNullOrWhiteSpace(update.Title)) { SetSessionTitle(update.Title); SetStatus(update.Title); }
         UpdateRunStatus();
         send.IsEnabled = attached && remote?.IsConnected == true && !sending && update.CanSend;
         composer.IsEnabled = send.IsEnabled;
