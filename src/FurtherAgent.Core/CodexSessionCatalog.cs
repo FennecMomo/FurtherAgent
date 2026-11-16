@@ -13,7 +13,11 @@ internal static class CodexSessionCatalog
         foreach (string path in Directory.EnumerateFiles(root, "rollout-*.jsonl", SearchOption.AllDirectories))
         {
             string name = Path.GetFileNameWithoutExtension(path);
-            if (name.Length < 36 || !result.TryGetValue(name[^36..], out var session)) continue;
+            // Newer Codex rollouts can end with <thread-id>_<segment-id>.
+            int idEnd = name.Length;
+            if (idEnd >= 73 && name[^37] == '_' && Guid.TryParseExact(name.AsSpan(idEnd - 36), "D", out _))
+                idEnd -= 37;
+            if (idEnd < 36 || !result.TryGetValue(name[(idEnd - 36)..idEnd], out var session)) continue;
             try
             {
                 using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);

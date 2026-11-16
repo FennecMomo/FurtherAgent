@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 
 namespace FurtherAgent.Core;
 
-// Experimental desktop IPC profile, observed in Codex Desktop 26.1002.7124.0.
+// Experimental desktop IPC profile for the observed v11 and v13 state streams.
 // Never launches another writer or edits Codex history/configuration.
 public sealed class CodexDesktopAdapter : IAgentAdapter
 {
@@ -152,7 +152,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         if (m["targetClientIds"] is JsonArray targets && !targets.Any(t => Text(t) == clientId)) return;
         if (Text(m["method"]) == "thread-stream-following-status-requested") { await FollowAsync(true, lifetime.Token); return; }
         if (Text(m["method"]) != "thread-stream-state-changed" || Text(m["sourceClientId"]) != owner) return;
-        if (m["version"]?.GetValue<int>() != 11) throw new IOException("不兼容的 Codex 桌面流协议版本，需要更新适配器。");
+        if (m["version"]?.GetValue<int>() is not (11 or 13)) throw new IOException("不兼容的 Codex 桌面流协议版本，需要更新适配器。");
         var change = p!["change"]!;
         bool resync = false;
         SessionView? view = null;

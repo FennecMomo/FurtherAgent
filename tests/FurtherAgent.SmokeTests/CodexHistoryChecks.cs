@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using FurtherAgent.Core;
@@ -74,6 +75,7 @@ internal static class CodexHistoryChecks
         } } } };
         var small = CodexDesktopAdapter.ToView(modern);
         check(small.Messages.Select(m => m.Text).SequenceEqual(new[] { "old", "new" }) && small.StatusDetail is null, "small modern history stays complete and ordered");
+        await RunStateStreamChecks(modern, check);
         stream.Position = 0;
         bool rejected = false;
         try { await Frames.ReadAsync(stream, default); } catch (IOException) { rejected = true; }
@@ -82,6 +84,56 @@ internal static class CodexHistoryChecks
         rejected = false;
         try { await Frames.ReadDesktopAsync(shortFrame, default); } catch (IOException) { rejected = true; }
         check(rejected, "truncated desktop frame fails without hanging");
+    }
+
+    private static async Task RunStateStreamChecks(JsonObject modern, Action<bool, string> check)
+    {
+        const string thread = "stream-test";
+        const string desktopOwner = "desktop-test";
+        const BindingFlags instanceMembers = BindingFlags.Instance | BindingFlags.NonPublic;
+        var adapterType = typeof(CodexDesktopAdapter);
+        var dispatch = adapterType.GetMethod("BroadcastAsync", instanceMembers)!;
+        foreach (int version in new[] { 11, 13 })
+        {
+            // Set the result of owner discovery without opening the real desktop pipe.
+            await using var adapter = new CodexDesktopAdapter();
+            adapterType.GetField("sessionId", instanceMembers)!.SetValue(adapter, thread);
+            adapterType.GetField("owner", instanceMembers)!.SetValue(adapter, desktopOwner);
+            var broadcast = dispatch.CreateDelegate<Func<JsonNode, Task>>(adapter);
+            var updates = new List<SessionView>();
+            adapter.Changed += updates.Add;
+
+            Task Receive(int streamVersion, object change) => broadcast(Json.Node(new
+            {
+                type = "broadcast", method = "thread-stream-state-changed", sourceClientId = desktopOwner,
+                version = streamVersion, @params = new { hostId = "local", conversationId = thread, change }
+            }));
+
+            var state = version == 11
+                ? JsonNode.Parse("""{"turns":[{"items":[{"type":"agentMessage","text":"legacy"}]}]}""")!.AsObject()
+                : modern.DeepClone().AsObject();
+            state["id"] = thread;
+            if (version == 13) state["turns"] = new JsonArray();
+            var snapshot = new { type = "snapshot", revision = 1, conversationState = state };
+            await Receive(version, snapshot);
+            string[] expected = version == 11 ? ["legacy"] : ["old", "new"];
+            check(updates is [{ Id: thread } view] && view.Messages.Select(m => m.Text).SequenceEqual(expected),
+                $"Codex v{version} stream publishes an ordered snapshot");
+            if (version != 13) continue;
+
+            await Receive(13, new
+            {
+                type = "patches", baseRevision = 1, revision = 2,
+                patches = JsonNode.Parse("""[{"op":"replace","path":["turnHistory","history","entitiesByKey","new","items",0,"text"],"value":"updated"}]""")
+            });
+            check(updates.Count == 2 && updates[^1].Messages.Select(m => m.Text).SequenceEqual(new[] { "old", "updated" }),
+                "Codex v13 stream publishes a patch against its snapshot revision");
+
+            bool rejected = false;
+            try { await Receive(14, snapshot); }
+            catch (IOException error) when (error.Message.Contains("协议版本", StringComparison.Ordinal)) { rejected = true; }
+            check(rejected && updates.Count == 2, "unknown Codex stream version is rejected before publishing an update");
+        }
     }
 }
 
