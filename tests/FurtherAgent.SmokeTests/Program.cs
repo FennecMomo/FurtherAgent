@@ -28,6 +28,7 @@ if (args.Contains("--attachment-cache-checks")) { AttachmentCacheChecks.Run(Chec
 if (args.Contains("--codex-recovery-checks")) { CodexRecoveryChecks.Run(Check); return; }
 if (args.Contains("--dsh-adapter-checks")) { await DshAdapterChecks.Run(Check); Console.WriteLine($"ALL {passed} DSH CHECKS PASSED"); return; }
 if (args.Contains("--lan-checks")) { await LanChecks.Run(Check); Console.WriteLine($"ALL {passed} LAN CHECKS PASSED"); return; }
+if (args.Contains("--p2p-checks")) { await PublicDirectChecks.Run(Check); Console.WriteLine($"ALL {passed} PUBLIC DIRECT CHECKS PASSED"); return; }
 if (args.Contains("--codex-permission-fixture")) { Console.WriteLine(Json.Node(CodexPermissions.Values.Select(CodexPermissions.Build).ToArray()).ToJsonString()); return; }
 if (args.Contains("--codex-interaction-checks")) { await CodexInteractionChecks.Run(Check); Console.WriteLine($"ALL {passed} INTERACTION CHECKS PASSED"); return; }
 if (args.Contains("--codex-history-checks")) { await CodexHistoryChecks.Run(Check); return; }

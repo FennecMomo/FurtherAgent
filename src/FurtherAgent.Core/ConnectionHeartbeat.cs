@@ -27,7 +27,12 @@ public sealed class ConnectionHeartbeat(RegistryClient registry, RemoteDevice re
     }
     private async Task CheckRelay()
     {
-        if (remote.ConnectionKind == "局域网直连") { Volatile.Write(ref relay, new("未使用（局域网直连）")); return; }
+        string kind = remote.ConnectionKind;
+        if (remote.IsConnected && kind is "局域网直连" or "点对点直连")
+        {
+            Volatile.Write(ref relay, new($"未使用（{kind}）"));
+            return;
+        }
         var previous = Relay;
         Volatile.Write(ref relay, previous with { State = "检测中" });
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);

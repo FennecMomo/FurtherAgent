@@ -1,3 +1,9 @@
+## 2026-11-18 桌面与接入端 0.16.0 / Android 0.14.0 点对点直连
+
+- 通过现有中继协商、WebRTC ICE 和可靠数据通道建立直连。旧接入端、UDP 不可达或无法完成握手的网络沿用服务器中继。中继无需换版。功能和环境变量见 [点对点直连说明](Peer-Connections.md)。
+- Windows 解决方案 Release 与 Android Release Compile 均通过，0 警告、0 错误。7 项隔离点对点检查和 14 项局域网回归通过。点对点检查使用本机 ICE 候选，验证了旧接入端兼容、直连升级、发送不重放、直连断开回到中继、停掉测试中继后直连仍在线、Mini 复用，以及 390241 字节附件的双向传输和完整性。未打包、安装或部署。
+- 待实机验收包括家里 Wi-Fi 经路由器和光猫到另一宽带、Android 蜂窝网和切换网络、运营商 NAT 或 UDP 被拦时的回退，以及同一张图片在直连和中继下的实测速率。还需在真实跨网环境确认 Clash 下的来源接口及两个终端的有效路由。
+
 ## 2026-11-18 本机 Clash Verge TUN 直连配置
 
 - 本机 Clash Verge 2.4.5 / Mihomo 1.19.19 实际为 TUN 开启、规则模式。全局扩展脚本新增 FurtherAgent.Client.exe、FurtherAgent.Host.exe、FurtherAgent.Cli.exe 及 FurtherAgent 中继、更新服务精确域名的优先 DIRECT 规则；两个服务域名采用专用 DIRECT DNS。保留原有 ToDesk 规则、其余分流、代理选择和 TUN 设置。

@@ -7,9 +7,9 @@
     <SingleProject>true</SingleProject>
     <ApplicationTitle>FurtherAgent</ApplicationTitle>
     <ApplicationId>top.fennecmomo.furtheragent</ApplicationId>
-    <ApplicationDisplayVersion>0.13.2</ApplicationDisplayVersion>
-    <Version>0.13.2</Version>
-    <ApplicationVersion>1302</ApplicationVersion>
+    <ApplicationDisplayVersion>0.14.0</ApplicationDisplayVersion>
+    <Version>0.14.0</Version>
+    <ApplicationVersion>1400</ApplicationVersion>
     <SupportedOSPlatformVersion>26.0</SupportedOSPlatformVersion>
     <AndroidPackageFormats>apk</AndroidPackageFormats>
     <PublishTrimmed>false</PublishTrimmed>
@@ -26,6 +26,7 @@
     <MauiIcon Include="Resources/AppIcon/appicon.svg" Color="#183F34" />
     <MauiImage Include="Resources/Images/*.svg" BaseSize="24,24" />
     <MauiAsset Include="Resources/Images/LUCIDE-LICENSE.txt" LogicalName="third-party/LUCIDE-LICENSE.txt" />
+    <MauiAsset Include="../../third-party/*" LogicalName="third-party/%(Filename)%(Extension)" />
     <MauiSplashScreen Include="Resources/AppIcon/appicon.svg" Color="#F6F8F5" BaseSize="100,100" />
   </ItemGroup>
 </Project>

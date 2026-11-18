@@ -12,6 +12,8 @@ public sealed class DeviceHost : IAsyncDisposable
     private readonly Func<IAgentAdapter> factory;
     private readonly SharedAgentHub agents;
     private readonly CancellationTokenSource lifetime = new();
+    private readonly SemaphoreSlim publicPeerSlots = new(DeviceRegistration.SupportedMaxControllers);
+    private readonly List<Task> publicPeers = [];
     private Task? supervisor;
     private WebSocketTransport? control;
     private string name = "";
@@ -27,10 +29,13 @@ public sealed class DeviceHost : IAsyncDisposable
     public DeviceLease? Lease { get; private set; }
     public event Action<string>? Status;
     public event Action<string>? CodeChanged;
-    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false, bool enableLan = true)
-    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; this.enableLan = enableLan; }
+    public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false, bool enableLan = true, bool? enableP2p = null)
+    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; this.enableLan = enableLan;
+        // Isolated HTTP relays require explicit opt-in, so local fixtures do not query public STUN.
+        this.enableP2p = enableP2p ?? new Uri(registry.ServerIdentity).Scheme == Uri.UriSchemeHttps; }
 
     private readonly bool enableLan;
+    private readonly bool enableP2p;
     public async Task StartAsync(string name, CancellationToken ct = default)
     {
         this.name = name;
@@ -145,6 +150,31 @@ public sealed class DeviceHost : IAsyncDisposable
         catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("远程会话连接结束：" + ex.Message); }
     }
     private Task ServePeerAsync(IConnectionTransport socket, CancellationToken ct) => ServeSessionPeerAsync(socket, ct, true);
+
+    private async Task ServePublicPeerAsync(PublicPeerTransport transport, CancellationToken relayToken, Action finished)
+    {
+        try
+        {
+            await using (transport)
+            {
+                // A half-open offer belongs to this relay session. Once the
+                // authenticated channel opens, only device shutdown owns it.
+                using (var opening = CancellationTokenSource.CreateLinkedTokenSource(relayToken, lifetime.Token))
+                {
+                    opening.CancelAfter(TimeSpan.FromSeconds(15));
+                    await transport.WaitReadyAsync(opening.Token);
+                }
+                await ServePeerAsync(transport, lifetime.Token);
+            }
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException) { /* A failed direct attempt leaves the relay available. */ }
+        finally
+        {
+            publicPeerSlots.Release();
+            finished();
+        }
+    }
+
     private async Task ServeSessionPeerAsync(IConnectionTransport socket, CancellationToken ct, bool physical)
     {
         try
@@ -153,6 +183,49 @@ public sealed class DeviceHost : IAsyncDisposable
             await using var adapter = await agents.ConnectAsync(ct);
             await using var peer = new RpcPeer(socket);
             await using var channels = physical ? new SessionChannelMultiplexer(peer, (channel, token) => ServeSessionPeerAsync(channel, token, false)) : null;
+            bool publicPeerAvailable = physical && socket is WebSocketTransport && enableP2p && PublicPeerTransport.Enabled;
+            int publicOfferActive = 0;
+            async Task<JsonNode> AcceptPublicOffer(JsonNode? args, CancellationToken token)
+            {
+                if (args is not JsonObject offer || offer["sdp"] is not JsonValue value ||
+                    !value.TryGetValue<string>(out var sdp) || string.IsNullOrWhiteSpace(sdp) || sdp.Length > PublicPeerTransport.MaxDescriptionLength)
+                    throw new IOException("点对点直连协商信息无效。");
+                if (Interlocked.Exchange(ref publicOfferActive, 1) != 0)
+                    throw new IOException("点对点直连正在协商。");
+                if (!publicPeerSlots.Wait(0))
+                {
+                    Volatile.Write(ref publicOfferActive, 0);
+                    throw new IOException("点对点直连已达到控制端数量上限。");
+                }
+                PublicPeerTransport? transport = null;
+                try
+                {
+                    using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
+                    deadline.CancelAfter(TimeSpan.FromSeconds(6));
+                    var response = await PublicPeerTransport.AcceptOfferAsync(sdp, deadline.Token);
+                    transport = response.Transport;
+                    if (response.Answer.Length > PublicPeerTransport.MaxDescriptionLength) throw new IOException("点对点直连协商信息过长。");
+                    var reply = Json.Node(new { sdp = response.Answer });
+                    var worker = ServePublicPeerAsync(transport, token, () => Volatile.Write(ref publicOfferActive, 0));
+                    lock (publicPeers)
+                    {
+                        publicPeers.RemoveAll(task => task.IsCompleted);
+                        publicPeers.Add(worker);
+                    }
+                    transport = null;
+                    return reply;
+                }
+                catch
+                {
+                    try { if (transport is not null) await transport.DisposeAsync(); }
+                    finally
+                    {
+                        publicPeerSlots.Release();
+                        Volatile.Write(ref publicOfferActive, 0);
+                    }
+                    throw;
+                }
+            }
             using var pumping = CancellationTokenSource.CreateLinkedTokenSource(ct);
             int incremental = 0;
             int paged = 0;
@@ -208,8 +281,9 @@ public sealed class DeviceHost : IAsyncDisposable
                 "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, args?["version"]?.GetValue<int>() is 3 ? 3 : args?["version"]?.GetValue<int>() is 2 ? 2 : 1) >= 0, version = Volatile.Read(ref paged) }),
                 "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
-                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, args?["version"]?.GetValue<int>() >= 2 ? 2 : 1) >= 0, version = Volatile.Read(ref incremental), transportPing = true, sessionChannels = physical ? 1 : 0 }),
+                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, args?["version"]?.GetValue<int>() >= 2 ? 2 : 1) >= 0, version = Volatile.Read(ref incremental), transportPing = true, sessionChannels = physical ? 1 : 0, publicP2p = publicPeerAvailable ? 1 : 0 }),
                 "session-channel/open" when channels is not null => await channels.AcceptAsync(args, token),
+                "p2p/offer" when publicPeerAvailable => await AcceptPublicOffer(args, token),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id is "hermes" or "codex" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
@@ -240,7 +314,12 @@ public sealed class DeviceHost : IAsyncDisposable
                 }
                 catch (Exception) { socket.Abort(); }
             });
-            if (physical) Status?.Invoke(socket is LanTransport ? "控制端已通过局域网直连。" : "远程端已通过服务端中继连接。");
+            if (physical) Status?.Invoke(socket switch
+            {
+                LanTransport => "控制端已通过局域网直连。",
+                PublicPeerTransport => "控制端已通过点对点直连。",
+                _ => "远程端已通过服务端中继连接。"
+            });
             var pump = Task.Run(async () =>
             {
                 try
@@ -274,6 +353,10 @@ public sealed class DeviceHost : IAsyncDisposable
         lifetime.Cancel(); control?.Abort();
         if (supervisor is not null) await supervisor;
         if (lan is not null) await lan.DisposeAsync();
+        Task[] pendingPublicPeers;
+        lock (publicPeers) pendingPublicPeers = [.. publicPeers];
+        await Task.WhenAll(pendingPublicPeers);
+        publicPeerSlots.Dispose();
         await agents.DisposeAsync();
         if (files.IsValueCreated) files.Value.Dispose();
         if (control is not null) await control.DisposeAsync();
@@ -332,6 +415,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     private Task? supervisor;
     public string ConnectionKind { get; private set; } = "服务器中继";
     private LanPairing? pairing;
+    private bool relaySupportsPublicPeer;
     private string? attached;
     private int historyMode;
     private long selectionRevision;
@@ -403,53 +487,114 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             await connection.WriteAsync(Json.Node(new { ticket = Device.Ticket }), timeout.Token);
             var response = await connection.ReadLimitedAsync(4096, timeout.Token);
             if (response["ok"]?.GetValue<bool>() != true) throw new IOException(response["error"]?.ToString() ?? "中继连接失败。");
-            socket = connection; ConnectionKind = "服务器中继"; Peer = NewPeer(connection); await EnableSync(Peer, timeout.Token);
+            socket = connection; ConnectionKind = "服务器中继"; Peer = NewPeer(connection);
+            relaySupportsPublicPeer = await EnableSync(Peer, timeout.Token);
             try
             {
                 var info = await Peer.CallAsync("lan-info", null, timeout.Token, TimeSpan.FromSeconds(5));
                 if (info is not null) { pairing = Json.Read<LanPairing>(info); LanTrustStore.Save(registry.ServerIdentity, code, pairing); }
             }
             catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or TimeoutException) { }
-            await TryUpgradeAsync(timeout.Token);
+            await TryUpgradeLanAsync(timeout.Token);
             ConnectedAt = DateTimeOffset.UtcNow;
         }
         catch { await connection.DisposeAsync(); throw; }
     }
-    private static async Task EnableSync(RpcPeer peer, CancellationToken ct)
+    private static async Task<bool> EnableSync(RpcPeer peer, CancellationToken ct)
     {
         try
         {
             var capabilities = await peer.CallAsync("session-sync", new { version = 2 }, ct);
             peer.SupportsTransportPing = capabilities?["transportPing"]?.GetValue<bool>() == true;
             peer.SupportsSessionChannels = capabilities?["sessionChannels"]?.GetValue<int>() >= 1;
+            return capabilities?["publicP2p"] is JsonValue p2p && p2p.TryGetValue<int>(out int version) && version == 1;
         }
         catch (IOException) when (peer.Completion?.IsCompleted == false) { }
+        return false;
     }
-    private async Task<bool> TryUpgradeAsync(CancellationToken ct)
+
+    private bool CanUpgrade() => IsConnected && !Peer.HasPendingCalls && Peer.SessionChannels?.ActiveCount == 0;
+
+    private Task<bool> TryUpgradeLanAsync(CancellationToken ct) => pairing is { } trustedLan && ConnectionKind != "局域网直连"
+        ? TryUpgradeAsync("局域网直连", (_, token) => LanHost.ConnectAsync(trustedLan, token), ct)
+        : Task.FromResult(false);
+
+    private static async Task<IConnectionTransport?> OpenPublicPeerAsync(RpcPeer relay, CancellationToken ct)
     {
-        if (pairing is null || ConnectionKind == "局域网直连" || Peer.HasPendingCalls || !IsConnected || Peer.SessionChannels?.ActiveCount > 0) return false;
-        var previous = Peer; var previousSocket = socket; long revision = Interlocked.Read(ref selectionRevision);
+        var (transport, offer) = await PublicPeerTransport.CreateOfferAsync(ct);
+        try
+        {
+            if (offer.Length > PublicPeerTransport.MaxDescriptionLength) throw new IOException("点对点直连协商信息过长。");
+            // Finishing this small signaling write keeps a cancelled probe from
+            // interrupting the working relay socket and its other RPCs.
+            var reply = await relay.CallChannelAsync("p2p/offer", new { sdp = offer }, ct);
+            if (reply is not JsonObject answer || answer["sdp"] is not JsonValue value ||
+                !value.TryGetValue<string>(out var sdp) || string.IsNullOrWhiteSpace(sdp) || sdp.Length > PublicPeerTransport.MaxDescriptionLength)
+                throw new IOException("点对点直连协商应答无效。");
+            await transport.ConnectAsync(sdp, ct);
+            return transport;
+        }
+        catch
+        {
+            await transport.DisposeAsync();
+            throw;
+        }
+    }
+
+    private async Task<bool> TryUpgradeAsync(string kind,
+        Func<RpcPeer, CancellationToken, Task<IConnectionTransport?>> openDirect, CancellationToken ct)
+    {
+        if (!CanUpgrade()) return false;
+        var previous = Peer;
         IConnectionTransport? direct = null; RpcPeer? candidate = null;
         try
         {
-            direct = await LanHost.ConnectAsync(pairing, ct); if (direct is null) return false;
+            direct = await openDirect(previous, ct);
+            if (direct is null || !CanUpgrade()) return false;
+            long revision = Interlocked.Read(ref selectionRevision);
             candidate = NewPeer(direct); await EnableSync(candidate, ct);
+            if (direct is PublicPeerTransport)
+            {
+                if (!candidate.SupportsTransportPing) return false;
+                var pong = await candidate.CallAsync("transport-ping", null, ct);
+                if (pong is not JsonValue value || !value.TryGetValue<bool>(out bool ok) || !ok) return false;
+            }
             if (historyMode > 0) await candidate.CallAsync("history-mode", new { version = historyMode }, ct);
             if (attached is { } id) await SessionHistory.ReadAsync(candidate, "attach", new { id }, ct);
             if (previous.SessionChannels?.TryRetireIfEmpty(() => previous.TryRedirectTo(candidate,
-                () => Peer == previous && Interlocked.Read(ref selectionRevision) == revision)) != true) return false;
-            socket = direct; Peer = candidate; ConnectionKind = "局域网直连";
+                () => !ct.IsCancellationRequested && Peer == previous && candidate.Completion?.IsCompleted == false &&
+                    Interlocked.Read(ref selectionRevision) == revision)) != true) return false;
+            socket = direct; Peer = candidate; ConnectionKind = kind;
             direct = null; candidate = null;
-            await previous.DisposeAsync(); if (previousSocket is not null) await previousSocket.DisposeAsync();
+            await previous.DisposeAsync();
             return true;
         }
         catch (Exception ex) when (ex is IOException or SocketException or TimeoutException or AuthenticationException or OperationCanceledException or ObjectDisposedException) { return false; }
         finally { if (candidate is not null) await candidate.DisposeAsync(); if (direct is not null) await direct.DisposeAsync(); }
     }
+
     private async Task SuperviseAsync(RegistryClient registry, string code)
     {
+        // Publish the usable relay without waiting for the first public probe.
+        await Task.Yield();
+        long nextPublicProbe = 0;
         while (!lifetime.IsCancellationRequested)
         {
+            if (relaySupportsPublicPeer && socket is WebSocketTransport && PublicPeerTransport.Enabled &&
+                Environment.TickCount64 >= nextPublicProbe && CanUpgrade())
+            {
+                nextPublicProbe = Environment.TickCount64 + 30_000;
+                using var publicProbe = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+                publicProbe.CancelAfter(TimeSpan.FromSeconds(15));
+                bool upgraded = false;
+                try { upgraded = await TryUpgradeAsync("点对点直连", OpenPublicPeerAsync, publicProbe.Token); }
+                catch (Exception ex) when (ex is not OutOfMemoryException) { /* Retain the relay if optional transport setup fails. */ }
+                if (upgraded && !lifetime.IsCancellationRequested)
+                {
+                    ConnectionChanged?.Invoke(true, "已切换为点对点直连。");
+                    Reconnected?.Invoke();
+                }
+            }
             var observed = Peer;
             var done = await Task.WhenAny(observed.Completion!, Task.Delay(TimeSpan.FromSeconds(15), lifetime.Token));
             if (lifetime.IsCancellationRequested) return;
@@ -457,14 +602,17 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             if (done != observed.Completion)
             {
                 using var probe = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); probe.CancelAfter(TimeSpan.FromSeconds(8));
-                try { if (await TryUpgradeAsync(probe.Token)) { ConnectionChanged?.Invoke(true, "已切换为局域网直连。"); Reconnected?.Invoke(); } }
+                try { if (await TryUpgradeLanAsync(probe.Token)) { ConnectionChanged?.Invoke(true, "已切换为局域网直连。"); Reconnected?.Invoke(); } }
                 catch (OperationCanceledException) when (!lifetime.IsCancellationRequested) { }
-                if (ConnectionKind == "局域网直连" && !Peer.HasPendingCalls) await CheckConnectionAsync();
+                if (socket is not WebSocketTransport && !Peer.HasPendingCalls) await CheckConnectionAsync();
                 continue;
             }
             DisconnectedAt = DateTimeOffset.UtcNow;
             IsReconnecting = autoReconnect;
-            ConnectionChanged?.Invoke(false, autoReconnect ? "连接已断开，正在选择局域网或中继…" : "连接已断开。");
+            // Keep a usable relay long enough to recover when a previously
+            // working direct path fails because UDP or the network changed.
+            nextPublicProbe = socket is PublicPeerTransport ? Environment.TickCount64 + 30_000 : 0;
+            ConnectionChanged?.Invoke(false, autoReconnect ? "连接已断开，正在重连…" : "连接已断开。");
             await Peer.DisposeAsync();
             if (!autoReconnect) return;
             int attempt = 0;

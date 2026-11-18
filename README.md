@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.16.0 / Android 0.14.0** 新增点对点直连。配对后自动探测，直连成功时会话、图片和文件由两端直接传输。无法直连时沿用公网中继。桌面或手机与接入端需要一起更新，中继无需换版。见 [点对点直连说明](docs/Peer-Connections.md)。
+
 **0.15.7 / Android 0.13.2：补齐本会话始终允许。** Codex 访问权限请求可选择“允许本次”“本会话始终允许”或“拒绝”，会话授权通过原生 `scope: session` 生效。使用说明与验证边界见 [Codex 交互与权限](docs/Codex-Interaction-And-Permissions-QA.md)。
 
 **0.15.6 / Android 0.13.1：Codex 访问权限请求。** 支持 `item/permissions/requestApproval`，桌面和手机显示请求原因、文件与网络访问范围，可允许本轮或拒绝，并通过 Codex 原生接口回传决定。需要同时更新客户端与 Codex 接入端，中继无需更新。接口和验证边界见 [Codex 交互与权限](docs/Codex-Interaction-And-Permissions-QA.md)。
