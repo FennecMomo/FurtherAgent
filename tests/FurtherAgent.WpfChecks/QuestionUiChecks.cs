@@ -63,17 +63,34 @@ internal static class QuestionUiChecks
             if (!accessText.Contains("访问权限") || !accessText.Contains(accessDetail) || accessText.Any(text => text.Contains("原入口处理", StringComparison.Ordinal)))
                 throw new Exception("Codex access approval must show the readable projected title, reason and complete requested scope");
             if (panel.Children.OfType<TextBox>().Any()) throw new Exception("Codex access approval must not accept arbitrary text or permission changes");
-            approvalButtons = panel.Children.OfType<StackPanel>().Single().Children.OfType<Button>().Select(button => button.Content?.ToString()).ToArray();
-            if (!approvalButtons.SequenceEqual(["允许本次", "拒绝"])) throw new Exception("Codex access approval must offer only allow-once and reject");
+            var accessButtons = panel.Children.OfType<WrapPanel>().Single().Children.OfType<Button>().ToArray();
+            if (!accessButtons.Select(button => button.Content?.ToString()).SequenceEqual(["允许本次", "本会话始终允许", "拒绝"]))
+                throw new Exception("Codex access approval must offer allow-once, allow-for-session and reject");
+            if (!accessButtons.Select(ClickDecision).SequenceEqual(["accept", "acceptForSession", "decline"]))
+                throw new Exception("Codex access approval buttons must submit the matching native scope decisions");
             var content = (FrameworkElement)window.Content;
             content.Width = 1100; content.Height = 760;
             content.Measure(new Size(1100, 760)); content.Arrange(new Rect(0, 0, 1100, 760)); content.UpdateLayout();
             var bitmap = new RenderTargetBitmap(1100, 760, 96, 96, PixelFormats.Pbgra32); bitmap.Render(content);
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(output); encoder.Save(file);
-            Console.WriteLine("PASS: actual desktop question panel preserves question drafts and multi-select answers, shows full review and requested access scopes, and renders allow-once/reject approvals");
+            Console.WriteLine("PASS: actual desktop question panel preserves question drafts and multi-select answers, shows full requested access scopes, binds once/session/reject decisions, and keeps other approvals at two choices");
         }
         finally { typeof(MainWindow).GetMethod("DisposeTray", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null); app.Shutdown(); }
+    }
+
+    // Inspect live click bindings without submitting a real approval.
+    private static string ClickDecision(Button button)
+    {
+        const BindingFlags instance = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var store = typeof(UIElement).GetProperty("EventHandlersStore", instance)!.GetValue(button)!;
+        var handlers = (Array)store.GetType().GetMethod("GetRoutedEventHandlers", instance)!.Invoke(store, [Button.ClickEvent])!;
+        foreach (var info in handlers)
+        {
+            var handler = (Delegate)info!.GetType().GetProperty("Handler", instance)!.GetValue(info)!;
+            if (handler.Target?.GetType().GetField("decision", instance)?.GetValue(handler.Target) is string decision) return decision;
+        }
+        throw new Exception("Approval button does not contain its live decision binding");
     }
 
     // Inspect the actual submit handler's answer readers without opening a

@@ -636,11 +636,20 @@ public sealed partial class MainPage : ContentPage
         }
         else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or CodexPermissionRequests.Kind or "hermes/approval" or "dsh/approval")
         {
-            string detail = prompt.Kind == CodexPermissionRequests.Kind ? prompt.Detail
+            bool accessRequest = prompt.Kind == CodexPermissionRequests.Kind;
+            string detail = accessRequest ? prompt.Detail
                 : prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail;
             string heading = prompt.Kind == "dsh/approval" ? "DSH 工具权限" : prompt.Title;
-            string decision = await DisplayActionSheetAsync(heading + "\n" + detail, "稍后处理", "拒绝", "允许本次");
-            if (decision is "允许本次" or "拒绝") await session.RespondAsync(prompt.Id, decision == "允许本次" ? "accept" : "decline");
+            string[] choices = accessRequest ? ["允许本次", "本会话始终允许"] : ["允许本次"];
+            string decision = await DisplayActionSheetAsync(heading + "\n" + detail, "稍后处理", "拒绝", choices);
+            string? response = decision switch
+            {
+                "允许本次" => "accept",
+                "本会话始终允许" when accessRequest => "acceptForSession",
+                "拒绝" => "decline",
+                _ => null
+            };
+            if (response is not null) await session.RespondAsync(prompt.Id, response);
         }
         else await DisplayAlertAsync("请在远端处理", prompt.Title + "\n" + prompt.Detail, "知道了");
     });

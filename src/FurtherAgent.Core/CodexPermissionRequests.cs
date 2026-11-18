@@ -46,13 +46,13 @@ public static class CodexPermissionRequests
             if (!HasContent(permissions)) details.Add("请求未提供访问权限。");
         }
         else details.Add("权限内容无法识别：" + Text(args?["permissions"]));
-        details.Add("允许范围：当前轮次");
+        details.Add("可允许当前轮次，或在本会话中始终允许以上权限。");
         return new(requestId, Kind, "Agent 请求访问权限", string.Join("\n", details), parameters?.DeepClone());
     }
 
     public static JsonObject BuildResponse(JsonNode? parameters, string decision)
     {
-        if (decision is not ("accept" or "decline")) throw new ArgumentException("权限请求只支持允许本次或拒绝。", nameof(decision));
+        if (decision is not ("accept" or "acceptForSession" or "decline")) throw new ArgumentException("权限请求只支持允许本次、本会话始终允许或拒绝。", nameof(decision));
         if (decision == "decline") return new JsonObject { ["permissions"] = new JsonObject(), ["scope"] = "turn" };
         if (parameters is not JsonObject args || args["permissions"] is not JsonObject permissions || !HasContent(permissions))
             throw new ArgumentException("权限请求内容缺失或无效，请刷新后再操作。", nameof(parameters));
@@ -66,7 +66,7 @@ public static class CodexPermissionRequests
             foreach (string field in new[] { "read", "write", "entries" })
                 if (fileSystem[field] is { } paths && paths is not JsonArray)
                     throw new ArgumentException("文件权限请求内容无效，请刷新后再操作。", nameof(parameters));
-        return new JsonObject { ["permissions"] = permissions.DeepClone(), ["scope"] = "turn" };
+        return new JsonObject { ["permissions"] = permissions.DeepClone(), ["scope"] = decision == "acceptForSession" ? "session" : "turn" };
     }
 
     private static bool HasContent(JsonNode? node) => node switch

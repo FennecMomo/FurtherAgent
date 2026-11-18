@@ -709,8 +709,12 @@ public partial class MainWindow : Window
                 string detail = accessRequest ? prompt.Detail : prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail;
                 PromptPanel.Children.Add(new TextBlock { Text = heading, FontWeight = FontWeights.SemiBold });
                 PromptPanel.Children.Add(new TextBlock { Text = detail, TextWrapping = TextWrapping.Wrap });
-                var buttons = new StackPanel { Orientation = Orientation.Horizontal };
-                foreach (var (label, decision) in new[] { ("允许本次", "accept"), ("拒绝", "decline") })
+                Panel buttons = accessRequest ? new WrapPanel { Orientation = Orientation.Horizontal }
+                    : new StackPanel { Orientation = Orientation.Horizontal };
+                var choices = accessRequest
+                    ? new[] { ("允许本次", "accept"), ("本会话始终允许", "acceptForSession"), ("拒绝", "decline") }
+                    : new[] { ("允许本次", "accept"), ("拒绝", "decline") };
+                foreach (var (label, decision) in choices)
                 {
                     var button = new Button { Content = label };
                     button.Click += async (_, _) => await ActionAsync(async peer => { await peer.CallAsync("respond", new { id = prompt.Id, decision }); });

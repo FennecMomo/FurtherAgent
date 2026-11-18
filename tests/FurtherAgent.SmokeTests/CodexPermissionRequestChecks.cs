@@ -60,16 +60,26 @@ internal static class CodexPermissionRequestChecks
         check(bounded["scope"]?.ToString() == "turn" && bounded["strictAutoReview"] is null &&
             JsonNode.DeepEquals(bounded["permissions"], parameters["permissions"]),
             "extra response and scope fields cannot extend an allow-once decision to additional paths or the whole session");
+        var sessionGrant = CodexPermissionRequests.BuildResponse(injected, "acceptForSession");
+        check(sessionGrant["scope"]?.ToString() == "session" && sessionGrant.Count == 2 &&
+            JsonNode.DeepEquals(sessionGrant["permissions"], parameters["permissions"]),
+            "explicit session approval grants exactly the requested permission profile while ignoring injected response fields");
+        sessionGrant["permissions"]!["fileSystem"]!["write"]!.AsArray().Add("C:/unrequested");
+        check(parameters["permissions"]!["fileSystem"]!["write"]!.AsArray().Count == 1 &&
+            prompt.Payload!["permissions"]!["fileSystem"]!["write"]!.AsArray().Count == 1 &&
+            CodexPermissionRequests.BuildResponse(parameters, "accept")["scope"]?.ToString() == "turn",
+            "session approval clones its permissions and does not change the source request or later allow-once decisions");
         var denied = CodexPermissionRequests.BuildResponse(parameters, "decline");
         check(denied["permissions"] is JsonObject { Count: 0 } && denied["scope"]?.ToString() == "turn",
             "rejecting a permission request returns an empty permission grant");
 
-        bool invalid = new[] { "acceptForSession", "always", "cancel", "", "injected" }
+        bool invalid = new[] { "acceptForever", "always", "cancel", "", "injected" }
             .All(decision => Rejects(() => CodexPermissionRequests.BuildResponse(parameters, decision)));
         check(invalid, "unsupported permission decisions are rejected before preparing a native response");
         check(new JsonNode?[] { null, new JsonObject(), JsonNode.Parse("""{"permissions":true}"""), JsonNode.Parse("""{"permissions":[]}""") }
-            .All(input => Rejects(() => CodexPermissionRequests.BuildResponse(input, "accept"))),
-            "allow-once rejects a missing or malformed requested permission profile");
+            .All(input => new[] { "accept", "acceptForSession" }
+                .All(decision => Rejects(() => CodexPermissionRequests.BuildResponse(input, decision)))),
+            "turn and session approval both reject a missing or malformed requested permission profile");
         check(CodexPermissionRequests.BuildResponse(null, "decline")["permissions"] is JsonObject { Count: 0 },
             "a malformed request can still be rejected without granting permissions");
 
