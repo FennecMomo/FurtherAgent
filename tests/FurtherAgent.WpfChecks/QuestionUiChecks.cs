@@ -56,14 +56,22 @@ internal static class QuestionUiChecks
             if (!panel.Children.OfType<TextBlock>().Any(text => text.Text == "DSH 工具权限")) throw new Exception("DSH approval heading missing");
             var approvalButtons = panel.Children.OfType<StackPanel>().Single().Children.OfType<Button>().Select(button => button.Content?.ToString()).ToArray();
             if (!approvalButtons.SequenceEqual(["允许本次", "拒绝"])) throw new Exception("DSH approval must offer only allow-once and reject");
-            Render(new("dsh-question", "item/tool/requestUserInput", "DSH 需要你的回答", "", dshPayload));
+            const string accessDetail = "原因：读取参考文件并保存结果。\n允许读取：C:/permission-fixture/reference\n允许写入：C:/permission-fixture/output\n网络访问：允许";
+            Render(new("access-request", CodexPermissionRequests.Kind, "访问权限", accessDetail,
+                new JsonObject { ["reason"] = "读取参考文件并保存结果。", ["permissions"] = new JsonObject { ["network"] = new JsonObject { ["enabled"] = true } } }));
+            var accessText = panel.Children.OfType<TextBlock>().Select(text => text.Text).ToArray();
+            if (!accessText.Contains("访问权限") || !accessText.Contains(accessDetail) || accessText.Any(text => text.Contains("原入口处理", StringComparison.Ordinal)))
+                throw new Exception("Codex access approval must show the readable projected title, reason and complete requested scope");
+            if (panel.Children.OfType<TextBox>().Any()) throw new Exception("Codex access approval must not accept arbitrary text or permission changes");
+            approvalButtons = panel.Children.OfType<StackPanel>().Single().Children.OfType<Button>().Select(button => button.Content?.ToString()).ToArray();
+            if (!approvalButtons.SequenceEqual(["允许本次", "拒绝"])) throw new Exception("Codex access approval must offer only allow-once and reject");
             var content = (FrameworkElement)window.Content;
             content.Width = 1100; content.Height = 760;
             content.Measure(new Size(1100, 760)); content.Arrange(new Rect(0, 0, 1100, 760)); content.UpdateLayout();
             var bitmap = new RenderTargetBitmap(1100, 760, 96, 96, PixelFormats.Pbgra32); bitmap.Render(content);
             var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
             using var file = File.Create(output); encoder.Save(file);
-            Console.WriteLine("PASS: actual desktop question panel preserves single-choice drafts, shows DSH review details, produces multi-select string[] answers, and renders allow-once/reject approvals");
+            Console.WriteLine("PASS: actual desktop question panel preserves question drafts and multi-select answers, shows full review and requested access scopes, and renders allow-once/reject approvals");
         }
         finally { typeof(MainWindow).GetMethod("DisposeTray", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(window, null); app.Shutdown(); }
     }

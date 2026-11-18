@@ -702,10 +702,13 @@ public partial class MainWindow : Window
                 });
                 PromptPanel.Children.Add(button);
             }
-            else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or "hermes/approval" or "dsh/approval")
+            else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or CodexPermissionRequests.Kind or "hermes/approval" or "dsh/approval")
             {
-                PromptPanel.Children.Add(new TextBlock { Text = prompt.Kind == "dsh/approval" ? "DSH 工具权限" : prompt.Kind == "hermes/approval" ? "Hermes 工具权限" : prompt.Kind.Contains("commandExecution") ? "执行命令" : "修改文件", FontWeight = FontWeights.SemiBold });
-                PromptPanel.Children.Add(new TextBlock { Text = prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail, TextWrapping = TextWrapping.Wrap });
+                bool accessRequest = prompt.Kind == CodexPermissionRequests.Kind;
+                string heading = accessRequest ? prompt.Title : prompt.Kind == "dsh/approval" ? "DSH 工具权限" : prompt.Kind == "hermes/approval" ? "Hermes 工具权限" : prompt.Kind.Contains("commandExecution") ? "执行命令" : "修改文件";
+                string detail = accessRequest ? prompt.Detail : prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail;
+                PromptPanel.Children.Add(new TextBlock { Text = heading, FontWeight = FontWeights.SemiBold });
+                PromptPanel.Children.Add(new TextBlock { Text = detail, TextWrapping = TextWrapping.Wrap });
                 var buttons = new StackPanel { Orientation = Orientation.Horizontal };
                 foreach (var (label, decision) in new[] { ("允许本次", "accept"), ("拒绝", "decline") })
                 {

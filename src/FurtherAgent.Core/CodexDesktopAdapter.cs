@@ -310,11 +310,13 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             "item/commandExecution/requestApproval" => "thread-follower-command-approval-decision",
             "item/fileChange/requestApproval" => "thread-follower-file-approval-decision",
             "item/tool/requestUserInput" => "thread-follower-submit-user-input",
+            CodexPermissionRequests.Kind => "thread-follower-permissions-request-approval-response",
             _ => throw new IOException("第一版暂不支持此类确认，请在 B 的 Codex 桌面处理。")
         };
-        if (method != "item/tool/requestUserInput" && decision is not ("accept" or "decline" or "cancel")) throw new ArgumentException("无效审批决定。");
+        if (method is not ("item/tool/requestUserInput" or CodexPermissionRequests.Kind) && decision is not ("accept" or "decline" or "cancel")) throw new ArgumentException("无效审批决定。");
         var args = new JsonObject { ["conversationId"] = sessionId, ["requestId"] = request["id"]!.DeepClone() };
         if (method == "item/tool/requestUserInput") args["response"] = response?.DeepClone() ?? throw new ArgumentException("需要回答内容。");
+        else if (method == CodexPermissionRequests.Kind) args["response"] = CodexPermissionRequests.BuildResponse(request["params"], decision);
         else args["decision"] = decision;
         await RequestAsync(follower, args, 1, ct);
     }
@@ -357,8 +359,10 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             }
         }
         messages.Reverse();
-        var prompts = (s["requests"]?.AsArray() ?? []).Select(r => new PendingPrompt(Text(r?["id"]), Text(r?["method"]),
-            Text(r?["method"]), r?["params"]?.ToJsonString() ?? "", r?["params"]?.DeepClone())).ToList();
+        var prompts = (s["requests"]?.AsArray() ?? []).Select(r => Text(r?["method"]) == CodexPermissionRequests.Kind
+            ? CodexPermissionRequests.Pending(Text(r?["id"]), r?["params"])
+            : new PendingPrompt(Text(r?["id"]), Text(r?["method"]), Text(r?["method"]),
+                r?["params"]?.ToJsonString() ?? "", r?["params"]?.DeepClone())).ToList();
         prompts.AddRange(CodexQuestions.Pending(turns));
         var latest = turns.LastOrDefault();
         var last = Text(latest?["status"]) == "inProgress" ? latest : null;

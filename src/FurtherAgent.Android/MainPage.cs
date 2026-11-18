@@ -634,9 +634,10 @@ public sealed partial class MainPage : ContentPage
             }
             await session.RespondAsync(prompt.Id, "", new JsonObject { ["answers"] = answers });
         }
-        else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or "hermes/approval" or "dsh/approval")
+        else if (prompt.Kind is "item/commandExecution/requestApproval" or "item/fileChange/requestApproval" or CodexPermissionRequests.Kind or "hermes/approval" or "dsh/approval")
         {
-            string detail = prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail;
+            string detail = prompt.Kind == CodexPermissionRequests.Kind ? prompt.Detail
+                : prompt.Payload?["command"]?.ToString() ?? prompt.Payload?["reason"]?.ToString() ?? prompt.Detail;
             string heading = prompt.Kind == "dsh/approval" ? "DSH 工具权限" : prompt.Title;
             string decision = await DisplayActionSheetAsync(heading + "\n" + detail, "稍后处理", "拒绝", "允许本次");
             if (decision is "允许本次" or "拒绝") await session.RespondAsync(prompt.Id, decision == "允许本次" ? "accept" : "decline");

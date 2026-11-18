@@ -42,6 +42,7 @@ if (args.Length == 5 && args[0] == "--apply-apk-delta")
 }
 if (args.Contains("--hermes-upgrade-checks")) { await HermesUpgradeChecks.Run(Check); Console.WriteLine($"ALL {passed} CHECKS PASSED"); return; }
 if (args.Contains("--question-checks")) { QuestionChecks.Run(Check); return; }
+if (args.Contains("--codex-permission-request-checks")) { CodexPermissionRequestChecks.Run(Check); return; }
 if (args.Contains("--completion-state-checks")) { CompletionChecks.States(Check); Console.WriteLine($"ALL {passed} COMPLETION STATE CHECKS PASSED"); return; }
 if (args.Contains("--codex-settings-checks")) { await CodexSettingsChecks.Run(Check); return; }
 if (args.Contains("--codex-settings-configure-live")) { await CodexSettingsChecks.LiveConfigure(); return; }

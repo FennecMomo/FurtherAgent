@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.15.6 / Android 0.13.1：Codex 访问权限请求。** 支持 `item/permissions/requestApproval`，桌面和手机显示请求原因、文件与网络访问范围，可允许本轮或拒绝，并通过 Codex 原生接口回传决定。需要同时更新客户端与 Codex 接入端，中继无需更新。接口和验证边界见 [Codex 交互与权限](docs/Codex-Interaction-And-Permissions-QA.md)。
+
 **0.15.5：主窗口与 Mini 共用设备连接。** 同一设备的主窗口和 Mini 通过一条网络连接传递各自会话的数据，共用心跳与断线重连；会话选择、历史分页和增量更新仍各自独立。需同时升级桌面和接入端，旧接入端继续使用独立连接兼容。使用方式见 [迷你窗口说明](docs/Compact-Desktop-Mode.md)，必要检查与待验收项目见 [待测试清单](docs/Pending-Tests.md)。
 
 **0.15.4：Mini 与主窗口会话恢复。** 首次配对和会话附加失败自动重试，明确显示网络连接与会话加载状态；Codex 优先复用已加载会话，减少重复切页。新版接入端、中继和局域网入口统一支持 16 个控制连接。必要检查和待验收项目见 [待测试清单](docs/Pending-Tests.md)。
