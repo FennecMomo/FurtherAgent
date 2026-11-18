@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Security.Authentication;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -421,7 +422,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     private long selectionRevision;
     public RpcPeer Peer { get; private set; } = null!;
     public PairResult? Device { get; private set; }
-    public bool IsConnected => Peer is not null && Peer.Completion?.IsCompleted == false;
+    public bool IsConnected => Peer is { IsClosed: false, Completion.IsCompleted: false };
     public bool SupportsSessionChannels => IsConnected && Peer.SupportsSessionChannels;
     public event Action<string, JsonNode?>? Notification;
     public event Action<bool, string>? ConnectionChanged;
@@ -470,35 +471,57 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     private async Task OpenConnectionAsync(RegistryClient registry, string code, CancellationToken ct)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
-        pairing ??= LanTrustStore.Load(registry.ServerIdentity, code);
-        IConnectionTransport? direct = null;
-        if (pairing is not null)
-            try { direct = await LanHost.ConnectAsync(pairing, timeout.Token); }
-            catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException && !timeout.IsCancellationRequested) { }
-        if (direct is not null)
-        {
-            socket = direct; Device = new PairResult(pairing!.Name, ""); ConnectionKind = "局域网直连";
-            Peer = NewPeer(direct); await EnableSync(Peer, timeout.Token); ConnectedAt = DateTimeOffset.UtcNow; return;
-        }
-        Device = await registry.PostAsync<PairResult>("pair", new PairRequest(code), timeout.Token);
-        var connection = await registry.OpenSocketAsync("control", timeout.Token);
+        string stage = "寻找局域网接入端";
         try
         {
+            pairing ??= LanTrustStore.Load(registry.ServerIdentity, code);
+            IConnectionTransport? direct = null;
+            if (pairing is not null)
+                try { direct = await LanHost.ConnectAsync(pairing, timeout.Token); }
+                catch (Exception ex) when (ex is IOException or SocketException or OperationCanceledException && !timeout.IsCancellationRequested) { }
+            if (direct is not null)
+            {
+                stage = "局域网协议协商";
+                socket = direct; Device = new PairResult(pairing!.Name, ""); ConnectionKind = "局域网直连";
+                Peer = NewPeer(direct);
+                await EnableSync(Peer, timeout.Token);
+                if (!IsConnected) throw new IOException("局域网连接已关闭。");
+                ConnectedAt = DateTimeOffset.UtcNow;
+                return;
+            }
+
+            stage = "设备配对";
+            Device = await registry.PostAsync<PairResult>("pair", new PairRequest(code), timeout.Token);
+            stage = "建立中继 WebSocket";
+            var connection = await registry.OpenSocketAsync("control", timeout.Token);
+            socket = connection;
+            stage = "等待接入端加入中继";
             await connection.WriteAsync(Json.Node(new { ticket = Device.Ticket }), timeout.Token);
             var response = await connection.ReadLimitedAsync(4096, timeout.Token);
-            if (response["ok"]?.GetValue<bool>() != true) throw new IOException(response["error"]?.ToString() ?? "中继连接失败。");
-            socket = connection; ConnectionKind = "服务器中继"; Peer = NewPeer(connection);
+            if (response["ok"]?.GetValue<bool>() != true)
+            {
+                string reason = response["error"]?.ToString() ?? "中继未确认控制连接。";
+                throw new ConnectionOpenException(reason, reason.Contains("设备离线", StringComparison.Ordinal));
+            }
+            stage = "接入端协议协商";
+            ConnectionKind = "服务器中继"; Peer = NewPeer(connection);
             relaySupportsPublicPeer = await EnableSync(Peer, timeout.Token);
+            stage = "读取接入端直连信息";
             try
             {
                 var info = await Peer.CallAsync("lan-info", null, timeout.Token, TimeSpan.FromSeconds(5));
                 if (info is not null) { pairing = Json.Read<LanPairing>(info); LanTrustStore.Save(registry.ServerIdentity, code, pairing); }
             }
-            catch (Exception ex) when (ex is IOException or JsonException or UnauthorizedAccessException or TimeoutException) { }
+            catch (Exception ex) when (IsConnected && ex is IOException or JsonException or UnauthorizedAccessException or TimeoutException) { }
             await TryUpgradeLanAsync(timeout.Token);
+            if (!IsConnected) throw new IOException("接入端连接已关闭。");
             ConnectedAt = DateTimeOffset.UtcNow;
         }
-        catch { await connection.DisposeAsync(); throw; }
+        catch (Exception ex) when (!ct.IsCancellationRequested && !lifetime.IsCancellationRequested &&
+            ex is not ConnectionOpenException && ex is HttpRequestException or WebSocketException or SocketException or IOException or JsonException or OperationCanceledException or TimeoutException)
+        {
+            throw ConnectionOpenException.During(stage, ex);
+        }
     }
     private static async Task<bool> EnableSync(RpcPeer peer, CancellationToken ct)
     {
@@ -509,7 +532,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             peer.SupportsSessionChannels = capabilities?["sessionChannels"]?.GetValue<int>() >= 1;
             return capabilities?["publicP2p"] is JsonValue p2p && p2p.TryGetValue<int>(out int version) && version == 1;
         }
-        catch (IOException) when (peer.Completion?.IsCompleted == false) { }
+        catch (IOException) when (!peer.IsClosed && peer.Completion?.IsCompleted == false) { }
         return false;
     }
 
@@ -629,7 +652,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
                     break;
                 }
                 catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { return; }
-                catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.NotFound)
+                catch (ConnectionOpenException ex) when (ex.InnerException is HttpRequestException { StatusCode: System.Net.HttpStatusCode.NotFound })
                 {
                     // A fixed identity is temporarily absent while its host is offline.
                     // Keep retrying; only an explicit disconnect should stop recovery.

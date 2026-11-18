@@ -83,7 +83,7 @@ internal static class MiniRecoveryChecks
             minis.Add(mini);
             return mini;
         }
-        async Task<DeviceHost> StartHost()
+        async Task<DeviceHost> StartHost(string? identityFile = null)
         {
             string? previousIdentity = Environment.GetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE");
             string? previousAccounts = Environment.GetEnvironmentVariable("FURTHERAGENT_MAILBOX_ACCOUNT_DIR");
@@ -95,7 +95,7 @@ internal static class MiniRecoveryChecks
             };
             try
             {
-                Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", identity);
+                Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", identityFile ?? identity);
                 Environment.SetEnvironmentVariable("FURTHERAGENT_MAILBOX_ACCOUNT_DIR", Path.Combine(fixture, "accounts"));
                 await candidate.StartAsync("isolated mini recovery");
                 return candidate;
@@ -173,7 +173,8 @@ internal static class MiniRecoveryChecks
             object mainPool = typeof(MainWindow).GetField("deviceConnections", Private)!.GetValue(main)!;
             try
             {
-                var open = (Task)typeof(MainWindow).GetMethod("OpenDeviceAsync", Private)!.Invoke(main, [url, code])!;
+                var openDevice = typeof(MainWindow).GetMethod("OpenDeviceAsync", Private)!;
+                var open = (Task)openDevice.Invoke(main, [url, code])!;
                 await open;
                 object device = open.GetType().GetProperty("Result")!.GetValue(open)!;
                 typeof(MainWindow).GetMethod("ActivateDevice", Private)!.Invoke(main, [device]);
@@ -186,6 +187,21 @@ internal static class MiniRecoveryChecks
                 Check(state.AttachAttempts >= beforeMainRestore + 2 && mainView?.Id == "main-session" &&
                     device.GetType().GetField("Recovery")!.GetValue(device) is null && state.Sends == 0,
                     "the main window retries session restoration and clears recovery state without sending a message");
+
+                string delayedSecret = new('B', 64);
+                string delayedIdentity = Path.Combine(fixture, "delayed.identity");
+                File.WriteAllText(delayedIdentity, delayedSecret);
+                var delayedLease = await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration("isolated late host", delayedSecret));
+                var retrying = (Task)openDevice.Invoke(main, [url, delayedLease.Code])!;
+                var remoteStatus = (TextBlock)main.FindName("RemoteStatus");
+                await Until(() => retrying.IsCompleted || remoteStatus.Text.Contains("自动重试", StringComparison.Ordinal));
+                Check(!retrying.IsCompleted, "the main window keeps the first attempt alive after the relay reports an offline host");
+                await using var delayedHost = await StartHost(delayedIdentity);
+                await retrying.WaitAsync(TimeSpan.FromSeconds(15));
+                object recovered = retrying.GetType().GetProperty("Result")!.GetValue(retrying)!;
+                var recoveredRemote = (RemoteDevice)recovered.GetType().GetProperty("Remote")!.GetValue(recovered)!;
+                Check(recoveredRemote.IsConnected && state.Sends == 0,
+                    "the main window completes initial device loading after a registered host comes online without replaying a message");
             }
             finally
             {

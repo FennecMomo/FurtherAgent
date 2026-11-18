@@ -19,6 +19,7 @@ if (args.Contains("--slow-history-smoke")) { await SlowHistoryChecks.Run(Check);
 if (args.Contains("--history-transfer-heartbeat-smoke")) { await HistoryTransferHeartbeatChecks.Run(Check); return; }
 if (args.Contains("--text-delta-checks")) { SessionSyncChecks.Run(Check); SessionSyncChecks.RunTextDeltas(Check); return; }
 if (args.Contains("--text-delta-recovery-smoke")) { await TextDeltaRecoveryChecks.Run(Check); return; }
+if (args.Contains("--connection-open-checks")) { await ConnectionOpenChecks.Run(Check); return; }
 if (args.Contains("--connection-recovery-smoke")) { await ConnectionRecoveryChecks.Run(Check); return; }
 if (args.Contains("--shared-connection-smoke")) { await SharedConnectionChecks.Run(Check); return; }
 if (args.Contains("--direct-network-smoke")) { await DirectNetworkChecks.Run(Check); return; }

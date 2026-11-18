@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Windows;
 using System.Windows.Controls;
 using FurtherAgent.Core;
@@ -44,53 +46,112 @@ public partial class MainWindow
 
     private async Task<DeviceContext> OpenDeviceAsync(string server, string code)
     {
+        CancellationToken ct = connectionAttempt?.Token ?? default;
         return await deviceConnections.OpenAsync(server, code, async () =>
         {
-            var added = new DeviceContext(server, code);
+            int[] retryDelays = [1, 4, 12];
+            for (int attempt = 0; ; attempt++)
+            {
+                ct.ThrowIfCancellationRequested();
+                try { return await OpenDeviceOnceAsync(server, code, ct); }
+                catch (ConnectionOpenException ex) when (ex.CanRetry && attempt < retryDelays.Length && !ct.IsCancellationRequested)
+                {
+                    int delay = retryDelays[attempt];
+                    string message = ConnectionErrorMessage(ex, code);
+                    RemoteStatus.Text = $"{message} {delay} 秒后自动重试（{attempt + 2}/{retryDelays.Length + 1}）。";
+                    ConnectError.Text = RemoteStatus.Text;
+                    await Task.Delay(TimeSpan.FromSeconds(delay), ct);
+                }
+            }
+        });
+    }
+
+    private async Task<DeviceContext> OpenDeviceOnceAsync(string server, string code, CancellationToken ct)
+    {
+        var added = new DeviceContext(server, code);
+        try
+        {
+            ConnectError.Text = "";
+            RemoteStatus.Text = "正在连接设备…";
+            await added.Remote.ConnectAsync(added.Registry, code, ct);
+            await LoadInitialDeviceAsync(added, ct);
+            ct.ThrowIfCancellationRequested();
+            added.Heartbeat = new(added.Registry, added.Remote); added.Heartbeat.Start();
+            added.Name = added.Remote.Device!.Name;
+            added.Remote.Notification += (method, node) =>
+            {
+                if (method == "session-completed" && node is not null)
+                {
+                    var completion = Json.Read<SessionCompletion>(node);
+                    Dispatcher.BeginInvoke(() => HandleCompletion(added, completion)); return;
+                }
+                if (method != "session" || node is null) return;
+                var notificationPeer = added.Remote.Peer;
+                var view = Json.Read<SessionView>(node);
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (!ReferenceEquals(notificationPeer, added.Remote.Peer)) return;
+                    if (activeDevice == added && selectedId == view.Id)
+                    { added.View = view; lock (snapshotGate) pendingSnapshot = (added.Remote, view); }
+                    else if (activeDevice != added && added.SelectedId == view.Id) added.View = view;
+                });
+            };
+            added.Remote.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
+            {
+                if (!online) added.Recovery?.Cancel();
+                if (activeDevice != added) return;
+                RemoteStatus.Text = message; SetSessionEnabled(false); RefreshButton.IsEnabled = online;
+                StatusBar.Text = message + " 重连会恢复会话显示；不会自动重发消息或确认操作。";
+            });
+            added.Remote.Reconnected += () => Dispatcher.BeginInvoke(async () => await RestoreDeviceAsync(added));
+            return added;
+        }
+        catch { await added.DisposeAsync(); throw; }
+    }
+
+    private static async Task LoadInitialDeviceAsync(DeviceContext device, CancellationToken ct)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            var peer = device.Remote.Peer;
+            bool Current() => ReferenceEquals(peer, device.Remote.Peer) && device.Remote.IsConnected;
+            if (!Current()) throw new ConnectionOpenException("读取设备信息前连接断开。", true);
+            string phase = "协商历史记录格式";
             try
             {
-                await added.Remote.ConnectAsync(added.Registry, code);
-                try { await OperationGroups.NegotiateAsync(added.Remote.Peer); } catch (IOException) { /* Legacy hosts still provide their existing history. */ }
-                added.Agent = Json.Read<AgentInfo[]>(await added.Remote.Peer.CallAsync("agents", null)).FirstOrDefault(a => a.Available)
-                    ?? throw new IOException("远端没有可用适配器。");
-                added.Sessions = Json.Read<List<SessionInfo>>(await added.Remote.Peer.CallAsync("sessions", null));
-                if (added.Agent.CanWorkspaces)
+                try { await OperationGroups.NegotiateAsync(peer, ct); }
+                catch (IOException) when (Current()) { /* Older hosts can still serve their existing history format. */ }
+                phase = "读取 Agent 信息";
+                var agent = Json.Read<AgentInfo[]>(await peer.CallAsync("agents", null, ct)).FirstOrDefault(a => a.Available)
+                    ?? throw new IOException("远端没有可用的 Agent。");
+                phase = "读取会话列表";
+                var sessions = Json.Read<List<SessionInfo>>(await peer.CallAsync("sessions", null, ct));
+                IReadOnlyList<WorkspaceInfo> workspaces = [];
+                if (agent.CanWorkspaces)
                 {
-                    try { added.Workspaces = Json.Read<List<WorkspaceInfo>>(await added.Remote.Peer.CallAsync("workspaces/list", null)); }
-                    catch { /* Session access remains usable when workspace discovery is unavailable. */ }
+                    phase = "读取工作区";
+                    try { workspaces = Json.Read<List<WorkspaceInfo>>(await peer.CallAsync("workspaces/list", null, ct)); }
+                    catch (Exception ex) when (Current() && ex is (IOException or TimeoutException or System.Text.Json.JsonException))
+                    { /* A live peer can still serve sessions when optional workspace discovery fails. */ }
                 }
-                added.Heartbeat = new(added.Registry, added.Remote); added.Heartbeat.Start();
-                added.Name = added.Remote.Device!.Name;
-                added.Remote.Notification += (method, node) =>
-                {
-                    if (method == "session-completed" && node is not null)
-                    {
-                        var completion = Json.Read<SessionCompletion>(node);
-                        Dispatcher.BeginInvoke(() => HandleCompletion(added, completion)); return;
-                    }
-                    if (method != "session" || node is null) return;
-                    var notificationPeer = added.Remote.Peer;
-                    var view = Json.Read<SessionView>(node);
-                    Dispatcher.BeginInvoke(() =>
-                    {
-                        if (!ReferenceEquals(notificationPeer, added.Remote.Peer)) return;
-                        if (activeDevice == added && selectedId == view.Id)
-                        { added.View = view; lock (snapshotGate) pendingSnapshot = (added.Remote, view); }
-                        else if (activeDevice != added && added.SelectedId == view.Id) added.View = view;
-                    });
-                };
-                added.Remote.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
-                {
-                    if (!online) added.Recovery?.Cancel();
-                    if (activeDevice != added) return;
-                    RemoteStatus.Text = message; SetSessionEnabled(false); RefreshButton.IsEnabled = online;
-                    StatusBar.Text = message + " 重连会恢复会话显示；不会自动重发消息或确认操作。";
-                });
-                added.Remote.Reconnected += () => Dispatcher.BeginInvoke(async () => await RestoreDeviceAsync(added));
-                return added;
+                if (!Current()) throw new ConnectionOpenException($"{phase}时连接断开。", true);
+                device.Agent = agent;
+                device.Sessions = sessions;
+                device.Workspaces = workspaces;
+                return;
             }
-            catch { await added.DisposeAsync(); throw; }
-        });
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                // A successful route change can replace the peer between metadata reads.
+                // Refresh those reads on the new peer before starting a fresh connection.
+                if (attempt == 0 && !ReferenceEquals(peer, device.Remote.Peer) && device.Remote.IsConnected) continue;
+                if (ex is ConnectionOpenException) throw;
+                bool transportLost = !Current() || ex is WebSocketException or SocketException ||
+                    ex.InnerException is WebSocketException or SocketException;
+                throw new ConnectionOpenException(transportLost ? $"{phase}时连接断开。" : $"{phase}失败：{ex.Message}", transportLost, ex);
+            }
+        }
     }
     private async Task RestoreDeviceAsync(DeviceContext device)
     {

@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Net.WebSockets;
+using System.Text.Json;
 
 namespace FurtherAgent.Core;
 
@@ -30,7 +31,15 @@ public sealed class RegistryClient : IDisposable
             () => http.PostAsJsonAsync(path, value, Json.Options, ct),
             (attempt, error) => ConnectionRetry?.Invoke(path, attempt, error), ct);
         if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException($"中继服务 {response.StatusCode}：{await response.Content.ReadAsStringAsync(ct)}", null, response.StatusCode);
+        {
+            string body = await response.Content.ReadAsStringAsync(ct);
+            // ASP.NET can return error messages as JSON strings with escaped Unicode.
+            // Decode them before matching the protocol's explicit rejection reasons.
+            if (body.AsSpan().TrimStart().StartsWith("\"", StringComparison.Ordinal))
+                try { body = JsonSerializer.Deserialize<string>(body) ?? body; }
+                catch (JsonException) { /* Retain the original response for diagnostics. */ }
+            throw new HttpRequestException($"中继服务 {response.StatusCode}：{body}", null, response.StatusCode);
+        }
         return (await response.Content.ReadFromJsonAsync<T>(Json.Options, ct))!;
     }
     public async Task<WebSocketTransport> OpenSocketAsync(string path, CancellationToken ct)

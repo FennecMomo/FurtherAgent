@@ -77,6 +77,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     private readonly object callGate = new();
     private RpcPeer? redirect;
     public bool HasPendingCalls => !pending.IsEmpty;
+    public bool IsClosed => lifetime.IsCancellationRequested;
     internal bool SupportsTransportPing { get; set; }
     internal bool SupportsSessionChannels { get; set; }
     internal SessionChannelMultiplexer? SessionChannels { get; set; }
@@ -151,6 +152,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     private async Task ReadLoopAsync()
     {
         string reason = "连接已关闭";
+        Exception? cause = null;
         try
         {
             while (!lifetime.IsCancellationRequested)
@@ -175,12 +177,12 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
                 else if (method is not null && !requests.Writer.TryWrite(m)) throw new IOException("请求队列已满，请稍后重试。");
             }
         }
-        catch (Exception ex) { reason = ex.Message; }
+        catch (Exception ex) { reason = ex.Message; cause = ex; }
         finally
         {
             lifetime.Cancel();
             requests.Writer.TryComplete();
-            foreach (var p in pending.Values) p.TrySetException(new IOException(reason));
+            foreach (var p in pending.Values) p.TrySetException(new IOException(reason, cause));
             Closed?.Invoke(reason);
         }
     }

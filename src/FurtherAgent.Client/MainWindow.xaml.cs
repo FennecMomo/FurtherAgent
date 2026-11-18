@@ -27,7 +27,7 @@ public partial class MainWindow : Window
     private bool exitRequested;
     private bool startSavedConnection;
     private string? connectionFailure;
-    private CancellationTokenSource? startupRetry;
+    private CancellationTokenSource? connectionAttempt;
     private readonly object snapshotGate = new();
     private (RemoteDevice Connection, SessionView View)? pendingSnapshot;
     private readonly System.Windows.Threading.DispatcherTimer snapshotTimer;
@@ -157,19 +157,7 @@ public partial class MainWindow : Window
     }
     public async void StartSavedConnection()
     {
-        if (!startSavedConnection) return;
-        startupRetry = new CancellationTokenSource();
-        try
-        {
-            for (int attempt = 0; attempt < 4 && remote?.IsConnected != true; attempt++)
-            {
-                if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(5 * attempt), startupRetry.Token);
-                startupRetry.Token.ThrowIfCancellationRequested();
-                if (!ConnectButton.IsEnabled) return;
-                await ConnectAsync();
-            }
-        }
-        catch (OperationCanceledException) { }
+        if (startSavedConnection && remote?.IsConnected != true) await ConnectAsync();
     }
     public object Control(string command)
     {
@@ -185,7 +173,7 @@ public partial class MainWindow : Window
             || miniWindows.Values.Any(mini => mini.IsSending || mini.HasUnsentDraft)
             || deviceConnections.Entries.Values.Any(d => d.Attachments.Count > 0 || d.Drafts.Values.Any(t => !string.IsNullOrEmpty(t))))
             return new { success = false, error = "busy_or_unsent_draft: client left running" };
-        startupRetry?.Cancel();
+        connectionAttempt?.Cancel();
         _ = Task.Delay(200).ContinueWith(_ => Dispatcher.BeginInvoke(() => { exitRequested = true; Close(); }));
         return new { success = true };
     }
@@ -247,19 +235,22 @@ public partial class MainWindow : Window
     }
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
-        startupRetry?.Cancel();
         await ConnectAsync();
     }
     private async Task ConnectAsync()
     {
-        if (!ConnectButton.IsEnabled || !CanSwitchDevice) return;
+        if (!ConnectButton.IsEnabled || !CanSwitchDevice || exitRequested) return;
         string server = ServerUrl.Text.Trim(), code = RemoteCode.Text.Trim();
+        using var attempt = new CancellationTokenSource();
+        connectionAttempt = attempt;
         ConnectButton.IsEnabled = false; ConnectError.Text = ""; connectionFailure = null;
         try
         {
-            RemoteStatus.Text = "正在通过授权码建立中继连接…";
+            RemoteStatus.Text = "正在连接设备…";
             var device = await OpenDeviceAsync(server, code);
+            attempt.Token.ThrowIfCancellationRequested();
             if (exitRequested) return;
+            ConnectError.Text = "";
             if (!string.IsNullOrWhiteSpace(ConnectionName.Text)) device.Name = ConnectionName.Text.Trim();
             ActivateDevice(device); UpdateDevicePicker();
             try
@@ -269,8 +260,33 @@ public partial class MainWindow : Window
             }
             catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
         }
-        catch (Exception ex) { Error(ex); connectionFailure = ex.GetType().Name + ": " + (code.Length == 0 ? ex.Message : ex.Message.Replace(code, "[REDACTED]")); ConnectError.Text = ex.Message; RemoteStatus.Text = "新连接失败，已有连接保持。请检查地址、授权码及远端共享状态。"; }
-        finally { ConnectButton.IsEnabled = true; }
+        catch (OperationCanceledException) when (attempt.IsCancellationRequested)
+        {
+            if (!exitRequested)
+            {
+                ConnectError.Text = "已取消连接。";
+                RemoteStatus.Text = activeDevice?.Remote.IsConnected == true ? "当前设备仍在线。" : "尚未连接设备。";
+            }
+        }
+        catch (Exception ex)
+        {
+            string message = ConnectionErrorMessage(ex, code);
+            connectionFailure = ex.GetType().Name + ": " + message;
+            ConnectError.Text = message;
+            string summary = "连接失败：" + message;
+            if (deviceConnections.Entries.Values.Any(device => device.Remote.IsConnected)) summary += " 其他设备仍在线。";
+            RemoteStatus.Text = summary;
+            StatusBar.Text = summary;
+        }
+        finally { connectionAttempt = null; ConnectButton.IsEnabled = true; }
+    }
+    private static string ConnectionErrorMessage(Exception error, string code)
+    {
+        string message = error is UriFormatException ? "中继地址格式不正确。" : error.Message;
+        if (code.Length > 0) message = message.Replace(code, "[REDACTED]", StringComparison.OrdinalIgnoreCase);
+        string normalized = code.Replace("-", "").Replace(" ", "");
+        if (normalized.Length >= 6) message = message.Replace(normalized, "[REDACTED]", StringComparison.OrdinalIgnoreCase);
+        return message;
     }
     private void CopyCode_Click(object sender, RoutedEventArgs e)
     { try { Clipboard.SetText(LocalCode.Text); StatusBar.Text = "授权码已复制。"; } catch (Exception ex) { Error(ex); } }
@@ -309,7 +325,11 @@ public partial class MainWindow : Window
     }
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
-        startupRetry?.Cancel();
+        if (!ConnectButton.IsEnabled && connectionAttempt is { } attempt)
+        {
+            attempt.Cancel();
+            return;
+        }
         if (!CanSwitchDevice || !ConnectButton.IsEnabled) { StatusBar.Text = "请等待当前操作结束再断开设备。"; return; }
         try
         {
@@ -322,7 +342,7 @@ public partial class MainWindow : Window
     }
     private void ForgetConnection_Click(object sender, RoutedEventArgs e)
     {
-        startupRetry?.Cancel();
+        connectionAttempt?.Cancel();
         try { connectionStore.Forget(); RemoteCode.Clear(); StatusBar.Text = "已忘记保存的连接；当前连接不受影响，下次启动不会自动连接。"; }
         catch (Exception ex) { Error(ex); }
     }
@@ -1106,6 +1126,7 @@ public partial class MainWindow : Window
         if (!exitRequested) { Hide(); return; }
         if (!IsEnabled) return;
         IsEnabled = false;
+        connectionAttempt?.Cancel();
         CloseAllMinis();
         try
         {
