@@ -1,3 +1,9 @@
+## 2026-11-18 本机 Clash Verge TUN 直连配置
+
+- 本机 Clash Verge 2.4.5 / Mihomo 1.19.19 实际为 TUN 开启、规则模式。全局扩展脚本新增 FurtherAgent.Client.exe、FurtherAgent.Host.exe、FurtherAgent.Cli.exe 及 FurtherAgent 中继、更新服务精确域名的优先 DIRECT 规则；两个服务域名采用专用 DIRECT DNS。保留原有 ToDesk 规则、其余分流、代理选择和 TUN 设置。
+- 已备份受影响配置，候选脚本和内核配置校验通过并热加载。修改前，FurtherAgent.Cli.exe 到中继的实际连接命中 MATCH 并经过美国代理节点；修改后命中进程规则，出口链为 DIRECT。FurtherAgent 自身只读探测成功读取 300 个会话，观察期间保持连接且心跳正常。原有代理选择未变化。
+- 待测试：桌面主程序的实际连线与图片速度、Clash 重启和订阅刷新后的规则保留，以及代理节点故障时的连接表现；未主动中断 VPN 或执行这些现场测试。真正的全局模式会跳过普通规则，本次保留已在运行的规则模式。此配置移除 VPN 节点这一跳，FurtherAgent 自身公网中继仍按原连接方式使用。
+
 ## 2026-11-18 桌面与接入端 0.15.7 / Android 0.13.2 本会话始终允许
 
 - Codex 访问权限请求补齐“本会话始终允许”，原生响应为原请求权限与 `scope: "session"`；保留仅当前轮次的“允许本次”和“拒绝”。两种允许范围均通过用户明确点击决定。其他类型的审批选项保持原样。
