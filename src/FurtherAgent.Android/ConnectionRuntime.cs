@@ -28,15 +28,18 @@ internal static class ConnectionRuntime
         return added;
     });
 
-    public static async Task<MobileSession> ConnectAsync(string url, string code, string? name, string? replaceId)
+    public static async Task<MobileSession> ConnectAsync(string url, string code, string? name, string? replaceId,
+        bool? resumeOnLaunch = null)
     {
         await operations.WaitAsync();
         try
         {
             var target = await OpenCoreAsync(url, code);
             await SavedConnections.LoadAsync();
-            await SavedConnections.Store.SaveAsync(name ?? target.DeviceName, url, code, replaceId);
-            Preferences.Set("resume-connection." + DeviceConnectionPool<MobileSession>.Identity(url, code), true);
+            var profile = await SavedConnections.Store.SaveAsync(string.IsNullOrWhiteSpace(name) ? target.DeviceName : name,
+                url, code, replaceId);
+            if (resumeOnLaunch is bool resume)
+                Preferences.Set("resume-connection." + profile.Id, resume);
             return target;
         }
         catch

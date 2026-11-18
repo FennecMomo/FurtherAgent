@@ -17,24 +17,27 @@ public sealed partial class MainPage : ContentPage
     private static MobileSession NewSession() => ConnectionRuntime.NewSession();
     private string? activeConnection;
     private bool connectingDevice;
-    private string devicesSignature = "";
     private readonly WebView transcript = new();
-    private readonly Label title = Ui.Text("工作，随时接续", 17, true);
-    private readonly Label status = Ui.Text("连接远端设备，继续你的会话", 11);
+    private readonly Label title = Ui.Text("FurtherAgent", 17, true);
+    private readonly Label status = Ui.Text("", 12);
     private readonly Label attachments = Ui.Text("", 11);
-    private readonly Label connectionLabel = Ui.Text("已断连", 12, true);
-    private readonly Microsoft.Maui.Controls.Shapes.Ellipse connectionDot = new() { WidthRequest = 11, HeightRequest = 11, Fill = new SolidColorBrush(Color.FromArgb("#DC2626")), VerticalOptions = LayoutOptions.Center };
+    private readonly Label connectionLabel = Ui.Text("未连接", 11, true);
+    private readonly Microsoft.Maui.Controls.Shapes.Ellipse connectionDot = new() { WidthRequest = 7, HeightRequest = 7, Fill = new SolidColorBrush(Color.FromArgb("#DC2626")), VerticalOptions = LayoutOptions.Center };
+    private readonly Grid emptyChat = new() { ZIndex = 1 };
+    private readonly Label emptyTitle = Ui.Text("", 21, true);
+    private readonly Label emptyHint = Ui.Text("", 14);
+    private readonly Button emptyAction;
     private string? backgroundServiceError;
     private readonly Editor composer = new() { Placeholder = "连接设备后，在这里发送消息…", AutoSize = EditorAutoSizeOption.TextChanges,
         MinimumHeightRequest = 54, MaximumHeightRequest = 140, FontSize = 15, BackgroundColor = Colors.Transparent };
-    private readonly Button send, stop, files, models, reasoning, prompts, conversations, voice;
+    private readonly Button send, stop, files, models, prompts, conversations, voice;
     private readonly Dictionary<string, List<RemoteFile>> uploads = [];
     private string scope = "", draftKey = "", lastSession = "", lastHtml = "";
-    private bool loadingDraft, webReady, pendingRender, preview = true, interactionBusy, recognizingSpeech, closed;
+    private bool loadingDraft, webReady, pendingRender, preview, interactionBusy, recognizingSpeech, closed;
     private readonly IDispatcherTimer timer;
     private CancellationTokenSource? speechCancel, speechStop;
     private bool recordingSpeech, suspended;
-    private bool rendering, prependHistory;
+    private bool rendering, prependHistory, loadingOlder;
     private CancellationTokenSource? downloadCancel;
     private string? downloadStatus;
     private bool voiceHeld, voiceDiscard, restoringConnections;
@@ -45,18 +48,25 @@ public sealed partial class MainPage : ContentPage
         ConnectionRuntime.Changed += OnChanged;
         Title = "FurtherAgent"; Ui.Theme(this);
         Ui.TextTheme(title); Ui.TextTheme(status); Ui.TextTheme(attachments);
+        Ui.TextTheme(emptyTitle); Ui.TextTheme(emptyHint);
         composer.SetAppThemeColor(Editor.TextColorProperty, Ui.Green, Colors.White);
+        composer.SetAppThemeColor(Editor.PlaceholderColorProperty, Color.FromArgb("#66736D"), Color.FromArgb("#ACBCB3"));
         conversations = Ui.Button("会话", OpenSessionsAsync);
         NavigationPage.SetHasNavigationBar(this, false);
         title.MaxLines = 1; title.LineBreakMode = LineBreakMode.TailTruncation;
-        title.HorizontalTextAlignment = TextAlignment.Center;
         Ui.TextTheme(connectionLabel);
+        connectionLabel.VerticalTextAlignment = TextAlignment.Center;
+        connectionLabel.MaxLines = 1;
+        connectionLabel.LineBreakMode = LineBreakMode.TailTruncation;
         deviceButton = TextAction("连接设备 ▾", SwitchDeviceAsync);
-        deviceButton.FontSize = 12; deviceButton.MaximumWidthRequest = 190;
-        var connection = new HorizontalStackLayout { Spacing = 5, HorizontalOptions = LayoutOptions.Center,
-            Children = { deviceButton, connectionDot, connectionLabel } };
+        deviceButton.FontSize = 12; deviceButton.Padding = new Thickness(0);
+        deviceButton.HorizontalOptions = LayoutOptions.Fill;
+        var connectionState = new HorizontalStackLayout { Spacing = 4, Children = { connectionDot, connectionLabel } };
+        connectionState.MaximumWidthRequest = 86;
+        var connection = new Grid { ColumnSpacing = 6, ColumnDefinitions = [new(GridLength.Star), new(GridLength.Auto)] };
+        connection.Add(deviceButton); connection.Add(connectionState, 1);
         var heading = new VerticalStackLayout { Spacing = 0, VerticalOptions = LayoutOptions.Center, Children = { title, connection } };
-        var header = new Grid { Padding = new Thickness(10, 4), ColumnSpacing = 4,
+        var header = new Grid { Padding = new Thickness(10, 6, 10, 2), ColumnSpacing = 7,
             ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
         conversations.BackgroundColor = Colors.Transparent;
         conversations.SetAppTheme(Button.ImageSourceProperty, ImageSource.FromFile("ic_menu.png"), ImageSource.FromFile("ic_menu_white.png"));
@@ -64,7 +74,6 @@ public sealed partial class MainPage : ContentPage
         newChat.SetAppTheme(Button.ImageSourceProperty, ImageSource.FromFile("ic_square_pen.png"), ImageSource.FromFile("ic_square_pen_white.png"));
         header.Add(conversations); header.Add(heading, 1); header.Add(newChat, 2);
         AlignStart(deviceButton);
-        header.SizeChanged += (_, _) => deviceButton.MaximumWidthRequest = Math.Clamp(header.Width - 210, 70, 190);
         transcript.Source = new HtmlWebViewSource { Html = Transcript.Shell };
         transcript.Navigated += (_, _) => { webReady = true; QueueRender(); };
         transcript.Navigating += OnNavigating;
@@ -72,8 +81,6 @@ public sealed partial class MainPage : ContentPage
         stop = Ui.Button("停止", () => Act(session.StopAsync));
         files = Ui.Button("附件", FileMenuAsync);
         models = Ui.Button("模型", SettingsAsync);
-        reasoning = TextAction("思考 ▾", SettingsAsync);
-        reasoning.FontSize = 12; reasoning.Padding = new Thickness(2, 0);
         prompts = Ui.Button("待确认", RespondAsync);
         voice = Ui.Button("语音", () => Task.CompletedTask);
         new HoldToTalk(voice, () =>
@@ -98,8 +105,9 @@ public sealed partial class MainPage : ContentPage
         files.BackgroundColor = voice.BackgroundColor = Colors.Transparent;
         send.CornerRadius = stop.CornerRadius = 22;
         stop.BackgroundColor = Ui.Green; Ui.SetAction(stop, "停止", true);
-        var controls = new Grid { ColumnSpacing = 2, ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Auto), new(GridLength.Auto)] };
-        controls.Add(files); controls.Add(models, 1); controls.Add(reasoning, 2); controls.Add(voice, 3); controls.Add(stop, 4); controls.Add(send, 5);
+        var primaryAction = new Grid(); primaryAction.Add(stop); primaryAction.Add(send);
+        var controls = new Grid { ColumnSpacing = 4, ColumnDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto), new(GridLength.Auto)] };
+        controls.Add(files); controls.Add(models, 1); controls.Add(voice, 2); controls.Add(primaryAction, 3);
         var input = new VerticalStackLayout { Spacing = 2, Children = { composer, controls } };
         var panel = new Border { Padding = new Thickness(10, 6), StrokeThickness = 0,
             StrokeShape = new Microsoft.Maui.Controls.Shapes.RoundRectangle { CornerRadius = 24 }, Content = input };
@@ -115,6 +123,15 @@ public sealed partial class MainPage : ContentPage
         var transcriptHost = new Grid { IsClippedToBounds = true, ZIndex = 0 };
         transcriptHost.SetAppThemeColor(BackgroundColorProperty, Colors.White, Color.FromArgb("#101C17"));
         transcriptHost.Add(transcript);
+        emptyAction = TextAction("", () => session.Connected ? OpenSessionsAsync() : OpenConnectionAsync());
+        emptyAction.Padding = new Thickness(18, 0);
+        emptyAction.BackgroundColor = Ui.Green; emptyAction.TextColor = Colors.White;
+        emptyTitle.HorizontalTextAlignment = emptyHint.HorizontalTextAlignment = TextAlignment.Center;
+        emptyHint.MaximumWidthRequest = 310;
+        emptyChat.SetAppThemeColor(BackgroundColorProperty, Colors.White, Color.FromArgb("#101C17"));
+        emptyChat.Add(new VerticalStackLayout { Padding = 24, Spacing = 12, HorizontalOptions = LayoutOptions.Center,
+            VerticalOptions = LayoutOptions.Center, Children = { emptyTitle, emptyHint, emptyAction } });
+        transcriptHost.Add(emptyChat);
         status.IsVisible = false;
         status.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(Label.Text)) UpdateStatusVisibility(); };
         var layout = new Grid { RowDefinitions = [new(GridLength.Auto), new(GridLength.Star), new(GridLength.Auto)] };
@@ -129,7 +146,7 @@ public sealed partial class MainPage : ContentPage
             if (!suspended) { UpdateMailboxBadge(); await OpenPendingMailboxAsync(); await OpenPendingCompletionAsync(); }
         };
         Loaded += async (_, _) => await RestoreSavedConnectionsAsync();
-        timer.Start(); RefreshButtons();
+        timer.Start(); RefreshButtons(); UpdateEmptyChat();
     }
 
     private async void OnNavigating(object? sender, WebNavigatingEventArgs args)
@@ -141,12 +158,26 @@ public sealed partial class MainPage : ContentPage
             if (!Uri.TryCreate(args.Url, UriKind.Absolute, out var uri)) return;
             if (uri.Scheme == "fa-history")
             {
-                if (uri.Host == "older" && !session.Busy && !interactionBusy)
+                if (uri.Host == "older" && !loadingOlder)
                 {
-                    try { await Act(session.LoadOlderAsync); prependHistory = session.ReadingOlder; if (!session.ReadingOlder) lastSession = ""; QueueRender(); }
-                    finally { await transcript.EvaluateJavaScriptAsync("historyLoadDone()"); }
+                    var owner = session;
+                    loadingOlder = true;
+                    try
+                    {
+                        if (owner.Busy || interactionBusy) return;
+                        await Act(owner.LoadOlderAsync);
+                        if (session != owner) return;
+                        prependHistory = owner.ReadingOlder;
+                        if (!prependHistory) lastSession = "";
+                        QueueRender();
+                    }
+                    finally
+                    {
+                        loadingOlder = false;
+                        if (webReady) await transcript.EvaluateJavaScriptAsync("historyLoadDone()");
+                    }
                 }
-                else if (uri.Host == "latest") { session.ShowLatest(); lastSession = ""; QueueRender(); }
+                else if (uri.Host == "latest" && !loadingOlder) { session.ShowLatest(); lastSession = ""; QueueRender(); }
             }
             else if (uri.Scheme == "fa-copy" && int.TryParse(uri.Host, out int index))
             {
@@ -170,7 +201,6 @@ public sealed partial class MainPage : ContentPage
     private void OnChanged()
     {
         if (closed) return;
-        UpdateDevices();
         var indicator = session.Indicator;
         connectionLabel.Text = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true ? "等待回答" : indicator.Label;
         connectionDot.Fill = new SolidColorBrush(Color.FromArgb(indicator.Color));
@@ -187,11 +217,12 @@ public sealed partial class MainPage : ContentPage
             }
             composer.Text = nextKey.Length > 0 ? Preferences.Get(nextKey, "") : ""; loadingDraft = false;
         }
-        title.Text = session.View?.Title ?? (preview ? "工作，随时接续" : "选择一个会话");
+        title.Text = session.View?.Title ?? (preview ? "离线预览" : session.Connected ? "选择会话" : "FurtherAgent");
         if (!recognizingSpeech)
             status.Text = downloadStatus ?? (session.Status + (backgroundServiceError is null ? "" : " · " + backgroundServiceError));
-        deviceButton.Text = session.HasConnection ? $"{connectionNames.GetValueOrDefault(activeConnection ?? "", session.DeviceName)} · {session.Agent?.Name} ▾" : "连接设备 ▾";
-        RefreshButtons(); QueueRender();
+        deviceButton.Text = session.HasConnection ? $"{connectionNames.GetValueOrDefault(activeConnection ?? "", session.DeviceName)} ▾" : "连接设备 ▾";
+        if (drawerLayer?.IsVisible == true) RenderDrawer();
+        RefreshButtons(); UpdateEmptyChat(); QueueRender();
     }
     private List<RemoteFile> PendingFiles => uploads.GetValueOrDefault(draftKey) ?? [];
     private void RefreshButtons()
@@ -206,8 +237,9 @@ public sealed partial class MainPage : ContentPage
         Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑", true);
         stop.IsEnabled = ready && session.View!.CanStop == true;
         files.IsEnabled = downloadCancel is not null || ready && session.Agent?.CanFiles == true;
-        Ui.SetAction(files, downloadCancel is null ? "附件" : "取消下载");
-        if (downloadCancel is null) files.SetAppTheme(Button.ImageSourceProperty, Ui.Icon("新建会话"), Ui.Icon("新建会话", true));
+        string fileAction = downloadCancel is null ? "附件" : "取消下载";
+        Ui.SetAction(files, fileAction);
+        files.SetAppTheme(Button.ImageSourceProperty, Ui.Icon(fileAction), Ui.Icon(fileAction, true));
         voice.SetAppTheme(Button.ImageSourceProperty, Ui.Icon(recognizingSpeech ? "停止" : "语音"), Ui.Icon(recognizingSpeech ? "停止" : "语音", true));
         models.IsEnabled = ready && session.Agent?.CanConfigure == true;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
@@ -221,15 +253,21 @@ public sealed partial class MainPage : ContentPage
         prompts.ImageSource = null;
         prompts.Text = $"{(hasQuestion ? "待回答" : "待确认")} {session.View?.Prompts.Count}  ›";
         models.ImageSource = null;
-        models.Text = (session.Settings?.Model ?? session.View?.Model ?? "模型") + " ▾";
-        reasoning.Text = (session.Settings?.ReasoningEffort ?? "思考") + " ▾";
-        reasoning.IsEnabled = models.IsEnabled;
-        reasoning.IsVisible = session.Settings?.CanChangeReasoning != false;
-        SemanticProperties.SetDescription(reasoning, "思考强度：" + (session.Settings?.ReasoningEffort ?? "点击读取远端设置"));
+        string model = session.Settings?.Model ?? session.View?.Model ?? "模型";
+        string? effort = session.Settings?.CanChangeReasoning == true ? session.Settings.ReasoningEffort : null;
+        models.Text = string.IsNullOrWhiteSpace(effort) ? $"{model} ▾" : $"{model} · {effort} ▾";
+        SemanticProperties.SetDescription(models, $"模型与思考强度，{models.Text}");
         deviceButton.IsEnabled = !interactionBusy && !session.Busy && !connectingDevice;
         UpdateStatusVisibility();
         attachments.Text = PendingFiles.Count == 0 ? "" : "待发送：" + string.Join("、", PendingFiles.Select(f => f.Name));
         attachments.IsVisible = PendingFiles.Count > 0;
+    }
+    private void UpdateEmptyChat()
+    {
+        emptyChat.IsVisible = !preview && session.View is null;
+        emptyTitle.Text = session.Connected ? "选择一个会话" : "连接远端设备";
+        emptyHint.Text = session.Connected ? "从会话列表继续之前的工作，或创建一个新会话。" : "连接已保存的设备，或输入接入端显示的授权码。";
+        emptyAction.Text = session.Connected ? "查看会话" : "连接设备";
     }
     private void QueueRender() => pendingRender = true;
     private void StartConnectionService()
@@ -318,7 +356,7 @@ public sealed partial class MainPage : ContentPage
     }
     private Task OpenConnectionAsync() => interactionBusy || session.Busy || connectingDevice ? Task.CompletedTask : Navigation.PushAsync(new ConnectionPage(this));
     private Task OpenSessionsAsync() { OpenDrawer(); return Task.CompletedTask; }
-    public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null)
+    public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null, bool resumeOnLaunch = true)
     {
         if (connectingDevice || interactionBusy || session.Busy) throw new IOException("请等待当前操作结束再切换设备。");
         CompletionNotifications.CancelPending();
@@ -326,7 +364,7 @@ public sealed partial class MainPage : ContentPage
         try
         {
             string id = DeviceConnectionPool<MobileSession>.Identity(url, code);
-            var target = await ConnectionRuntime.ConnectAsync(url, code, name, replaceId);
+            var target = await ConnectionRuntime.ConnectAsync(url, code, name, replaceId, resumeOnLaunch);
             if (closed) throw new OperationCanceledException("应用正在退出。");
             connectionNames[id] = string.IsNullOrWhiteSpace(name) ? target.DeviceName : name.Trim();
             legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
@@ -336,15 +374,13 @@ public sealed partial class MainPage : ContentPage
         }
         finally { connectingDevice = false; OnChanged(); }
     }
-    private void UpdateDevices()
-    {
-        string signature = string.Join("|", connections.Entries.Select(e => e.Key + e.Value.Indicator.Label + e.Value.Sessions.Count)) + "|" + activeConnection;
-        if (signature == devicesSignature) return;
-        devicesSignature = signature;
-        if (drawerLayer is not null && drawerLayer.IsVisible) RenderDrawer();
-    }
     private void ActivateConnection(string id, MobileSession target)
     {
+        if (activeConnection == id && ReferenceEquals(session, target))
+        {
+            OnChanged();
+            return;
+        }
         SaveDraft(); session = target; activeConnection = id; scope = id;
         preview = false; lastHtml = lastSession = ""; prependHistory = false; OnChanged();
     }
@@ -388,23 +424,26 @@ public sealed partial class MainPage : ContentPage
     {
         if (restoringConnections || closed || suspended || interactionBusy || connectingDevice || session.Busy) return;
         restoringConnections = true; nextRestore = DateTime.UtcNow.AddSeconds(20);
-        string? previous = activeConnection;
+        var selectionBeforeRestore = session;
         try
         {
             await StartConnectionServiceIfSavedAsync();
             await ConnectionRuntime.RestoreAsync();
             var saved = await SavedConnections.LoadAsync();
+            if (closed || suspended || interactionBusy || connectingDevice || session.Busy || !ReferenceEquals(session, selectionBeforeRestore)) return;
+            var entries = connections.Entries;
+            (string Id, MobileSession Session)? preferred = null;
             foreach (var profile in saved.Connections.OrderBy(p => p.Id == saved.SelectedId ? 1 : 0))
             {
                 string id = DeviceConnectionPool<MobileSession>.Identity(profile.Server, profile.Code);
-                if (closed || suspended || interactionBusy) break;
-                if (!connections.Entries.TryGetValue(id, out var target)) continue;
+                if (!entries.TryGetValue(id, out var target)) continue;
                 connectionNames[id] = profile.Name;
                 legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.Server.TrimEnd('/') + "\n" + profile.Code.Trim())));
-                if (previous is null) ActivateConnection(id, target);
+                preferred = (id, target);
             }
-            if (previous is not null && connections.Entries.TryGetValue(previous, out var active)) ActivateConnection(previous, active);
-            if (connections.Entries.Count > 0) await CompletionNotifications.RequestPermissionOnceAsync();
+            if (activeConnection is null && !preview && preferred is { } fallback) ActivateConnection(fallback.Id, fallback.Session);
+            else OnChanged();
+            if (entries.Count > 0) await CompletionNotifications.RequestPermissionOnceAsync();
         }
         catch { status.Text = "无法读取保存的连接，请在连接页检查"; }
         finally { restoringConnections = false; nextRestore = DateTime.UtcNow.AddSeconds(20); }
@@ -596,7 +635,35 @@ public sealed partial class MainPage : ContentPage
     });
     private async Task RespondAsync() => await Act(async () =>
     {
-        var prompt = session.View?.Prompts.FirstOrDefault(); if (prompt is null) return;
+        var owner = session;
+        if (owner.View is not { Prompts.Count: > 0 } view) return;
+        var prompt = view.Prompts[0];
+        if (view.Prompts.Count > 1)
+        {
+            var choices = view.Prompts.Select((item, index) =>
+            {
+                string title = item.Kind switch
+                {
+                    "item/tool/requestUserInput" or CodexQuestions.AsyncKind => "回答问题",
+                    "item/commandExecution/requestApproval" => "确认命令",
+                    "item/fileChange/requestApproval" => "确认文件修改",
+                    CodexPermissionRequests.Kind => "确认访问权限",
+                    _ => item.Title.ReplaceLineEndings(" ")
+                };
+                return $"{index + 1}. {title}";
+            }).ToArray();
+            var choice = await DisplayActionSheetAsync("选择待处理事项", "取消", null, choices);
+            int index = Array.IndexOf(choices, choice);
+            if (index < 0) return;
+            var selected = view.Prompts[index];
+            if (owner != session || owner.View is not { } latestView || latestView.Id != view.Id ||
+                latestView.Prompts.FirstOrDefault(item => item.Id == selected.Id && item.Kind == selected.Kind) is not { } current)
+            {
+                await DisplayAlertAsync("事项已更新", "请重新打开待处理列表。", "知道了");
+                return;
+            }
+            prompt = current;
+        }
         if (prompt.Kind == CodexRecovery.Kind)
         {
             if (await DisplayAlertAsync(prompt.Title, prompt.Detail, "继续任务（新一轮）", "稍后处理"))

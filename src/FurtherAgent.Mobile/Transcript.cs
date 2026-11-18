@@ -54,8 +54,8 @@ public static class Transcript
     public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false, int conversationLimit = 32)
     {
         var html = new StringBuilder();
-        if (hasOlder) html.Append("<p class='history'><a id='older' href='fa-history://older'>上滑或点此加载更早的记录</a></p>");
-        else html.Append("<p class='history'>已到已加载历史的开头</p>");
+        if (hasOlder) html.Append("<p class='history'><a id='older' href='fa-history://older'>加载更早的记录</a></p>");
+        else if (view.Messages.Count > 0) html.Append("<p class='history'>已到已加载历史的开头</p>");
         int renderCount = OperationGroups.TakeConversations(view.Messages, conversationLimit).Count;
         bool operationGroup = false;
         for (int i = 0; i < renderCount; i++)
@@ -118,8 +118,19 @@ public static class Transcript
 .attachment-image{display:block;margin:12px 0;max-width:320px}.attachment-image img{display:block;object-fit:contain;border-radius:10px;background:var(--operations)}.attachment-image span{display:block;font-size:12px;color:var(--muted)}
 .file-list{max-height:240px;overflow:auto}.files>details>summary{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .history{text-align:center;font-size:12px;color:var(--muted)}pre.plain{white-space:pre-wrap;word-break:break-word}
+:root{--link:#30694f;--code:#f2f5f3}
+#chat{max-width:720px;margin-inline:auto}
+body{padding-inline:clamp(12px,4vw,24px)}
+a{color:var(--link)}
+pre,code{background:var(--code)}
+.user{margin-left:clamp(12px,7vw,36px)}
+.copy,.history a{display:inline-flex;align-items:center;min-height:44px;padding-block:0}
+.history a{padding-inline:14px}
+a:active{opacity:.65}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--link);outline-offset:2px}
+@media(prefers-color-scheme:dark){:root{--link:#9fd6b5;--code:#1b2e24}}
 </style></head><body><main id="chat"></main><script>
-let armed=false,loading=false;
+let armed=false,loading=false,touchY=null;
 const attachmentImages=new Map();
 function setAttachmentImage(id,version,data){
  if(id)attachmentImages.set(JSON.stringify([id,version]),data);
@@ -129,9 +140,16 @@ function setAttachmentImage(id,version,data){
  }
 }
 function older(){if(!loading&&document.getElementById('older')){loading=true;location.href='fa-history://older';}}
-addEventListener('touchmove',()=>{armed=true;if(scrollY<30)older();},{passive:true});
-addEventListener('wheel',e=>{armed=true;if(e.deltaY<0&&scrollY<30)older();},{passive:true});
+function headingTowardHistory(towardOlder){armed=towardOlder;if(armed&&scrollY<30)older();}
+addEventListener('touchstart',e=>{touchY=e.touches.length===1?e.touches[0].clientY:null;},{passive:true});
+addEventListener('touchmove',e=>{
+ const next=e.touches.length===1?e.touches[0].clientY:null;
+ if(next!==null&&touchY!==null&&next!==touchY)headingTowardHistory(next>touchY);
+ touchY=next;
+},{passive:true});
+addEventListener('wheel',e=>{if(e.deltaY!==0)headingTowardHistory(e.deltaY<0);},{passive:true});
 addEventListener('scroll',()=>{if(armed&&scrollY<30){armed=false;older();}},{passive:true});
+addEventListener('click',e=>{if(e.target.closest('#older')){e.preventDefault();older();}});
 function historyLoadDone(){loading=false;}
 // Reconcile keyed messages and their children in place, preserving selection and nested scroll positions.
 function patchNode(current,next){
@@ -163,7 +181,7 @@ function renderTranscript(html,reset,prepend){
  const template=document.createElement('template');template.innerHTML=html;
  if(reset){attachmentImages.clear();chat.replaceChildren(template.content);}else patchChildren(chat,template.content);
  setAttachmentImage('', '', '');
- armed=false;loading=false;const version=++renderVersion;
+ armed=false;if(reset)loading=false;const version=++renderVersion;
  requestAnimationFrame(()=>{
   if(version!==renderVersion)return;
   const a=aid&&document.getElementById(aid);
