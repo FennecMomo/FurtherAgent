@@ -359,7 +359,10 @@ public partial class MainWindow : Window
         PromptBorder.Visibility = Visibility.Collapsed; SessionTitle.Text = session.Title; SessionMeta.Text = "正在读取远端会话…";
         try
         {
-            var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = session.Id }));
+            var view = device is null
+                ? Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = session.Id }))
+                : await ReadDeviceSessionAsync(device, session.Id, version, refreshSessions: false);
+            if (view is null) return;
             if (version != selectionVersion)
             {
                 if (device is not null && device != activeDevice && device.SelectedId == session.Id) device.View = view;
@@ -376,10 +379,15 @@ public partial class MainWindow : Window
     }
     private void RenderConnectionHealth()
     {
-        if (activeDevice is not null) activeDevice.View = History.Latest ?? current;
+        if (activeDevice is not null)
+        {
+            var latest = History.Latest ?? current;
+            activeDevice.View = latest?.Id == selectedId ? latest : null;
+        }
         UpdateDevicePicker();
-        var indicator = AgentIndicator.From(remote?.IsConnected == true,
-            !ConnectButton.IsEnabled || remote?.IsReconnecting == true, current);
+        var indicator = remote?.IsConnected == true && activeDevice?.Recovery is not null
+            ? new AgentIndicator("会话加载中", "#D97706")
+            : AgentIndicator.From(remote?.IsConnected == true, !ConnectButton.IsEnabled || remote?.IsReconnecting == true, current);
         ConnectionStateLabel.Text = indicator.Label;
         ConnectionStateDot.Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(indicator.Color)!;
         static string Describe(string label, HeartbeatState state)
@@ -397,6 +405,7 @@ public partial class MainWindow : Window
             : remote?.IsConnected != true ? "连接未就绪"
             : transferCancellation is not null ? "正在传输文件…"
             : actionBusy ? operationPhase ?? "正在提交操作，等待远端确认…"
+            : activeDevice?.Recovery is not null ? "网络已连接 · 正在加载会话…"
             : current is null ? (selectedId is null ? "已连接 · 请选择会话" : "正在加载会话…")
             : current.Prompts.Count > 0 ? "等待你的审批或回答"
             : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
@@ -554,7 +563,7 @@ public partial class MainWindow : Window
     { if (IsLoaded) SetSessionEnabled(!actionBusy && remote?.IsConnected == true); }
     private void SetSessionEnabled(bool enabled)
     {
-        enabled &= !preparingAttachment;
+        enabled &= !preparingAttachment && activeDevice?.Recovery is null;
         UpdateHistoryActions();
         SendButton.IsEnabled = enabled && current is not null && current.CanSend;
         InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
@@ -569,7 +578,7 @@ public partial class MainWindow : Window
     }
     private async Task ActionAsync(Func<RpcPeer, Task> action)
     {
-        if (remote is null || actionBusy) return;
+        if (remote?.IsConnected != true || activeDevice?.Recovery is not null || actionBusy) return;
         actionBusy = true; SessionList.IsEnabled = NewButton.IsEnabled = false; SetSessionEnabled(false);
         try { await action(remote.Peer); StatusBar.Text = "操作已由远端 Agent 接收，结果以会话状态为准。"; }
         catch (Exception ex) { Error(ex); }

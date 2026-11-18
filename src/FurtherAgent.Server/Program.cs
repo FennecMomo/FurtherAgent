@@ -76,14 +76,14 @@ app.MapPost("/devices", (DeviceRegistration input) =>
                 return Results.Ok(new DeviceLease(fixedCode, existing.Secret, existing.Expires));
             }
             if (devices.Count >= 1000) return Results.StatusCode(503);
-            var stable = new RelayDevice(input.Name, identity, DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, 8), DeviceIdentity.LegacyCode(identity));
+            var stable = new RelayDevice(input.Name, identity, DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, DeviceRegistration.SupportedMaxControllers), DeviceIdentity.LegacyCode(identity));
             devices.Add(fixedCode, stable);
             return Results.Ok(new DeviceLease(fixedCode, identity, stable.Expires));
         }
         if (devices.Count >= 1000) return Results.StatusCode(503);
         string code;
         do { code = Convert.ToHexString(RandomNumberGenerator.GetBytes(4)); } while (devices.ContainsKey(code));
-        var device = new RelayDevice(input.Name, Token(), DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, 8));
+        var device = new RelayDevice(input.Name, Token(), DateTimeOffset.UtcNow.AddMinutes(2), Math.Clamp(input.MaxControllers, 1, DeviceRegistration.SupportedMaxControllers));
         try { mailboxes.RegisterDevice(code, input.Name, device.Secret); }
         catch (MailboxException ex) { return Results.Json(new { error = ex.Message }, statusCode: ex.StatusCode); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)

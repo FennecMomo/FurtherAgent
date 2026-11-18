@@ -69,7 +69,7 @@ public sealed class DeviceHost : IAsyncDisposable
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token);
         timeout.CancelAfter(TimeSpan.FromSeconds(12));
-        if (!registered) { Lease = await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret, 8), timeout.Token); registered = true; }
+        if (!registered) { Lease = await registry.PostAsync<DeviceLease>("devices", new DeviceRegistration(name, identitySecret, DeviceRegistration.SupportedMaxControllers), timeout.Token); registered = true; }
         if (identitySecret is not null && (Lease!.Code != DeviceIdentity.Code(identitySecret) || Lease.Secret != identitySecret))
             throw new IOException("中继尚不支持固定配对码，请升级中继；设备身份已保留，不会退回随机码。");
         var socket = await registry.OpenSocketAsync("host", timeout.Token);
@@ -365,6 +365,18 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     }
     private async Task OpenAsync(RegistryClient registry, string code, CancellationToken ct)
     {
+        try { await OpenConnectionAsync(registry, code, ct); }
+        catch
+        {
+            socket?.Abort();
+            if (Peer is not null) await Peer.DisposeAsync();
+            if (socket is not null) await socket.DisposeAsync();
+            Peer = null!; socket = null;
+            throw;
+        }
+    }
+    private async Task OpenConnectionAsync(RegistryClient registry, string code, CancellationToken ct)
+    {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, lifetime.Token); timeout.CancelAfter(TimeSpan.FromSeconds(30));
         pairing ??= LanTrustStore.Load(registry.ServerIdentity, code);
         IConnectionTransport? direct = null;
@@ -441,9 +453,9 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
                 continue;
             }
             DisconnectedAt = DateTimeOffset.UtcNow;
-            await Peer.DisposeAsync();
             IsReconnecting = autoReconnect;
             ConnectionChanged?.Invoke(false, autoReconnect ? "连接已断开，正在选择局域网或中继…" : "连接已断开。");
+            await Peer.DisposeAsync();
             if (!autoReconnect) return;
             int attempt = 0;
             while (!lifetime.IsCancellationRequested)

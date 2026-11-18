@@ -72,19 +72,24 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     {
         if (!Guid.TryParse(id, out _)) throw new ArgumentException("会话 ID 无效。");
         await ConnectAsync(ct);
-        if (sessionId is not null) await FollowAsync(false, ct);
-        lock (gate)
-        {
-            sessionId = id; owner = null; state = null; revision = 0;
-            snapshot = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        }
-        owner = await CodexThreadActivation.ActivateAsync(id, CodexThreadActivation.Open, async token =>
+        string discoveredOwner = await CodexThreadActivation.ActivateAsync(id, CodexThreadActivation.Open, async token =>
         {
             var discovered = await RequestAsync("thread-owner-discovery", new { hostId = "local", conversationId = id },
                 1, token, false, timeoutMs: 2000, allowMissingOwner: true);
             return Text(discovered["resultType"]) == "error" ? null
                 : discovered["handledByClientId"]?.GetValue<string>() ?? throw new IOException("桌面返回的会话宿主无效。");
         }, ct);
+        lock (gate)
+        {
+            if (sessionId == id && owner == discoveredOwner && state is not null && reader?.IsCompleted == false)
+                return ToView(state);
+        }
+        if (sessionId is not null) await FollowAsync(false, ct);
+        lock (gate)
+        {
+            sessionId = id; owner = discoveredOwner; state = null; revision = 0;
+            snapshot = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        }
         await FollowAsync(true, ct);
         try { return await snapshot.Task.WaitAsync(TimeSpan.FromSeconds(15), ct); }
         catch (TimeoutException) { throw new IOException("桌面会话已打开，但未及时收到快照，请稍后重新选择该会话。"); }

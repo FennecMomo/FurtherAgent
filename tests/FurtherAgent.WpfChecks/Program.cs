@@ -27,6 +27,7 @@ static class Program
         }
         if (args.Length == 2 && args[0] == "--images") { ImageUiChecks.Run(args[1]); return; }
         if (args.Contains("--hotkey")) { HotkeyUiChecks.Run(); return; }
+        if (args.Contains("--mini-recovery")) { MiniRecoveryChecks.Run(); return; }
         if (args.Length == 2 && args[0] == "--compact") { CompactUiChecks.Run(args[1]); return; }
         if (args.Contains("--interactions")) { InteractionUiChecks.Run(""); return; }
         if (args.Length == 2 && args[0] == "--history") { HistoryUiChecks.Run(args[1]); return; }

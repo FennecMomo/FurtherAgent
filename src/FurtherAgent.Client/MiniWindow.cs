@@ -19,8 +19,13 @@ internal sealed class MiniWindow : Window
     private readonly Action<string> writeDraft;
     private readonly Action showMain;
     private readonly CancellationTokenSource lifetime = new();
+    private readonly SemaphoreSlim recoveryWake = new(0, 1);
     private RegistryClient? registry;
     private RemoteDevice? remote;
+    private ConnectionHeartbeat? heartbeat;
+    private Task? recoveryTask;
+    private RpcPeer? attachedPeer;
+    private string? recoveryError;
     private AgentInfo? agent;
     private SessionView? view;
     private readonly Grid surface = new() { Background = Brushes.White, Margin = new Thickness(6) };
@@ -46,6 +51,7 @@ internal sealed class MiniWindow : Window
     public bool IsSending => sending;
     public bool HasUnsentDraft => !string.IsNullOrWhiteSpace(composer.Text);
     public int ShortcutSlot { get; }
+    private bool SessionReady => attached && remote?.IsConnected == true && ReferenceEquals(attachedPeer, remote.Peer);
     private static bool BallModifiersHeld => Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Alt);
     private void SetStatus(string message) { title.ToolTip = message; send.ToolTip = message; }
 
@@ -169,8 +175,16 @@ internal sealed class MiniWindow : Window
         Closed += async (_, _) =>
         {
             closed = true; positionTimer.Stop(); SavePosition(); lifetime.Cancel();
-            if (remote is not null) await remote.DisposeAsync();
-            registry?.Dispose(); lifetime.Dispose();
+            try { if (recoveryTask is not null) await recoveryTask; }
+            finally
+            {
+                try { if (heartbeat is not null) await heartbeat.DisposeAsync(); }
+                finally
+                {
+                    try { if (remote is not null) await remote.DisposeAsync(); }
+                    finally { registry?.Dispose(); recoveryWake.Dispose(); lifetime.Dispose(); }
+                }
+            }
         };
         Refresh(initialView);
         send.IsEnabled = false;
@@ -214,49 +228,133 @@ internal sealed class MiniWindow : Window
         SavePosition();
     }
 
-    public async Task StartAsync()
+    public Task StartAsync()
+    {
+        if (closed) return Task.CompletedTask;
+        return recoveryTask ??= RecoverAsync(lifetime.Token);
+    }
+
+    private void WakeRecovery()
+    {
+        if (closed) return;
+        try { recoveryWake.Release(); } catch (SemaphoreFullException) { }
+    }
+
+    private void Observe(RemoteDevice connection)
+    {
+        connection.Notification += (method, node) =>
+        {
+            if (method != "session" || node is null) return;
+            var notificationPeer = connection.Peer;
+            var update = Json.Read<SessionView>(node);
+            Dispatcher.BeginInvoke(() =>
+            {
+                if (!closed && remote == connection && connection.Peer == notificationPeer && update.Id == sessionId) Refresh(update);
+            });
+        };
+        connection.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
+        {
+            if (closed || remote != connection) return;
+            attached = false; attachedPeer = null;
+            sessionConnecting = !online;
+            recoveryError = online ? null : message;
+            send.IsEnabled = composer.IsEnabled = false;
+            UpdateRunStatus();
+            WakeRecovery();
+        });
+        connection.Reconnected += () => Dispatcher.BeginInvoke(() =>
+        {
+            if (closed || remote != connection) return;
+            WakeRecovery();
+        });
+    }
+
+    private async Task RecoverAsync(CancellationToken ct)
     {
         try
         {
-            registry = new RegistryClient(server); remote = new RemoteDevice();
-            var connection = remote;
-            connection.Notification += (method, node) =>
+            registry = new RegistryClient(server);
+            int attempt = 0;
+            while (!ct.IsCancellationRequested)
             {
-                if (method != "session" || node is null) return;
-                var update = Json.Read<SessionView>(node);
-                Dispatcher.BeginInvoke(() => { if (!closed && update.Id == sessionId) Refresh(update); });
-            };
-            connection.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
-            {
-                if (closed) return;
-                if (!online) attached = false;
-                sessionConnecting = !online || !attached;
-                send.IsEnabled = online && attached && !sending && view?.CanSend == true;
-                composer.IsEnabled = send.IsEnabled;
+                var connection = new RemoteDevice();
+                remote = connection;
+                Observe(connection);
+                sessionConnecting = true;
                 UpdateRunStatus();
-                SetStatus(online ? view?.Title ?? sessionId : message);
-            });
-            connection.Reconnected += () => Dispatcher.BeginInvoke(async () =>
-            {
-                if (closed) return;
                 try
                 {
-                    var restored = Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = sessionId }, lifetime.Token));
-                    attached = true; sessionConnecting = false; Refresh(restored);
+                    await connection.ConnectAsync(registry, code, ct);
                 }
-                catch (Exception ex) when (ex is IOException or TimeoutException or OperationCanceledException) { if (!closed) SetStatus("重连后读取会话失败：" + ex.Message); }
-            });
-            await connection.ConnectAsync(registry, code, lifetime.Token);
-            if (closed) return;
-            try { await OperationGroups.NegotiateAsync(connection.Peer); } catch (IOException) { }
-            agent = Json.Read<AgentInfo[]>(await connection.Peer.CallAsync("agents", null, lifetime.Token)).FirstOrDefault(a => a.Available);
-            var loaded = Json.Read<SessionView>(await SessionHistory.ReadAsync(connection.Peer, "attach", new { id = sessionId }, lifetime.Token));
-            attached = true; sessionConnecting = false; Refresh(loaded);
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    remote = null;
+                    await connection.DisposeAsync();
+                    recoveryError = ex.Message;
+                    UpdateRunStatus();
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(15, 1 << Math.Min(attempt++, 4))), ct);
+                    continue;
+                }
+                ct.ThrowIfCancellationRequested();
+                sessionConnecting = false;
+                heartbeat = new ConnectionHeartbeat(registry, connection);
+                heartbeat.Start();
+                await RestoreSessionAsync(connection, ct);
+                return;
+            }
         }
-        catch (OperationCanceledException) when (closed) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
         {
-            if (!closed) { sessionConnecting = false; UpdateRunStatus(); SetStatus("迷你窗口连接失败：" + ex.Message); context.Text = "连接失败：" + ex.Message + "\n请关闭后从主窗口重新打开。"; send.IsEnabled = false; composer.IsEnabled = false; }
+            if (!closed)
+            {
+                sessionConnecting = false; recoveryError = ex.Message;
+                send.IsEnabled = composer.IsEnabled = false;
+                UpdateRunStatus();
+            }
+        }
+    }
+
+    private async Task RestoreSessionAsync(RemoteDevice connection, CancellationToken ct)
+    {
+        int attempt = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            if (!connection.IsConnected)
+            {
+                attached = false; attachedPeer = null; sessionConnecting = true;
+                send.IsEnabled = composer.IsEnabled = false;
+                UpdateRunStatus();
+                await recoveryWake.WaitAsync(TimeSpan.FromSeconds(1), ct);
+                continue;
+            }
+            if (SessionReady)
+            {
+                await recoveryWake.WaitAsync(ct);
+                continue;
+            }
+
+            var peer = connection.Peer;
+            attached = false; attachedPeer = null; sessionConnecting = false; recoveryError = null;
+            send.IsEnabled = composer.IsEnabled = false;
+            UpdateRunStatus();
+            try
+            {
+                try { await OperationGroups.NegotiateAsync(peer, ct); } catch (IOException) { }
+                var available = Json.Read<AgentInfo[]>(await peer.CallAsync("agents", null, ct)).FirstOrDefault(a => a.Available)
+                    ?? throw new IOException("远端尚无可用 Agent，等待接入端恢复。");
+                var restored = Json.Read<SessionView>(await SessionHistory.ReadAsync(peer, "attach", new { id = sessionId }, ct));
+                ct.ThrowIfCancellationRequested();
+                if (!connection.IsConnected || connection.Peer != peer) continue;
+                agent = available; attachedPeer = peer; attached = true; attempt = 0;
+                Refresh(restored);
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                recoveryError = ex.Message;
+                UpdateRunStatus();
+                await recoveryWake.WaitAsync(TimeSpan.FromSeconds(Math.Min(15, 1 << Math.Min(attempt++, 4))), ct);
+            }
         }
     }
 
@@ -266,7 +364,7 @@ internal sealed class MiniWindow : Window
         view = update;
         if (!string.IsNullOrWhiteSpace(update.Title)) { SetSessionTitle(update.Title); SetStatus(update.Title); }
         UpdateRunStatus();
-        send.IsEnabled = attached && remote?.IsConnected == true && !sending && update.CanSend;
+        send.IsEnabled = SessionReady && !sending && update.CanSend;
         composer.IsEnabled = send.IsEnabled;
         RenderLatestText();
     }
@@ -294,14 +392,15 @@ internal sealed class MiniWindow : Window
 
     private async Task SendAsync()
     {
-        if (sending || !attached || remote?.IsConnected != true || view?.CanSend != true) return;
+        var connection = remote;
+        if (sending || connection is null || !SessionReady || view?.CanSend != true) return;
         string text = composer.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
         sending = true; send.IsEnabled = false; composer.IsEnabled = false;
         UpdateRunStatus();
         try
         {
-            var peer = remote.Peer;
+            var peer = connection.Peer;
             Task submission = agent?.CanFiles == true
                 ? new FileTransferClient(peer).SendAsync(sessionId, text, [], responseTimeout: TimeSpan.FromMinutes(3))
                 : peer.CallAsync("send", new { text, delivery = "auto" }, responseTimeout: TimeSpan.FromMinutes(3));
@@ -313,20 +412,24 @@ internal sealed class MiniWindow : Window
         }
         catch (TimeoutException) { SetStatus("确认超时，发送结果未知。请先查看会话结果，不要重复提交。"); }
         catch (Exception ex) { SetStatus("发送失败：" + ex.Message); }
-        finally { sending = false; send.IsEnabled = attached && remote?.IsConnected == true && view?.CanSend == true; composer.IsEnabled = send.IsEnabled; UpdateRunStatus(); }
+        finally { sending = false; send.IsEnabled = SessionReady && view?.CanSend == true; composer.IsEnabled = send.IsEnabled; UpdateRunStatus(); }
     }
 
     private void UpdateRunStatus()
     {
         var indicator = sending ? new AgentIndicator("提交中", "#D97706")
-            : AgentIndicator.From(attached && remote?.IsConnected == true, sessionConnecting, view);
+            : remote?.IsConnected != true ? new AgentIndicator(sessionConnecting ? "网络连接中" : "网络已断开", "#D97706")
+            : !SessionReady ? new AgentIndicator(recoveryError is null ? "会话加载中" : "会话待重试", "#D97706")
+            : AgentIndicator.From(true, false, view);
         statusLabel.Text = indicator.Label;
         var color = (Brush)new BrushConverter().ConvertFromString(indicator.Color)!;
         statusDot.Fill = color;
         ((TextBlock)ball.Child).Foreground = color;
-        string detail = view?.StatusDetail is { Length: > 0 } description ? " · " + description : "";
+        string detail = recoveryError is { Length: > 0 } error ? " · " + error
+            : view?.StatusDetail is { Length: > 0 } description ? " · " + description : "";
         string hint = indicator.Label + detail;
         statusBadge.ToolTip = hint;
+        if (recoveryError is not null) SetStatus(hint);
         AutomationProperties.SetName(statusBadge, "会话状态：" + indicator.Label);
     }
 

@@ -15,6 +15,8 @@ public partial class MainWindow
         public RegistryClient Registry { get; } = new(server);
         public RemoteDevice Remote { get; } = new();
         public ConnectionHeartbeat? Heartbeat;
+        public CancellationTokenSource Lifetime { get; } = new();
+        public CancellationTokenSource? Recovery;
         public AgentInfo? Agent;
         public IReadOnlyList<SessionInfo> Sessions = [];
         public IReadOnlyList<WorkspaceInfo> Workspaces = [];
@@ -25,11 +27,13 @@ public partial class MainWindow
         public string Search = "";
         public Dictionary<string, string> Drafts = [];
         public List<RemoteFile> Attachments = [];
-        public string Label => Name + " · " + Remote.ConnectionKind + " · " + AgentIndicator.From(Remote.IsConnected, Remote.IsReconnecting, View).Label;
+        public string Label => Name + " · " + Remote.ConnectionKind + " · " +
+            (Remote.IsConnected && Recovery is not null ? "会话加载中" : AgentIndicator.From(Remote.IsConnected, Remote.IsReconnecting, View).Label);
         public async ValueTask DisposeAsync()
         {
+            Lifetime.Cancel(); Recovery?.Cancel();
             try { if (Heartbeat is not null) await Heartbeat.DisposeAsync(); }
-            finally { try { await Remote.DisposeAsync(); } finally { Registry.Dispose(); } }
+            finally { try { await Remote.DisposeAsync(); } finally { Registry.Dispose(); Lifetime.Dispose(); } }
         }
     }
     private readonly DeviceConnectionPool<DeviceContext> deviceConnections = new();
@@ -65,9 +69,11 @@ public partial class MainWindow
                         Dispatcher.BeginInvoke(() => HandleCompletion(added, completion)); return;
                     }
                     if (method != "session" || node is null) return;
+                    var notificationPeer = added.Remote.Peer;
                     var view = Json.Read<SessionView>(node);
                     Dispatcher.BeginInvoke(() =>
                     {
+                        if (!ReferenceEquals(notificationPeer, added.Remote.Peer)) return;
                         if (activeDevice == added && selectedId == view.Id)
                         { added.View = view; lock (snapshotGate) pendingSnapshot = (added.Remote, view); }
                         else if (activeDevice != added && added.SelectedId == view.Id) added.View = view;
@@ -75,6 +81,7 @@ public partial class MainWindow
                 };
                 added.Remote.ConnectionChanged += (online, message) => Dispatcher.BeginInvoke(() =>
                 {
+                    if (!online) added.Recovery?.Cancel();
                     if (activeDevice != added) return;
                     RemoteStatus.Text = message; SetSessionEnabled(false); RefreshButton.IsEnabled = online;
                     StatusBar.Text = message + " 重连会恢复会话显示；不会自动重发消息或确认操作。";
@@ -89,27 +96,74 @@ public partial class MainWindow
     {
         string? id = activeDevice == device ? selectedId : device.SelectedId;
         int version = selectionVersion;
+        var view = await ReadDeviceSessionAsync(device, id, version, refreshSessions: true);
+        if (activeDevice == device)
+        {
+            if (version != selectionVersion || selectedId != id) return;
+            sessions = device.Sessions; Filter();
+            if (view is not null) Render(view);
+        }
+        else if (view is not null && device.SelectedId == id) device.View = view;
+    }
+    private async Task<SessionView?> ReadDeviceSessionAsync(DeviceContext device, string? id, int version, bool refreshSessions)
+    {
+        if (device.Lifetime.IsCancellationRequested) return null;
+        device.Recovery?.Cancel();
+        using var recovery = CancellationTokenSource.CreateLinkedTokenSource(device.Lifetime.Token);
+        device.Recovery = recovery;
+        bool Current() => !recovery.IsCancellationRequested && ReferenceEquals(device.Recovery, recovery) &&
+            (activeDevice == device ? selectedId == id && selectionVersion == version : device.SelectedId == id);
+        int attempt = 0;
         try
         {
-            try { await OperationGroups.NegotiateAsync(device.Remote.Peer); } catch (IOException) { /* Legacy history fallback. */ }
-            device.Sessions = Json.Read<List<SessionInfo>>(await device.Remote.Peer.CallAsync("sessions", null));
-            if (activeDevice == device ? selectedId != id || version != selectionVersion : device.SelectedId != id) return;
-            var view = id is null ? null : Json.Read<SessionView>(await SessionHistory.ReadAsync(device.Remote.Peer, "attach", new { id }));
-            if (activeDevice == device)
+            while (Current())
             {
-                if (version != selectionVersion) return;
-                sessions = device.Sessions; Filter();
-                if (view is not null) Render(view);
+                if (!device.Remote.IsConnected) return null;
+                var peer = device.Remote.Peer;
+                try
+                {
+                    try { await OperationGroups.NegotiateAsync(peer, recovery.Token); }
+                    catch (IOException) when (device.Remote.IsConnected) { /* Legacy history fallback. */ }
+                    var restoredSessions = refreshSessions
+                        ? Json.Read<List<SessionInfo>>(await peer.CallAsync("sessions", null, recovery.Token)) : device.Sessions;
+                    var view = id is null ? null : Json.Read<SessionView>(await SessionHistory.ReadAsync(peer, "attach", new { id }, recovery.Token));
+                    if (!Current()) return null;
+                    if (!ReferenceEquals(peer, device.Remote.Peer)) continue;
+                    if (!device.Remote.IsConnected) return null;
+                    device.Sessions = restoredSessions;
+                    if (activeDevice == device)
+                    {
+                        RemoteStatus.Text = "已连接 · " + device.Name + " · " + device.Remote.ConnectionKind;
+                        StatusBar.Text = id is null ? "设备连接已恢复。" : "会话已恢复。";
+                    }
+                    return view;
+                }
+                catch (OperationCanceledException) when (recovery.IsCancellationRequested) { return null; }
+                catch (Exception ex)
+                {
+                    if (!Current() || !device.Remote.IsConnected) return null;
+                    if (activeDevice == device)
+                    {
+                        SetSessionEnabled(false);
+                        RemoteStatus.Text = "网络已连接 · 正在恢复会话";
+                        SessionMeta.Text = "会话读取失败，等待自动重试";
+                        StatusBar.Text = ex.Message;
+                    }
+                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(10, 2 + attempt++ * 2)), recovery.Token);
+                }
             }
-            else if (device.SelectedId == id) device.View = view;
         }
-        catch (Exception ex) { if (activeDevice == device) Error(ex); }
+        catch (OperationCanceledException) when (recovery.IsCancellationRequested) { }
+        finally { if (ReferenceEquals(device.Recovery, recovery)) device.Recovery = null; }
+        return null;
     }
     private void SaveActiveDevice()
     {
         if (activeDevice is not { } device) return;
         SaveDraft();
-        device.SelectedId = selectedId; device.View = History.Latest ?? current;
+        device.SelectedId = selectedId;
+        var latest = History.Latest ?? current;
+        device.View = latest?.Id == selectedId ? latest : null;
         lock (snapshotGate)
         {
             if (pendingSnapshot is { } pending && pending.Connection == remote && pending.View.Id == selectedId) device.View = pending.View;
@@ -139,7 +193,12 @@ public partial class MainWindow
         SessionTitle.Text = "选择远端会话，继续工作"; SessionMeta.Text = "其他设备保持连接，可在左侧随时切换。";
         EmptyTitle.Text = "选择会话，继续工作"; EmptyDescription.Text = "从左侧打开已有会话，或点击「新建会话」。";
         EmptyConnect.Visibility = Visibility.Collapsed; EmptyState.Visibility = Visibility.Visible;
-        if (current is not null) Render(current);
+        if (current is not null && current.Id == selectedId) Render(current);
+        else
+        {
+            current = null;
+            if (selectedId is not null && device.Remote.IsConnected) _ = RestoreDeviceAsync(device);
+        }
         StatusBar.Text = agent?.Detail ?? "已切换设备";
         UpdateDevicePicker(); ShowConversations();
     }

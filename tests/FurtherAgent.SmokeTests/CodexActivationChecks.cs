@@ -48,6 +48,14 @@ internal static class CodexActivationChecks
     public static async Task Run(Action<bool, string> check)
     {
         string id = Guid.NewGuid().ToString();
+        int loadedLaunches = 0, loadedProbes = 0;
+        var loadedOwner = await CodexThreadActivation.ActivateAsync(id, _ => loadedLaunches++, _ =>
+        {
+            loadedProbes++;
+            return Task.FromResult<string?>("loaded-owner");
+        }, default);
+        check(loadedOwner == "loaded-owner" && loadedLaunches == 0 && loadedProbes == 1,
+            "an already loaded desktop thread attaches without changing the visible page");
         int launches = 0, probes = 0;
         string? url = null;
         var owner = await CodexThreadActivation.ActivateAsync(id, value => { launches++; url = value; },
@@ -81,8 +89,8 @@ internal static class CodexActivationChecks
         check(rejected && probes == 1, "protocol errors propagate without repeating navigation");
         probes = 0; rejected = false;
         try { await CodexThreadActivation.ActivateAsync(id, _ => throw new IOException("launch failed"),
-            _ => { probes++; return Task.FromResult<string?>("owner"); }, default); }
+            _ => { probes++; return Task.FromResult<string?>(null); }, default); }
         catch (IOException ex) { rejected = ex.Message == "launch failed"; }
-        check(rejected && probes == 0, "failed navigation never attaches another owner");
+        check(rejected && probes == 1, "failed navigation after missing-owner discovery never attaches another owner");
     }
 }

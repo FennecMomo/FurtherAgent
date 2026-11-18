@@ -23,9 +23,9 @@ internal static class CodexThreadActivation
     {
         string url = ThreadUrl(id);
         ct.ThrowIfCancellationRequested();
-        open(url); // Once per selection; retries only discover, never repeatedly launch pages.
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         deadline.CancelAfter(timeout ?? TimeSpan.FromSeconds(15));
+        bool opened = false;
         try
         {
             while (true)
@@ -34,7 +34,13 @@ internal static class CodexThreadActivation
                 string? owner;
                 try { owner = await discover(deadline.Token); }
                 catch (TimeoutException) { owner = null; } // Only read-only discovery is retried.
+                deadline.Token.ThrowIfCancellationRequested();
                 if (!string.IsNullOrEmpty(owner)) return owner;
+                if (!opened)
+                {
+                    open(url);
+                    opened = true;
+                }
                 await Task.Delay(retryDelay ?? TimeSpan.FromMilliseconds(300), deadline.Token);
             }
         }

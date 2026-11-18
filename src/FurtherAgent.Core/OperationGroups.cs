@@ -58,11 +58,11 @@ public static class OperationGroups
         return result;
     }
 
-    public static async Task<bool> NegotiateAsync(RpcPeer peer)
+    public static async Task<bool> NegotiateAsync(RpcPeer peer, CancellationToken ct = default)
     {
-        var response = await peer.CallAsync("history-mode", new { version = 3 });
+        var response = await peer.CallAsync("history-mode", new { version = 3 }, ct);
         if (response?["version"]?.GetValue<int>() != 3)
-            response = await peer.CallAsync("history-mode", new { version = 2 });
+            response = await peer.CallAsync("history-mode", new { version = 2 }, ct);
         return response?["enabled"]?.GetValue<bool>() == true;
     }
 }

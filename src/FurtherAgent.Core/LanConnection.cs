@@ -81,7 +81,7 @@ public sealed class LanHost : IAsyncDisposable
     private UdpClient? discovery;
     private Task? acceptLoop, discoveryLoop;
     private readonly List<Task> clients = [];
-    private readonly SemaphoreSlim slots = new(8, 8);
+    private readonly SemaphoreSlim slots = new(DeviceRegistration.SupportedMaxControllers, DeviceRegistration.SupportedMaxControllers);
     public LanPairing Pairing { get; private set; }
     public int Port => Pairing.Port;
     public LanHost(string name, string identityPath, string identity, Func<IConnectionTransport, CancellationToken, Task> serve)

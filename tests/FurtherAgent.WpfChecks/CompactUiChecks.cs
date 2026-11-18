@@ -38,7 +38,7 @@ internal static class CompactUiChecks
             Layout(a, 420, 210); Layout(b, 420, 210);
             Check(Field<TextBlock>(a, "title").Text == "1 · 会话 A" && Field<TextBlock>(b, "title").Text == "0 · 会话 B",
                 "expanded mini titles show their numeric shortcuts with zero as the tenth slot");
-            Check(Field<TextBlock>(a, "statusLabel").Text == "连接中", "mini shows connection progress before its own session attaches");
+            Check(Field<TextBlock>(a, "statusLabel").Text == "网络连接中", "mini shows network connection progress before its own session attaches");
             Check(main.Width == 1240 && main.MinWidth == 940 && main.Content is Grid,
                 "creating minis leaves main window size and content intact");
             Check(Field<TextBlock>(a, "context").Text.Contains("回复 A") && !Field<TextBlock>(a, "context").Text.Contains("工具原文") &&
