@@ -78,6 +78,8 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     private RpcPeer? redirect;
     public bool HasPendingCalls => !pending.IsEmpty;
     internal bool SupportsTransportPing { get; set; }
+    internal bool SupportsSessionChannels { get; set; }
+    internal SessionChannelMultiplexer? SessionChannels { get; set; }
     public event Action<string, object?>? CallSucceeded;
     // Atomically move future calls only after every submitted request has settled.
     internal bool TryRedirectTo(RpcPeer replacement, Func<bool> unchanged)
@@ -102,7 +104,11 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         handlers = Task.Run(HandleLoopAsync);
         Completion = Task.Run(ReadLoopAsync);
     }
-    public async Task<JsonNode?> CallAsync(string method, object? args, CancellationToken ct = default, TimeSpan? responseTimeout = null)
+    public Task<JsonNode?> CallAsync(string method, object? args, CancellationToken ct = default, TimeSpan? responseTimeout = null)
+        => CallCoreAsync(method, args, ct, responseTimeout, false);
+    internal Task<JsonNode?> CallChannelAsync(string method, object? args, CancellationToken ct = default, TimeSpan? responseTimeout = null)
+        => CallCoreAsync(method, args, ct, responseTimeout, true);
+    private async Task<JsonNode?> CallCoreAsync(string method, object? args, CancellationToken ct, TimeSpan? responseTimeout, bool finishPhysicalWrite)
     {
         string id = Guid.NewGuid().ToString("N");
         var source = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -116,10 +122,10 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
                 pending[id] = source;
             }
         }
-        if (forwarded is not null) return await forwarded.CallAsync(method, args, ct, responseTimeout);
+        if (forwarded is not null) return await forwarded.CallCoreAsync(method, args, ct, responseTimeout, finishPhysicalWrite);
         try
         {
-            await WriteAsync(Json.Node(new { id, method, args }), ct);
+            await WriteAsync(Json.Node(new { id, method, args }), ct, finishPhysicalWrite);
             var result = await source.Task.WaitAsync(responseTimeout ?? TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
             CallSucceeded?.Invoke(method, args);
             return result;
@@ -127,10 +133,19 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         finally { pending.TryRemove(id, out _); }
     }
     public Task NotifyAsync(string method, object? args) => WriteAsync(Json.Node(new { method, args }), lifetime.Token);
-    private async Task WriteAsync(JsonNode message, CancellationToken ct)
+    internal Task NotifyAsync(string method, object? args, CancellationToken ct) => WriteAsync(Json.Node(new { method, args }), ct, true);
+    private async Task WriteAsync(JsonNode message, CancellationToken ct, bool finishPhysicalWrite = false)
     {
         await writes.WaitAsync(ct);
-        try { await transport.WriteAsync(message, ct); }
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            // A child may cancel its place in the write queue or its response
+            // wait. Once its envelope starts, finish the physical frame using
+            // the parent's lifetime: partial LAN frames and canceled WebSocket
+            // sends would otherwise break every window on this connection.
+            await transport.WriteAsync(message, finishPhysicalWrite ? lifetime.Token : ct);
+        }
         finally { writes.Release(); }
     }
     private async Task ReadLoopAsync()
@@ -200,6 +215,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         await transport.DisposeAsync();
         if (Completion is not null) await Completion;
         if (handlers is not null) await handlers;
+        if (SessionChannels is not null) await SessionChannels.DisposeAsync();
     }
 }
 

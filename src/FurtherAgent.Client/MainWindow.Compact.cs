@@ -53,7 +53,7 @@ public partial class MainWindow
                 device.Drafts[session] = text;
                 if (activeDevice == device && selectedId == session && Composer.Text != text) Composer.Text = text;
             },
-            RestoreFromTray, shortcutSlot, (miniWindows.Count % 8) * 28);
+            RestoreFromTray, shortcutSlot, (miniWindows.Count % 8) * 28, device.Remote, device.Registry);
         miniWindows.Add(key, mini);
         CancelCompactHotkeySequence();
         mini.Closed += (_, _) =>

@@ -144,13 +144,15 @@ public sealed class DeviceHost : IAsyncDisposable
         }
         catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("远程会话连接结束：" + ex.Message); }
     }
-    private async Task ServePeerAsync(IConnectionTransport socket, CancellationToken ct)
+    private Task ServePeerAsync(IConnectionTransport socket, CancellationToken ct) => ServeSessionPeerAsync(socket, ct, true);
+    private async Task ServeSessionPeerAsync(IConnectionTransport socket, CancellationToken ct, bool physical)
     {
         try
         {
             using var stop = ct.Register(socket.Abort);
             await using var adapter = await agents.ConnectAsync(ct);
             await using var peer = new RpcPeer(socket);
+            await using var channels = physical ? new SessionChannelMultiplexer(peer, (channel, token) => ServeSessionPeerAsync(channel, token, false)) : null;
             using var pumping = CancellationTokenSource.CreateLinkedTokenSource(ct);
             int incremental = 0;
             int paged = 0;
@@ -159,7 +161,9 @@ public sealed class DeviceHost : IAsyncDisposable
             var sync = new SessionSyncEncoder();
             var updates = Channel.CreateBounded<SessionView>(new BoundedChannelOptions(1) { FullMode = BoundedChannelFullMode.DropOldest });
             var completions = Channel.CreateBounded<SessionCompletion>(new BoundedChannelOptions(128) { FullMode = BoundedChannelFullMode.Wait });
-            adapter.Completed += completion => { if (!completions.Writer.TryWrite(completion)) socket.Abort(); };
+            // The root stream carries global completion notices once. Mini peers
+            // only consume their selected session updates.
+            if (physical) adapter.Completed += completion => { if (!completions.Writer.TryWrite(completion)) socket.Abort(); };
             adapter.Changed += view => updates.Writer.TryWrite(view);
             adapter.Faulted += message => { Status?.Invoke(message); socket.Abort(); };
             string? attachedSession = null;
@@ -204,7 +208,8 @@ public sealed class DeviceHost : IAsyncDisposable
                 "history-mode" => Json.Node(new { enabled = Interlocked.Exchange(ref paged, args?["version"]?.GetValue<int>() is 3 ? 3 : args?["version"]?.GetValue<int>() is 2 ? 2 : 1) >= 0, version = Volatile.Read(ref paged) }),
                 "history" => Json.Node(HistoryPaging.Page(historySource is { } history && history.Id == FileSession(args) ? history : throw new IOException("请先打开会话。"),
                     args!["before"]!.GetValue<int>(), args["revision"]!.GetValue<string>(), Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3)),
-                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, args?["version"]?.GetValue<int>() >= 2 ? 2 : 1) >= 0, version = Volatile.Read(ref incremental), transportPing = true }),
+                "session-sync" => Json.Node(new { incremental = Interlocked.Exchange(ref incremental, args?["version"]?.GetValue<int>() >= 2 ? 2 : 1) >= 0, version = Volatile.Read(ref incremental), transportPing = true, sessionChannels = physical ? 1 : 0 }),
+                "session-channel/open" when channels is not null => await channels.AcceptAsync(args, token),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
                 "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id is "hermes" or "codex" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
@@ -235,7 +240,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 }
                 catch (Exception) { socket.Abort(); }
             });
-            Status?.Invoke(socket is LanTransport ? "控制端已通过局域网直连。" : "远程端已通过服务端中继连接。");
+            if (physical) Status?.Invoke(socket is LanTransport ? "控制端已通过局域网直连。" : "远程端已通过服务端中继连接。");
             var pump = Task.Run(async () =>
             {
                 try
@@ -258,7 +263,7 @@ public sealed class DeviceHost : IAsyncDisposable
             });
             await peer.Completion!;
             updates.Writer.TryComplete(); completions.Writer.TryComplete(); pumping.Cancel(); await Task.WhenAll(pump, completionPump);
-            Status?.Invoke("远程端已断开，授权码仍可用于连接。");
+            if (physical) Status?.Invoke("远程端已断开，授权码仍可用于连接。");
         }
         catch (Exception ex) { if (!ct.IsCancellationRequested) Status?.Invoke("连接结束：" + ex.Message); }
     }
@@ -333,6 +338,7 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     public RpcPeer Peer { get; private set; } = null!;
     public PairResult? Device { get; private set; }
     public bool IsConnected => Peer is not null && Peer.Completion?.IsCompleted == false;
+    public bool SupportsSessionChannels => IsConnected && Peer.SupportsSessionChannels;
     public event Action<string, JsonNode?>? Notification;
     public event Action<bool, string>? ConnectionChanged;
     public event Action? Reconnected;
@@ -346,8 +352,10 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
     private RpcPeer NewPeer(IConnectionTransport connection)
     {
         var peer = new RpcPeer(connection); var sync = new SessionSyncDecoder();
+        peer.SessionChannels = new SessionChannelMultiplexer(peer);
         peer.Notification += (method, node) =>
         {
+            if (method.StartsWith("session-channel/", StringComparison.Ordinal)) return;
             if (method == "session-update")
             {
                 var view = sync.Apply(Json.Read<SessionUpdate>(node));
@@ -413,12 +421,13 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
         {
             var capabilities = await peer.CallAsync("session-sync", new { version = 2 }, ct);
             peer.SupportsTransportPing = capabilities?["transportPing"]?.GetValue<bool>() == true;
+            peer.SupportsSessionChannels = capabilities?["sessionChannels"]?.GetValue<int>() >= 1;
         }
         catch (IOException) when (peer.Completion?.IsCompleted == false) { }
     }
     private async Task<bool> TryUpgradeAsync(CancellationToken ct)
     {
-        if (pairing is null || ConnectionKind == "局域网直连" || Peer.HasPendingCalls || !IsConnected) return false;
+        if (pairing is null || ConnectionKind == "局域网直连" || Peer.HasPendingCalls || !IsConnected || Peer.SessionChannels?.ActiveCount > 0) return false;
         var previous = Peer; var previousSocket = socket; long revision = Interlocked.Read(ref selectionRevision);
         IConnectionTransport? direct = null; RpcPeer? candidate = null;
         try
@@ -427,7 +436,8 @@ public sealed class RemoteDevice(bool autoReconnect = true) : IAsyncDisposable
             candidate = NewPeer(direct); await EnableSync(candidate, ct);
             if (historyMode > 0) await candidate.CallAsync("history-mode", new { version = historyMode }, ct);
             if (attached is { } id) await SessionHistory.ReadAsync(candidate, "attach", new { id }, ct);
-            if (!previous.TryRedirectTo(candidate, () => Peer == previous && Interlocked.Read(ref selectionRevision) == revision)) return false;
+            if (previous.SessionChannels?.TryRetireIfEmpty(() => previous.TryRedirectTo(candidate,
+                () => Peer == previous && Interlocked.Read(ref selectionRevision) == revision)) != true) return false;
             socket = direct; Peer = candidate; ConnectionKind = "局域网直连";
             direct = null; candidate = null;
             await previous.DisposeAsync(); if (previousSocket is not null) await previousSocket.DisposeAsync();

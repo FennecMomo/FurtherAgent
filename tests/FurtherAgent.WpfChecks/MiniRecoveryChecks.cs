@@ -68,16 +68,18 @@ internal static class MiniRecoveryChecks
         var recoveries = new List<Task>();
         var extraConnections = new List<RemoteDevice>();
         var state = new RecoveryState();
+        int physicalControls = 0;
         var miniType = typeof(MainWindow).Assembly.GetType("FurtherAgent.Client.MiniWindow")!;
         T Field<T>(Window mini, string name) => (T)miniType.GetField(name, Private)!.GetValue(mini)!;
         Task StartMini(Window mini) => (Task)miniType.GetMethod("StartAsync")!.Invoke(mini, null)!;
         bool Ready(Window mini) => Field<Button>(mini, "send").IsEnabled;
-        Window CreateMini(string id, int slot)
+        Window CreateMini(string id, int slot, RemoteDevice? sharedOwner = null)
         {
             var view = new SessionView(id, "恢复验证", "fixture", "idle", null, [new("assistant", "先前已收到的正文")], []);
-            var mini = (Window)Activator.CreateInstance(miniType, url, code, id, view.Title, view,
-                Path.Combine(fixture, "mini-" + slot + ".json"), (Func<string>)(() => "保留的草稿"),
-                (Action<string>)(_ => { }), (Action)(() => { }), slot, 0)!;
+            object?[] arguments = [url, code, id, view.Title, view, Path.Combine(fixture, "mini-" + slot + ".json"),
+                (Func<string>)(() => "保留的草稿"), (Action<string>)(_ => { }), (Action)(() => { }), slot, 0];
+            if (sharedOwner is not null) arguments = [.. arguments, sharedOwner, registry];
+            var mini = (Window)Activator.CreateInstance(miniType, arguments)!;
             minis.Add(mini);
             return mini;
         }
@@ -87,6 +89,10 @@ internal static class MiniRecoveryChecks
             string? previousAccounts = Environment.GetEnvironmentVariable("FURTHERAGENT_MAILBOX_ACCOUNT_DIR");
             var candidate = new DeviceHost(registry, () => new RecoveryAdapter(state), Path.Combine(fixture, "files"),
                 persistentIdentity: true, enableLan: false);
+            candidate.Status += message =>
+            {
+                if (message == "远程端已通过服务端中继连接。") Interlocked.Increment(ref physicalControls);
+            };
             try
             {
                 Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", identity);
@@ -119,7 +125,7 @@ internal static class MiniRecoveryChecks
 
             host = await StartHost();
             await Until(() => Volatile.Read(ref state.AttachAttempts) > 0);
-            Check(Field<RemoteDevice>(first, "remote").IsConnected && !Ready(first) &&
+            Check(Field<RemoteSessionConnection>(first, "remote").IsNetworkConnected && !Ready(first) &&
                 Field<TextBlock>(first, "statusLabel").Text.Contains("会话"),
                 "a failed session attach is distinguished from a live network connection");
             state.InitialAttachRelease.TrySetResult();
@@ -127,19 +133,32 @@ internal static class MiniRecoveryChecks
             Check(state.AttachAttempts >= 2 && Field<TextBox>(first, "composer").Text == "保留的草稿",
                 "the mini retries its failed attach after the host comes online");
 
-            var second = CreateMini("same-session", 2);
+            var sharedOwner = new RemoteDevice();
+            extraConnections.Add(sharedOwner);
+            await sharedOwner.ConnectAsync(registry, code);
+            var second = CreateMini("same-session", 2, sharedOwner);
             recoveries.Add(StartMini(second));
-            await Until(() => Ready(second));
-            Check(Ready(first) && Ready(second), "two minis can attach to the same fixture session");
+            var third = CreateMini("other-session", 3, sharedOwner);
+            recoveries.Add(StartMini(third));
+            await Until(() => Ready(second) && Ready(third));
+            Check(Ready(first) && Field<RemoteSessionConnection>(second, "remote").IsSharedConnection &&
+                Field<RemoteSessionConnection>(third, "remote").IsSharedConnection && Volatile.Read(ref physicalControls) == 2,
+                "the production mini constructor shares one owner transport across independent session windows");
             await host.DisposeAsync();
             host = null;
-            await Until(() => !Ready(first) && !Ready(second));
+            await Until(() => !Ready(first) && !Ready(second) && !Ready(third));
             state.FailNextAttach = 1;
             int beforeReconnect = state.AttachAttempts;
             host = await StartHost();
-            await Until(() => Ready(first) && Ready(second));
-            Check(state.AttachAttempts >= beforeReconnect + 3 && state.Sends == 0,
-                "both minis recover after host reconnect and an additional attach failure without replaying a message");
+            await Until(() => Ready(first) && Ready(second) && Ready(third));
+            Check(state.AttachAttempts >= beforeReconnect + 4 && state.Sends == 0 &&
+                Field<RemoteSessionConnection>(second, "remote").IsNetworkConnected &&
+                Field<RemoteSessionConnection>(third, "remote").IsNetworkConnected,
+                "shared minis follow the owner disconnect and recover their sessions without replaying a message");
+            third.Close();
+            await sharedOwner.Peer.CallAsync("agents", null);
+            Check(Ready(second) && sharedOwner.IsConnected,
+                "closing one shared mini leaves the parent transport and the other mini usable");
 
             for (int i = 0; i < 10; i++)
             {
@@ -148,7 +167,7 @@ internal static class MiniRecoveryChecks
                 await remote.ConnectAsync(registry, code);
             }
             Check(extraConnections.All(connection => connection.IsConnected) && Ready(first) && Ready(second),
-                "the relay accepts twelve concurrent controls for ten minis, the main window and a phone");
+                "the relay retains twelve concurrent physical controls while minis share their owner");
 
             var main = new MainWindow();
             object mainPool = typeof(MainWindow).GetField("deviceConnections", Private)!.GetValue(main)!;
@@ -174,7 +193,7 @@ internal static class MiniRecoveryChecks
                 typeof(MainWindow).GetMethod("DisposeTray", Private)!.Invoke(main, null);
             }
 
-            var waiting = CreateMini("blocked-session", 3);
+            var waiting = CreateMini("blocked-session", 4);
             Task waitingRecovery = StartMini(waiting);
             recoveries.Add(waitingRecovery);
             await state.BlockedAttachEntered.Task.WaitAsync(TimeSpan.FromSeconds(20));

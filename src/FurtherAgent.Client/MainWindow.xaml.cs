@@ -1099,6 +1099,7 @@ public partial class MainWindow : Window
         if (!exitRequested) { Hide(); return; }
         if (!IsEnabled) return;
         IsEnabled = false;
+        CloseAllMinis();
         try
         {
             transferCancellation?.Cancel();

@@ -20,8 +20,11 @@ internal sealed class MiniWindow : Window
     private readonly Action showMain;
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim recoveryWake = new(0, 1);
+    private readonly RegistryClient? sharedRegistry;
+    private readonly RemoteDevice? sharedRemote;
     private RegistryClient? registry;
-    private RemoteDevice? remote;
+    private RemoteDevice? ownedRemote;
+    private RemoteSessionConnection? remote;
     private ConnectionHeartbeat? heartbeat;
     private Task? recoveryTask;
     private RpcPeer? attachedPeer;
@@ -63,8 +66,16 @@ internal sealed class MiniWindow : Window
 
     public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
         string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade = 0)
+        : this(server, code, sessionId, sessionTitle, initialView, positionPath, readDraft, writeDraft, showMain,
+            shortcutSlot, cascade, null, null) { }
+
+    public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
+        string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade,
+        RemoteDevice? sharedRemote, RegistryClient? sharedRegistry)
     {
         this.server = server; this.code = code; this.sessionId = sessionId; this.positionPath = positionPath;
+        this.sharedRemote = sharedRemote; this.sharedRegistry = sharedRegistry;
+        if ((sharedRemote is null) != (sharedRegistry is null)) throw new ArgumentException("共享连接和注册客户端必须同时提供。");
         if (string.IsNullOrWhiteSpace(sessionTitle)) sessionTitle = sessionId;
         this.readDraft = readDraft; this.writeDraft = writeDraft; this.showMain = showMain;
         view = initialView;
@@ -182,7 +193,11 @@ internal sealed class MiniWindow : Window
                 finally
                 {
                     try { if (remote is not null) await remote.DisposeAsync(); }
-                    finally { registry?.Dispose(); recoveryWake.Dispose(); lifetime.Dispose(); }
+                    finally
+                    {
+                        try { if (ownedRemote is not null) await ownedRemote.DisposeAsync(); }
+                        finally { if (sharedRegistry is null) registry?.Dispose(); recoveryWake.Dispose(); lifetime.Dispose(); }
+                    }
                 }
             }
         };
@@ -240,7 +255,7 @@ internal sealed class MiniWindow : Window
         try { recoveryWake.Release(); } catch (SemaphoreFullException) { }
     }
 
-    private void Observe(RemoteDevice connection)
+    private void Observe(RemoteSessionConnection connection)
     {
         connection.Notification += (method, node) =>
         {
@@ -256,7 +271,7 @@ internal sealed class MiniWindow : Window
         {
             if (closed || remote != connection) return;
             attached = false; attachedPeer = null;
-            sessionConnecting = !online;
+            sessionConnecting = !connection.IsNetworkConnected;
             recoveryError = online ? null : message;
             send.IsEnabled = composer.IsEnabled = false;
             UpdateRunStatus();
@@ -273,35 +288,39 @@ internal sealed class MiniWindow : Window
     {
         try
         {
-            registry = new RegistryClient(server);
-            int attempt = 0;
-            while (!ct.IsCancellationRequested)
+            registry = sharedRegistry ?? new RegistryClient(server);
+            var owner = sharedRemote;
+            if (owner is null)
             {
-                var connection = new RemoteDevice();
-                remote = connection;
-                Observe(connection);
-                sessionConnecting = true;
-                UpdateRunStatus();
-                try
+                int attempt = 0;
+                while (!ct.IsCancellationRequested)
                 {
-                    await connection.ConnectAsync(registry, code, ct);
-                }
-                catch (Exception ex) when (!ct.IsCancellationRequested)
-                {
-                    remote = null;
-                    await connection.DisposeAsync();
-                    recoveryError = ex.Message;
+                    owner = new RemoteDevice();
+                    ownedRemote = owner;
+                    sessionConnecting = true;
                     UpdateRunStatus();
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(15, 1 << Math.Min(attempt++, 4))), ct);
-                    continue;
+                    try { await owner.ConnectAsync(registry, code, ct); break; }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        await owner.DisposeAsync(); ownedRemote = null; owner = null;
+                        recoveryError = ex.Message;
+                        UpdateRunStatus();
+                        await Task.Delay(TimeSpan.FromSeconds(Math.Min(15, 1 << Math.Min(attempt++, 4))), ct);
+                    }
                 }
                 ct.ThrowIfCancellationRequested();
-                sessionConnecting = false;
-                heartbeat = new ConnectionHeartbeat(registry, connection);
+                heartbeat = new ConnectionHeartbeat(registry, owner!);
                 heartbeat.Start();
-                await RestoreSessionAsync(connection, ct);
-                return;
             }
+            var connection = new RemoteSessionConnection(owner!, registry, code);
+            remote = connection;
+            Observe(connection);
+            sessionConnecting = !connection.IsNetworkConnected;
+            UpdateRunStatus();
+            await connection.ConnectAsync(ct);
+            ct.ThrowIfCancellationRequested();
+            sessionConnecting = false;
+            await RestoreSessionAsync(connection, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception ex)
@@ -315,14 +334,14 @@ internal sealed class MiniWindow : Window
         }
     }
 
-    private async Task RestoreSessionAsync(RemoteDevice connection, CancellationToken ct)
+    private async Task RestoreSessionAsync(RemoteSessionConnection connection, CancellationToken ct)
     {
         int attempt = 0;
         while (!ct.IsCancellationRequested)
         {
             if (!connection.IsConnected)
             {
-                attached = false; attachedPeer = null; sessionConnecting = true;
+                attached = false; attachedPeer = null; sessionConnecting = !connection.IsNetworkConnected;
                 send.IsEnabled = composer.IsEnabled = false;
                 UpdateRunStatus();
                 await recoveryWake.WaitAsync(TimeSpan.FromSeconds(1), ct);
@@ -418,7 +437,7 @@ internal sealed class MiniWindow : Window
     private void UpdateRunStatus()
     {
         var indicator = sending ? new AgentIndicator("提交中", "#D97706")
-            : remote?.IsConnected != true ? new AgentIndicator(sessionConnecting ? "网络连接中" : "网络已断开", "#D97706")
+            : !(remote?.IsNetworkConnected ?? sharedRemote?.IsConnected ?? ownedRemote?.IsConnected ?? false) ? new AgentIndicator(sessionConnecting ? "网络连接中" : "网络已断开", "#D97706")
             : !SessionReady ? new AgentIndicator(recoveryError is null ? "会话加载中" : "会话待重试", "#D97706")
             : AgentIndicator.From(true, false, view);
         statusLabel.Text = indicator.Label;
