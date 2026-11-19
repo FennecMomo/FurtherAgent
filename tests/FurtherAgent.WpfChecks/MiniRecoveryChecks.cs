@@ -209,6 +209,52 @@ internal static class MiniRecoveryChecks
                 typeof(MainWindow).GetMethod("DisposeTray", Private)!.Invoke(main, null);
             }
 
+            string shortcutSecret = new('C', 64);
+            string shortcutIdentity = Path.Combine(fixture, "shortcut.identity");
+            File.WriteAllText(shortcutIdentity, shortcutSecret);
+            string shortcutCode = DeviceIdentity.Code(shortcutSecret);
+            var shortcutStore = new SavedConnectionStore(Path.Combine(fixture, "shortcut-connection.json"));
+            shortcutStore.Save(new(url, shortcutCode, "isolated shortcut fixture", AutoConnect: true));
+            var shortcutWindow = new MainWindow { ShowActivated = false, ShowInTaskbar = false, Opacity = 0 };
+            var windowType = typeof(MainWindow);
+            var shortcutPool = (IAsyncDisposable)windowType.GetField("deviceConnections", Private)!.GetValue(shortcutWindow)!;
+            var openFromShortcut = windowType.GetMethod("OpenFromShortcutAsync", Private)!;
+            var connectButton = (Button)shortcutWindow.FindName("ConnectButton");
+            var connectError = (TextBlock)shortcutWindow.FindName("ConnectError");
+            var remoteField = windowType.GetField("remote", Private)!;
+            try
+            {
+                windowType.GetField("connectionStore", Private)!.SetValue(shortcutWindow, shortcutStore);
+                windowType.GetField("startSavedConnection", Private)!.SetValue(shortcutWindow, true);
+                ((TextBox)shortcutWindow.FindName("ServerUrl")).Text = url;
+                ((TextBox)shortcutWindow.FindName("RemoteCode")).Text = shortcutCode;
+                ((TextBox)shortcutWindow.FindName("ConnectionName")).Text = "isolated shortcut fixture";
+                shortcutWindow.StartSavedConnection();
+                await Until(() => connectButton.IsEnabled && !string.IsNullOrEmpty(connectError.Text));
+                Check(connectError.Text.Contains("找不到该设备的在线登记", StringComparison.Ordinal) && remoteField.GetValue(shortcutWindow) is null,
+                    "saved startup leaves a recoverable profile when its host has no relay registration yet");
+
+                await using var shortcutHost = await StartHost(shortcutIdentity);
+                shortcutWindow.RestoreFromTray();
+                Check(connectButton.IsEnabled && remoteField.GetValue(shortcutWindow) is null,
+                    "restoring an existing window alone leaves the failed startup unchanged");
+
+                int controlsBeforeShortcut = Volatile.Read(ref physicalControls);
+                var firstOpen = (Task)openFromShortcut.Invoke(shortcutWindow, null)!;
+                var secondOpen = (Task)openFromShortcut.Invoke(shortcutWindow, null)!;
+                await Task.WhenAll(firstOpen, secondOpen).WaitAsync(TimeSpan.FromSeconds(15));
+                Check((remoteField.GetValue(shortcutWindow) as RemoteDevice)?.IsConnected == true &&
+                    Volatile.Read(ref physicalControls) == controlsBeforeShortcut + 1 && state.Sends == 0,
+                    "reopening the same window through the shortcut reconnects once without replaying a message");
+            }
+            finally
+            {
+                shortcutWindow.Hide();
+                await shortcutPool.DisposeAsync();
+                ((DispatcherTimer)windowType.GetField("snapshotTimer", Private)!.GetValue(shortcutWindow)!).Stop();
+                windowType.GetMethod("DisposeTray", Private)!.Invoke(shortcutWindow, null);
+            }
+
             var waiting = CreateMini("blocked-session", 4);
             Task waitingRecovery = StartMini(waiting);
             recoveries.Add(waitingRecovery);

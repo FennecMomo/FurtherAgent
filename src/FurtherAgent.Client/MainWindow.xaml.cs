@@ -1,5 +1,7 @@
 ﻿using System.ComponentModel;
 using System.IO;
+using System.Net;
+using System.Net.Http;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -26,6 +28,7 @@ public partial class MainWindow : Window
     private System.Windows.Forms.NotifyIcon? tray;
     private bool exitRequested;
     private bool startSavedConnection;
+    private (string Server, string Code)? failedSavedConnection;
     private string? connectionFailure;
     private CancellationTokenSource? connectionAttempt;
     private readonly object snapshotGate = new();
@@ -157,7 +160,7 @@ public partial class MainWindow : Window
     }
     public async void StartSavedConnection()
     {
-        if (startSavedConnection && remote?.IsConnected != true) await ConnectAsync();
+        if (startSavedConnection && remote?.IsConnected != true) await ConnectAsync(fromSavedConnection: true);
     }
     public object Control(string command)
     {
@@ -237,10 +240,11 @@ public partial class MainWindow : Window
     {
         await ConnectAsync();
     }
-    private async Task ConnectAsync()
+    private async Task ConnectAsync(bool fromSavedConnection = false)
     {
         if (!ConnectButton.IsEnabled || !CanSwitchDevice || exitRequested) return;
         string server = ServerUrl.Text.Trim(), code = RemoteCode.Text.Trim();
+        failedSavedConnection = null;
         using var attempt = new CancellationTokenSource();
         connectionAttempt = attempt;
         ConnectButton.IsEnabled = false; ConnectError.Text = ""; connectionFailure = null;
@@ -253,12 +257,15 @@ public partial class MainWindow : Window
             ConnectError.Text = "";
             if (!string.IsNullOrWhiteSpace(ConnectionName.Text)) device.Name = ConnectionName.Text.Trim();
             ActivateDevice(device); UpdateDevicePicker();
-            try
+            if (!fromSavedConnection)
             {
-                SaveServerAddress(server);
-                connectionStore.Save(new(server, code, device.Name, true));
+                try
+                {
+                    SaveServerAddress(server);
+                    connectionStore.Save(new(server, code, device.Name, true));
+                }
+                catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
             }
-            catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
         }
         catch (OperationCanceledException) when (attempt.IsCancellationRequested)
         {
@@ -270,6 +277,9 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
+            if (fromSavedConnection && !attempt.IsCancellationRequested && ex is ConnectionOpenException failure &&
+                (failure.CanRetry || failure.InnerException is HttpRequestException { StatusCode: HttpStatusCode.NotFound }))
+                failedSavedConnection = (server, code);
             string message = ConnectionErrorMessage(ex, code);
             connectionFailure = ex.GetType().Name + ": " + message;
             ConnectError.Text = message;
@@ -325,6 +335,7 @@ public partial class MainWindow : Window
     }
     private async void Disconnect_Click(object sender, RoutedEventArgs e)
     {
+        failedSavedConnection = null;
         if (!ConnectButton.IsEnabled && connectionAttempt is { } attempt)
         {
             attempt.Cancel();
@@ -342,6 +353,7 @@ public partial class MainWindow : Window
     }
     private void ForgetConnection_Click(object sender, RoutedEventArgs e)
     {
+        failedSavedConnection = null;
         connectionAttempt?.Cancel();
         try { connectionStore.Forget(); RemoteCode.Clear(); StatusBar.Text = "已忘记保存的连接；当前连接不受影响，下次启动不会自动连接。"; }
         catch (Exception ex) { Error(ex); }
@@ -1107,6 +1119,20 @@ public partial class MainWindow : Window
         }
         catch (Exception ex) { Error(ex); }
     }
+    internal async Task OpenFromShortcutAsync()
+    {
+        if (exitRequested) return;
+        RestoreFromTray();
+        if (activeDevice is not null || failedSavedConnection is not { } failed ||
+            failed != (ServerUrl.Text.Trim(), RemoteCode.Text.Trim())) return;
+        try
+        {
+            if (connectionStore.Load(failed.Server) is not { AutoConnect: true } saved || saved.Code != failed.Code) return;
+        }
+        catch (Exception ex) { Error(ex); return; }
+        await ConnectAsync(fromSavedConnection: true);
+    }
+
     public void RestoreFromTray()
     {
         Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;

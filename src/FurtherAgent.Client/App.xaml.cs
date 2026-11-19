@@ -15,8 +15,8 @@ public partial class App : Application
         activation = new EventWaitHandle(false, EventResetMode.AutoReset, "Local\\FurtherAgent-activate-" + scope);
         bool background = e.Args.Contains("--background");
         if (!ownsInstance) { if (!background) activation.Set(); Shutdown(); return; }
-        listener = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => Dispatcher.BeginInvoke(() =>
-        { if (MainWindow is MainWindow window) window.RestoreFromTray(); }), null, Timeout.Infinite, false);
+        listener = ThreadPool.RegisterWaitForSingleObject(activation, (_, _) => Dispatcher.BeginInvoke(async () =>
+        { if (MainWindow is MainWindow window) await window.OpenFromShortcutAsync(); }), null, Timeout.Infinite, false);
         base.OnStartup(e);
         var window = new MainWindow(); MainWindow = window;
         control = new LocalControl(command => Dispatcher.InvokeAsync(() => window.Control(command)).Task);
