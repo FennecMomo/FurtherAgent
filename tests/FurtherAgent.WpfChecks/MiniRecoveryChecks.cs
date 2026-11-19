@@ -39,6 +39,8 @@ internal static class MiniRecoveryChecks
         int port = ((IPEndPoint)reservation.LocalEndpoint).Port;
         reservation.Stop();
         string url = $"http://127.0.0.1:{port}";
+        var windowType = typeof(MainWindow);
+        MainWindow CreateMain() => (MainWindow)Activator.CreateInstance(windowType, Private, null, [null, url], null)!;
         string fixture = Path.Combine(root, "artifacts", "checks", "mini-recovery-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(fixture);
         string identity = Path.Combine(fixture, "fixture.identity");
@@ -169,7 +171,7 @@ internal static class MiniRecoveryChecks
             Check(extraConnections.All(connection => connection.IsConnected) && Ready(first) && Ready(second),
                 "the relay retains twelve concurrent physical controls while minis share their owner");
 
-            var main = new MainWindow();
+            var main = CreateMain();
             object mainPool = typeof(MainWindow).GetField("deviceConnections", Private)!.GetValue(main)!;
             try
             {
@@ -215,8 +217,8 @@ internal static class MiniRecoveryChecks
             string shortcutCode = DeviceIdentity.Code(shortcutSecret);
             var shortcutStore = new SavedConnectionStore(Path.Combine(fixture, "shortcut-connection.json"));
             shortcutStore.Save(new(url, shortcutCode, "isolated shortcut fixture", AutoConnect: true));
-            var shortcutWindow = new MainWindow { ShowActivated = false, ShowInTaskbar = false, Opacity = 0 };
-            var windowType = typeof(MainWindow);
+            var shortcutWindow = CreateMain();
+            shortcutWindow.ShowActivated = false; shortcutWindow.ShowInTaskbar = false; shortcutWindow.Opacity = 0;
             var shortcutPool = (IAsyncDisposable)windowType.GetField("deviceConnections", Private)!.GetValue(shortcutWindow)!;
             var openFromShortcut = windowType.GetMethod("OpenFromShortcutAsync", Private)!;
             var connectButton = (Button)shortcutWindow.FindName("ConnectButton");
@@ -226,7 +228,6 @@ internal static class MiniRecoveryChecks
             {
                 windowType.GetField("connectionStore", Private)!.SetValue(shortcutWindow, shortcutStore);
                 windowType.GetField("startSavedConnection", Private)!.SetValue(shortcutWindow, true);
-                ((TextBox)shortcutWindow.FindName("ServerUrl")).Text = url;
                 ((TextBox)shortcutWindow.FindName("RemoteCode")).Text = shortcutCode;
                 ((TextBox)shortcutWindow.FindName("ConnectionName")).Text = "isolated shortcut fixture";
                 shortcutWindow.StartSavedConnection();

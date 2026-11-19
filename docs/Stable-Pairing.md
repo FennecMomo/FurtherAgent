@@ -10,6 +10,7 @@ WPF 本机共享与 Linux Host 默认保存设备身份，注册时提交 256 �
 - 短码及多端功能要求中继和共享端均升级至 0.9.1。旧控制端协议继续可用。新接入端在旧中继上会因固定码校验失败而明确要求升级。
 - 原 32 位固定码在新中继上作为同一设备的配对别名继续有效，已有手机/电脑保存的连接无需强制重填；用户可以逐步换成显示的 8 位码。旧临时随机码不作迁移。
 - 身份文件默认放在用户本地应用数据目录 FurtherAgent/identities，按中继地址和设备名分文件，不放发布目录。
+- 升级到内置公网 IP 的 0.16.4 后，程序优先使用已有的固定 IP 身份文件。如果不存在，会沿用旧 Cloudflare 地址下的同名身份文件。显式配置的身份文件始终优先。
 - 服务器推荐显式设置 `FURTHERAGENT_IDENTITY_FILE=/home/ubuntu/.config/furtheragent/hermes-default.identity`，这样修改设备名、回源地址或程序目录也保留同一身份。多个独立接入端必须使用不同文件。
 - 身份文件要保留并受限备份；丢失文件无法恢复同一码。Linux 新建目录 700、新建身份文件 600；Windows 默认用户 LocalAppData，沿用用户目录权限。
 - 同一身份有进程锁，不可同时启动两份，也不能在运行中执行离线重置。
@@ -32,7 +33,7 @@ WPF 本机共享与 Linux Host 默认保存设备身份，注册时提交 256 �
 - 实际新建“固定配对码迁移验收”会话成功，ID furtheragent_7173990b098f43fba0628959c56cd42f，未提交 Agent 任务。
 - 原业务 Host 3341714 在新端重启验收通过后优雅退出；Hermes 网关仍为 PID 15657，未重启。旧的两个专用测试 Host 保留，因中继重启，其旧临时码可能变化。
 - 程序目录 `/home/ubuntu/furtheragent-0.6.0`，身份 `/home/ubuntu/.config/furtheragent/hermes-default.identity`（600），文件根 `/home/ubuntu/furtheragent-files`。
-- 私有启动环境保存于 `/home/ubuntu/furtheragent-0.6.0/host-environment.json`（600，含 API key，不可转发）。后续启动必须沿用其中的 FURTHERAGENT_IDENTITY_FILE，并设置 FURTHERAGENT_SERVER=http://127.0.0.1:47320。身份不能重新生成或随升级删除。
+- 当时的 0.6.0 使用 `/home/ubuntu/furtheragent-0.6.0/host-environment.json` 保存私有启动环境（600，含 API key）。该版本使用 `FURTHERAGENT_SERVER=http://127.0.0.1:47320`。升级时继续沿用其中的 `FURTHERAGENT_IDENTITY_FILE`。
 - 本次进程为独立后台进程，未安装 systemd/开机自启。固定身份跨重启保留不等于服务自动启动；机器重启后需要用保存的配置启动程序。
 
 固定码仅交付给用户，报告和 Git 不保存码或设备密钥。本地凭据/迁移材料位于忽略目录 artifacts/integration/migration-060。

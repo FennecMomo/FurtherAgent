@@ -3,7 +3,14 @@ using FurtherAgent.Core;
 
 if (args.Contains("--help"))
 {
-    Console.WriteLine("FurtherAgent.Host [--probe | --reset-pairing]\n通用：FURTHERAGENT_BACKEND=hermes|dsh-desktop|dsh-background、FURTHERAGENT_IDENTITY_FILE、FURTHERAGENT_SERVER、FURTHERAGENT_NAME。\nHermes：HERMES_API_URL（默认 http://127.0.0.1:8642）、HERMES_API_KEY_FILE 或 HERMES_API_KEY。\nDSH：FURTHERAGENT_DSH_EXE（后台匹配运行时）、FURTHERAGENT_DSH_DESCRIPTOR（可选固定实例）；先运行 Install-DshBridge.ps1 安装对应模式插件。\n--probe 读取能力和会话数量，不连接中继、不执行 Agent；DSH 后台模式会启动并退出独立运行时。退出接入端不会停止 Hermes 或 DSH 桌面；DSH 后台有运行或排队任务时拒绝关闭。");
+    Console.WriteLine($"""
+        FurtherAgent.Host [--probe | --reset-pairing]
+        固定中继 {RelayEndpoint.Address}
+        通用：FURTHERAGENT_BACKEND=hermes|dsh-desktop|dsh-background、FURTHERAGENT_IDENTITY_FILE、FURTHERAGENT_NAME。
+        Hermes：HERMES_API_URL（默认 http://127.0.0.1:8642）、HERMES_API_KEY_FILE 或 HERMES_API_KEY。
+        DSH：FURTHERAGENT_DSH_EXE（后台匹配运行时）、FURTHERAGENT_DSH_DESCRIPTOR（可选固定实例）；先运行 Install-DshBridge.ps1 安装对应模式插件。
+        --probe 读取能力和会话数量，不连接中继、不执行 Agent；DSH 后台模式会启动并退出独立运行时。退出接入端不会停止 Hermes 或 DSH 桌面；DSH 后台有运行或排队任务时拒绝关闭。
+        """);
     return;
 }
 using var lifetime = new CancellationTokenSource();
@@ -16,7 +23,7 @@ try
     string defaultName = Environment.MachineName + " · " + (backend == "hermes" ? "Hermes" : backend);
     if (args.Contains("--reset-pairing"))
     {
-        using var resetRegistry = new RegistryClient(Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER") ?? throw new ArgumentException("请配置 FURTHERAGENT_SERVER。"));
+        using var resetRegistry = new RegistryClient(RelayEndpoint.Address);
         string resetName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName;
         DeviceIdentity.Reset(DeviceIdentity.DefaultPath(resetRegistry.ServerIdentity, resetName));
         Console.WriteLine("设备身份已重置，下次启动使用新的固定配对码。请勿删除身份文件来升级软件。");
@@ -40,8 +47,7 @@ try
         Console.WriteLine($"可读取会话数量（最多 1000）：{(await adapter.ListAsync(lifetime.Token)).Count}");
         return;
     }
-    using var registry = new RegistryClient(Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER")
-        ?? throw new ArgumentException("请配置 FURTHERAGENT_SERVER。"));
+    using var registry = new RegistryClient(RelayEndpoint.Address);
     string deviceName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName;
     string stateDirectory = Environment.GetEnvironmentVariable("FURTHERAGENT_HERMES_STATE_ROOT")
         ?? DeviceIdentity.DefaultPath(registry.ServerIdentity, deviceName) + ".hermes-runs";

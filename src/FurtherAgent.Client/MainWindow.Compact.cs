@@ -42,10 +42,20 @@ public partial class MainWindow
             return;
         }
 
-        string identity = device.Server + "|" + device.Code + "|" + selectedId;
-        string suffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16];
-        string positionPath = Path.Combine(Path.GetDirectoryName(SettingsFile)!, "compact-window-" + suffix + ".json");
         string session = selectedId;
+        string FileFor(string server)
+        {
+            string identity = server + "|" + device.Code + "|" + session;
+            string suffix = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..16];
+            return Path.Combine(Path.GetDirectoryName(SettingsFile)!, "compact-window-" + suffix + ".json");
+        }
+        string positionPath = FileFor(device.Server);
+        if (RelayEndpoint.IsBuiltIn(device.Server) && !File.Exists(positionPath))
+        {
+            string? previous = new[] { device.Server.TrimEnd('/') + '/', RelayEndpoint.LegacyAddress, RelayEndpoint.LegacyAddress + '/' }
+                .Select(FileFor).FirstOrDefault(File.Exists);
+            if (previous is not null) positionPath = previous;
+        }
         var mini = new MiniWindow(device.Server, device.Code, session, view.Title, view, positionPath,
             () => device.Drafts.GetValueOrDefault(session, ""),
             text =>

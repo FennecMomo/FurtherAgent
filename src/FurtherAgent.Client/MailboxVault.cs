@@ -26,7 +26,7 @@ internal sealed class MailboxVault(string root)
     {
         if (!Directory.Exists(root)) return [];
         var result = new List<MailboxLocalState>();
-        foreach (string path in Directory.EnumerateFiles(root, "*.json"))
+        foreach (string path in Directory.EnumerateFiles(root, "*.json").OrderBy(File.GetLastWriteTimeUtc))
         {
             try
             {
@@ -64,17 +64,17 @@ internal sealed class DesktopMailboxSession : IDisposable
     private readonly SemaphoreSlim gate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private readonly System.Windows.Threading.DispatcherTimer draftTimer = new() { Interval = TimeSpan.FromMilliseconds(400) };
-    private bool loaded;
+    private bool loaded, disposed;
     public MailboxLocalState State { get; private set; }
     public MailboxClient Client { get; }
-    public string Key => MailboxVault.Key(State.Server, State.Binding.Code);
+    public string Key => MailboxVault.Key(Client.Server, State.Binding.Code);
     public string? LastError { get; private set; }
     public event Action? Changed;
     public event Action<MailboxMessage>? Received;
 
-    public DesktopMailboxSession(MailboxVault vault, MailboxLocalState state)
+    public DesktopMailboxSession(MailboxVault vault, MailboxLocalState state, string relayAddress)
     {
-        this.vault = vault; State = state; Client = new MailboxClient(state.Server, state.Binding); loaded = state.Messages.Count > 0;
+        this.vault = vault; State = state; Client = new MailboxClient(relayAddress, state.Binding); loaded = state.Messages.Count > 0;
         draftTimer.Tick += (_, _) =>
         {
             draftTimer.Stop();
@@ -84,7 +84,11 @@ internal sealed class DesktopMailboxSession : IDisposable
         };
     }
 
-    private void Save() { vault.Save(State); Changed?.Invoke(); }
+    private void Save()
+    {
+        if (disposed) return;
+        vault.Save(State); Changed?.Invoke();
+    }
     public void SetDraft(string draft) { State = State with { Draft = draft }; draftTimer.Stop(); draftTimer.Start(); }
 
     private void Merge(MailboxPage page)
@@ -182,10 +186,14 @@ internal sealed class DesktopMailboxSession : IDisposable
         finally { gate.Release(); }
     }
 
-    public void Dispose()
+    public void Dispose() => Dispose(persistState: true);
+
+    internal void Dispose(bool persistState)
     {
+        if (disposed) return;
+        disposed = true;
         draftTimer.Stop();
-        try { vault.Save(State); }
+        try { if (persistState) vault.Save(State); }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException) { LastError = ex.Message; }
         lifetime.Cancel(); Client.Dispose(); lifetime.Dispose();
     }

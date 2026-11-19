@@ -102,6 +102,16 @@ static class Program
             store.Forget(store.List().Single(p => p.Code == "second-test-code"));
             Require(store.List().Single().Code == restored.Code, "desktop removes only selected connection");
             store.Forget(); Require(store.Load(restored.Server) is null, "forget removes persistent connection");
+            store.Save(new(RelayEndpoint.LegacyAddress, "A1B2-C3D4", "existing device", true));
+            store.Save(new("https://different.example", "other-relay-code", "unrelated device", true));
+            var fixedConnection = store.Load(RelayEndpoint.Address)!;
+            Require(fixedConnection.Server == RelayEndpoint.Address + "/" && fixedConnection.Code == "A1B2-C3D4" && fixedConnection.AutoConnect &&
+                store.List(RelayEndpoint.Address).Count == 1, "fixed relay restores the legacy device without using an unrelated relay's credentials");
+            store.Save(fixedConnection with { Code = "a1b2c3d4", AutoConnect = false });
+            Require(store.List(RelayEndpoint.Address) is [{ Code: "a1b2c3d4", AutoConnect: false }], "saving the fixed relay recognizes a legacy code with different formatting");
+            store.Forget(RelayEndpoint.Address);
+            Require(store.Load(RelayEndpoint.Address) is null && store.Load("https://different.example") is { Code: "other-relay-code", AutoConnect: true },
+                "forgetting the fixed relay preserves other stored profiles");
         }
         finally { System.IO.Directory.Delete(System.IO.Path.GetDirectoryName(stateFile)!, true); }
         Console.WriteLine($"ALL {passed} WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");

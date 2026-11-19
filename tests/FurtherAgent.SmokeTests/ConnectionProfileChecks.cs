@@ -1,7 +1,27 @@
+using FurtherAgent.Core;
 using FurtherAgent.Mobile;
 
 internal static class ConnectionProfileChecks
 {
+    public static async Task RunBuiltIn(Action<bool, string> check)
+    {
+        string? saved = null;
+        var store = new ConnectionProfiles(() => Task.FromResult(saved), value => { saved = value; return Task.CompletedTask; });
+        var legacy = await store.SaveAsync("原中继设备", RelayEndpoint.LegacyAddress, "ABCD-1234");
+        var current = await store.SaveAsync("直连设备", RelayEndpoint.Address, "4321-DCBA");
+        var unrelated = await store.SaveAsync("独立设备", "https://unrelated.example", "AABB-1234");
+        string? beforeLoad = saved;
+        var eligible = (await store.LoadAsync()).ForBuiltInRelay();
+        check(eligible.Connections.SequenceEqual([legacy, current]) && eligible.SelectedId is null,
+            "the Android built-in relay view excludes unrelated profiles and their selection without changing legacy IDs");
+        check(saved == beforeLoad && (await store.LoadAsync()).Connections.Contains(unrelated),
+            "loading Android built-in relay profiles leaves unrelated encrypted records untouched");
+        var selected = await store.SaveAsync(legacy.Name, legacy.Server, legacy.Code, legacy.Id);
+        eligible = (await store.LoadAsync()).ForBuiltInRelay();
+        check(selected == legacy && eligible.SelectedId == legacy.Id,
+            "reusing a saved Android device preserves its old selection and local settings namespace");
+    }
+
     public static async Task Run(Action<bool, string> check)
     {
         string? saved = null;

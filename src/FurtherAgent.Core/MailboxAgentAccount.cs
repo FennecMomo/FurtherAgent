@@ -22,6 +22,7 @@ public sealed record MailboxAgentAccount(string Name, string Server, string Iden
     {
         if (!File.Exists(IdentityFile)) throw new IOException("未找到已有接入端身份文件；请先启动并配置家里的 FurtherAgent 接入端。");
         string secret = DeviceIdentity.LoadOrCreate(IdentityFile);
-        return new MailboxClient(Server, new(DeviceIdentity.Code(secret), Name, secret, "agent"));
+        string server = RelayEndpoint.IsBuiltIn(Server) ? RelayEndpoint.Address : Server;
+        return new MailboxClient(server, new(DeviceIdentity.Code(secret), Name, secret, "agent"));
     }
 }

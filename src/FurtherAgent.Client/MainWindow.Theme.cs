@@ -25,7 +25,7 @@ public partial class MainWindow
     {
         if (applyingTheme || !IsInitialized || ThemePicker.SelectedIndex < 0) return;
         string previous = uiTheme, next = ThemePicker.SelectedIndex == 0 ? VisualTheme.Codex : VisualTheme.Original;
-        try { ApplyTheme(next); SaveServerAddress(ServerUrl.Text.Trim()); StatusBar.Text = "界面风格已保存。"; }
+        try { ApplyTheme(next); SaveSettings(); StatusBar.Text = "界面风格已保存。"; }
         catch (Exception ex) { ApplyTheme(previous); Error(ex); }
     }
     private void CodexTheme_Click(object sender, RoutedEventArgs e) => ThemePicker.SelectedIndex = 0;

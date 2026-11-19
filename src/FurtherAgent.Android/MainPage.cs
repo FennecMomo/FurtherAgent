@@ -356,20 +356,18 @@ public sealed partial class MainPage : ContentPage
     }
     private Task OpenConnectionAsync() => interactionBusy || session.Busy || connectingDevice ? Task.CompletedTask : Navigation.PushAsync(new ConnectionPage(this));
     private Task OpenSessionsAsync() { OpenDrawer(); return Task.CompletedTask; }
-    public async Task ConnectAsync(string url, string code, string? name = null, string? replaceId = null, bool resumeOnLaunch = true)
+    public async Task ConnectAsync(string code, string? name = null, string? replaceId = null, bool resumeOnLaunch = true)
     {
         if (connectingDevice || interactionBusy || session.Busy) throw new IOException("请等待当前操作结束再切换设备。");
         CompletionNotifications.CancelPending();
         SaveDraft(); connectingDevice = true; StartConnectionService();
         try
         {
-            string id = DeviceConnectionPool<MobileSession>.Identity(url, code);
-            var target = await ConnectionRuntime.ConnectAsync(url, code, name, replaceId, resumeOnLaunch);
+            var (profile, target) = await ConnectionRuntime.ConnectAsync(code, name, replaceId, resumeOnLaunch);
             if (closed) throw new OperationCanceledException("应用正在退出。");
-            connectionNames[id] = string.IsNullOrWhiteSpace(name) ? target.DeviceName : name.Trim();
-            legacyDraftScopes[id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(url.TrimEnd('/') + "\n" + code.Trim())));
-            ActivateConnection(id, target);
-            Preferences.Set("server-url", url.Trim());
+            connectionNames[profile.Id] = profile.Name;
+            legacyDraftScopes[profile.Id] = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(profile.Server.TrimEnd('/') + "\n" + profile.Code.Trim())));
+            ActivateConnection(profile.Id, target);
             await CompletionNotifications.RequestPermissionOnceAsync();
         }
         finally { connectingDevice = false; OnChanged(); }

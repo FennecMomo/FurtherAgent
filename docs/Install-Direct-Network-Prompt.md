@@ -18,8 +18,8 @@
 
 3. 确定最小匹配范围。
 核实实际存在的 FurtherAgent.Client.exe、FurtherAgent.Host.exe、FurtherAgent.Cli.exe，使用该 VPN 支持的进程名或稳定进程路径规则。Android 包名为 top.fennecmomo.furtheragent，按该客户端的应用分流能力配置。
-如果通过 dotnet 启动 DLL，不能把所有 dotnet.exe 都设为直连；使用实际服务域名等限定条件。不要把 node.exe、python.exe、Codex、Hermes、DSH 或其他 Agent 软件整体改为直连。
-从 FurtherAgent 配置读取实际中继域名，仅提取主机名，避免输出连接码和凭据。默认中继是 furtheragent.fennecmomo.top，默认 Android 更新源是 bridge.fennecmomo.top；自定义地址以实际配置为准。语音及其他启用服务也按实际目标核对，不把整个 aliyuncs.com 等共享域名设为直连。
+如果通过 dotnet 启动 DLL，按中继 IP 或服务域名等限定条件分流，避免将所有 dotnet.exe 设为直连。其他 Agent 进程继续沿用原规则。
+新版内置中继为 http://175.24.131.154:47320，通过目标 IPv4 匹配。旧版中继域名为 furtheragent.fennecmomo.top，默认 Android 更新源是 bridge.fennecmomo.top。语音及其他启用服务也按实际目标核对，并保留域名级的匹配范围。
 
 4. 添加持久、优先的直连规则。
 修改前备份受影响的配置。使用客户端支持的持久覆写/合并/扩展配置，避免只编辑订阅刷新或重启后会被覆盖的生成文件。
@@ -51,11 +51,12 @@ rules:
   - PROCESS-NAME,FurtherAgent.Client.exe,DIRECT
   - PROCESS-NAME,FurtherAgent.Host.exe,DIRECT
   - PROCESS-NAME,FurtherAgent.Cli.exe,DIRECT
+  - IP-CIDR,175.24.131.154/32,DIRECT,no-resolve
   - DOMAIN,furtheragent.fennecmomo.top,DIRECT
   - DOMAIN,bridge.fennecmomo.top,DIRECT
   # 此后保留用户既有规则；不要在这里新增 MATCH,DIRECT。
 ```
 
-域名规则适用于进程识别不可用的场景，但会让同一域名的其他访问也直连。自定义中继必须增加实际主机名；Android 按 VPN 的应用分流能力处理。DNS 需结合现有策略检查，示例不直接覆盖 `dns` 配置。
+IP 和域名规则也适用于识别不到进程的场景，它们会匹配访问同一目标的其他应用。Android 可用 VPN 的应用分流。新版中继使用 IP，无需 DNS 解析，更新源等域名仍依赖现有 DNS 策略。
 
 官方参考：[规则优先级与进程匹配](https://wiki.metacubex.one/config/rules/)、[运行模式](https://wiki.metacubex.one/config/general/)、[DNS 策略](https://wiki.metacubex.one/config/dns/)。

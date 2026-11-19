@@ -21,6 +21,8 @@ internal static class ConnectionUiChecks
         void Require(bool passed, string message) { if (!passed) throw new Exception(message); Console.WriteLine("PASS: " + message); }
         try
         {
+            Require(window.FindName("ServerUrl") is null && Find<TextBlock>("ConnectServer").Text.EndsWith(RelayEndpoint.Address),
+                "the desktop uses its built-in relay without an editable address field");
             var contextType = typeof(MainWindow).GetNestedType("DeviceContext", BindingFlags.NonPublic)!;
             pool = typeof(MainWindow).GetField("deviceConnections", Private)!.GetValue(window)!;
             object Device(string code, string name)

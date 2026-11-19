@@ -17,8 +17,21 @@ public static class DeviceIdentity
         if (Environment.GetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE") is { Length: > 0 } configured) return Path.GetFullPath(configured);
         string root = Environment.GetEnvironmentVariable("FURTHERAGENT_IDENTITY_DIR")
             ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "identities");
-        string scope = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(server + "\n" + name)));
-        return Path.Combine(root, scope + ".identity");
+
+        string PathFor(string address)
+        {
+            string scope = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(address + "\n" + name)));
+            return Path.Combine(root, scope + ".identity");
+        }
+
+        if (!string.Equals(server.TrimEnd('/'), RelayEndpoint.Address, StringComparison.OrdinalIgnoreCase)) return PathFor(server);
+
+        string direct = PathFor(new Uri(RelayEndpoint.Address).AbsoluteUri);
+        if (File.Exists(direct)) return direct;
+
+        // Reuse the original file and lock so upgrading from HTTPS keeps the same pairing code.
+        string legacy = PathFor(new Uri(RelayEndpoint.LegacyAddress).AbsoluteUri);
+        return File.Exists(legacy) ? legacy : direct;
     }
     public static FileStream Lock(string path) => new(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
     public static void Reset(string path)

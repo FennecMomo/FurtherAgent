@@ -37,7 +37,7 @@ public sealed partial class MainPage
                 }
                 // Tapping a notification is an explicit request to reopen this saved connection.
                 StartConnectionService();
-                await ConnectionRuntime.ConnectAsync(profile.Server, profile.Code, profile.Name, null);
+                await ConnectionRuntime.ConnectAsync(profile.Code, profile.Name, profile.Id);
                 connectionNames[pending.ConnectionId] = profile.Name;
                 if (!connections.Entries.TryGetValue(pending.ConnectionId, out target)) return;
             }

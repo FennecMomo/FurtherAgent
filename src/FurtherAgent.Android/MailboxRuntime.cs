@@ -14,7 +14,7 @@ internal static class MailboxRuntime
     internal sealed class Entry(ConnectionProfile profile, MailboxBinding binding)
     {
         internal ConnectionProfile Profile { get; } = profile;
-        internal MailboxClient Client { get; set; } = new(profile.Server, binding);
+        internal MailboxClient Client { get; set; } = new(RelayEndpoint.Address, binding);
         internal List<MailboxMessage> Messages { get; } = [];
         internal List<Pending> Outbox { get; } = [];
         internal readonly SemaphoreSlim Gate = new(1, 1);
@@ -50,7 +50,7 @@ internal static class MailboxRuntime
             if (binding is null)
             {
                 if (!pair) return null;
-                binding = await MailboxClient.PairAsync(profile.Server, profile.Code);
+                binding = await MailboxClient.PairAsync(RelayEndpoint.Address, profile.Code);
                 await SecureStorage.SetAsync(Key(profile.Id), JsonSerializer.Serialize(binding, Json.Options));
             }
             var entry = new Entry(profile, binding);
@@ -75,11 +75,11 @@ internal static class MailboxRuntime
 
     internal static async Task<Entry> RebindAsync(ConnectionProfile profile)
     {
-        var binding = await MailboxClient.PairAsync(profile.Server, profile.Code);
+        var binding = await MailboxClient.PairAsync(RelayEndpoint.Address, profile.Code);
         await SecureStorage.SetAsync(Key(profile.Id), JsonSerializer.Serialize(binding, Json.Options));
         var entry = await OpenAsync(profile, false) ?? throw new IOException("留言绑定未能保存，请重试。");
         await entry.Gate.WaitAsync();
-        try { entry.Client.Dispose(); entry.Client = new(profile.Server, binding); entry.Error = null; }
+        try { entry.Client.Dispose(); entry.Client = new(RelayEndpoint.Address, binding); entry.Error = null; }
         finally { entry.Gate.Release(); }
         return entry;
     }

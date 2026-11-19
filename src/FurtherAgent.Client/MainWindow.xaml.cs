@@ -49,11 +49,15 @@ public partial class MainWindow : Window
     private Dictionary<string, string> drafts = [];
     private static string SettingsFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "settings.json");
     private readonly SavedConnectionStore connectionStore = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "connection.json"));
+    private readonly string relayAddress;
     public MainWindow() : this(null) { }
-    public MainWindow(CompletionNotificationServices? notificationServices)
+    public MainWindow(CompletionNotificationServices? notificationServices) : this(notificationServices, RelayEndpoint.Address) { }
+    internal MainWindow(CompletionNotificationServices? notificationServices, string relayAddress)
     {
+        this.relayAddress = relayAddress;
         completionServices = notificationServices;
         InitializeComponent();
+        ConnectServer.Text = "中继：" + relayAddress;
         InitializeCompact();
         InitializeCompactHotkey();
         InitializeHistory();
@@ -84,21 +88,19 @@ public partial class MainWindow : Window
             if (File.Exists(SettingsFile))
             {
                 var saved = JsonNode.Parse(File.ReadAllText(SettingsFile));
-                ServerUrl.Text = saved?["serverUrl"]?.ToString() ?? ServerUrl.Text;
                 LocalBackend.SelectedIndex = Math.Clamp(saved?["localBackend"]?.GetValue<int>() ?? 0, 0, 2);
                 DshExecutable.Text = saved?["dshExecutable"]?.ToString() ?? DshExecutable.Text;
             }
         }
-        catch { StatusBar.Text = "保存的地址无法读取，请在设置中重新保存。"; }
+        catch { StatusBar.Text = "本机设置无法读取。"; }
         InitializeDshExecutable();
         try { uiTheme = File.Exists(SettingsFile) ? VisualTheme.Normalize(JsonNode.Parse(File.ReadAllText(SettingsFile))?["uiTheme"]?.ToString()) : VisualTheme.Codex; }
         catch { uiTheme = VisualTheme.Codex; }
         ApplyTheme(uiTheme);
         Height = Math.Min(Height, Math.Max(MinHeight, SystemParameters.WorkArea.Height));
-        ServerUrl.Text = Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER") ?? ServerUrl.Text;
         try
         {
-            var saved = connectionStore.Load(ServerUrl.Text);
+            var saved = connectionStore.Load(relayAddress);
             if (saved is not null)
             {
                 RemoteCode.Text = saved.Code;
@@ -188,8 +190,8 @@ public partial class MainWindow : Window
             if (host is not null) { if (dshBackground is not null) { await dshBackground.DisposeAsync(); dshBackground = null; } await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true; LocalCode.Text = "尚未开启共享"; CopyCodeButton.IsEnabled = false; HostStatus.Text = "共享已停止"; ShareButton.Content = "开启共享"; }
             else
             {
-                hostRegistry = new RegistryClient(ServerUrl.Text);
-                SaveServerAddress(ServerUrl.Text.Trim());
+                hostRegistry = new RegistryClient(relayAddress);
+                SaveSettings();
                 localHostName = Environment.MachineName;
                 Func<IAgentAdapter>? adapterFactory = null;
                 if (LocalBackend.SelectedIndex > 0)
@@ -243,7 +245,7 @@ public partial class MainWindow : Window
     private async Task ConnectAsync(bool fromSavedConnection = false)
     {
         if (!ConnectButton.IsEnabled || !CanSwitchDevice || exitRequested) return;
-        string server = ServerUrl.Text.Trim(), code = RemoteCode.Text.Trim();
+        string server = relayAddress, code = RemoteCode.Text.Trim();
         failedSavedConnection = null;
         using var attempt = new CancellationTokenSource();
         connectionAttempt = attempt;
@@ -261,7 +263,7 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    SaveServerAddress(server);
+                    SaveSettings();
                     connectionStore.Save(new(server, code, device.Name, true));
                 }
                 catch { StatusBar.Text += " 连接已建立，但本机连接记录保存失败，下次启动需重新输入。"; }
@@ -304,7 +306,7 @@ public partial class MainWindow : Window
     {
         try
         {
-            string server = hostRegistry?.ServerIdentity ?? new Uri(ServerUrl.Text.TrimEnd('/') + '/').AbsoluteUri;
+            string server = hostRegistry?.ServerIdentity ?? new Uri(relayAddress.TrimEnd('/') + '/').AbsoluteUri;
             if (host is not null) { await host.DisposeAsync(); host = null; hostRegistry?.Dispose(); }
             await DisposeLocalAdapterAsync(); LocalBackend.IsEnabled = true;
             DeviceIdentity.Reset(DeviceIdentity.DefaultPath(server, localHostName));
@@ -344,7 +346,7 @@ public partial class MainWindow : Window
         if (!CanSwitchDevice || !ConnectButton.IsEnabled) { StatusBar.Text = "请等待当前操作结束再断开设备。"; return; }
         try
         {
-            var saved = activeDevice is null ? null : connectionStore.List().FirstOrDefault(s =>
+            var saved = activeDevice is null ? null : connectionStore.List(relayAddress).FirstOrDefault(s =>
                 DeviceConnectionPool<DeviceContext>.Identity(s.Server, s.Code) == DeviceConnectionPool<DeviceContext>.Identity(activeDevice.Server, activeDevice.Code));
             if (saved is not null) connectionStore.Save(saved with { AutoConnect = false });
         }
@@ -355,7 +357,7 @@ public partial class MainWindow : Window
     {
         failedSavedConnection = null;
         connectionAttempt?.Cancel();
-        try { connectionStore.Forget(); RemoteCode.Clear(); StatusBar.Text = "已忘记保存的连接；当前连接不受影响，下次启动不会自动连接。"; }
+        try { connectionStore.Forget(relayAddress); RemoteCode.Clear(); StatusBar.Text = "已忘记保存的连接；当前连接不受影响，下次启动不会自动连接。"; }
         catch (Exception ex) { Error(ex); }
     }
     private async Task RefreshAsync()
@@ -766,21 +768,19 @@ public partial class MainWindow : Window
     private void CloseOverlay_Click(object sender, RoutedEventArgs e) { if (!actionBusy) CloseOverlays(); }
     private void OpenConnect_Click(object sender, RoutedEventArgs e)
     {
-        CloseOverlays(); ConnectServer.Text = "中继：" + ServerUrl.Text.Trim(); ConnectError.Text = "";
-        try { SavedConnectionsList.ItemsSource = connectionStore.List(); } catch (Exception ex) { Error(ex); }
+        CloseOverlays(); ConnectError.Text = "";
+        try { SavedConnectionsList.ItemsSource = connectionStore.List(relayAddress); } catch (Exception ex) { Error(ex); }
         ConnectOverlay.Visibility = Visibility.Visible; RemoteCode.Focus();
     }
     private void SavedConnection_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (SavedConnectionsList.SelectedItem is not SavedConnection saved) return;
-        ServerUrl.Text = saved.Server; RemoteCode.Text = saved.Code; ConnectionName.Text = saved.Name;
-        ConnectServer.Text = "中继：" + saved.Server;
+        RemoteCode.Text = saved.Code; ConnectionName.Text = saved.Name;
     }
     private void NewConnection_Click(object sender, RoutedEventArgs e)
     {
         SavedConnectionsList.SelectedIndex = -1;
         ConnectionName.Clear(); RemoteCode.Clear();
-        ConnectServer.Text = "中继：" + ServerUrl.Text.Trim();
         ConnectError.Text = "正在新增连接。填写名称和授权码后保存，已有连接会保留。";
         ConnectionName.Focus();
     }
@@ -788,28 +788,16 @@ public partial class MainWindow : Window
     {
         try
         {
-            using var validation = new RegistryClient(ServerUrl.Text.Trim());
             if (string.IsNullOrWhiteSpace(RemoteCode.Text)) throw new ArgumentException("请输入授权码。");
-            connectionStore.Save(new(ServerUrl.Text.Trim(), RemoteCode.Text.Trim(), string.IsNullOrWhiteSpace(ConnectionName.Text) ? new Uri(ServerUrl.Text.Trim()).Host : ConnectionName.Text.Trim(), false));
-            SavedConnectionsList.ItemsSource = connectionStore.List(); ConnectError.Text = "连接已保存。";
+            connectionStore.Save(new(relayAddress, RemoteCode.Text.Trim(), string.IsNullOrWhiteSpace(ConnectionName.Text) ? new Uri(relayAddress).Host : ConnectionName.Text.Trim(), false));
+            SavedConnectionsList.ItemsSource = connectionStore.List(relayAddress); ConnectError.Text = "连接已保存。";
         }
         catch (Exception ex) { Error(ex); }
     }
     private void DeleteConnection_Click(object sender, RoutedEventArgs e)
     {
         if (SavedConnectionsList.SelectedItem is not SavedConnection selected) return;
-        try { connectionStore.Forget(selected); SavedConnectionsList.ItemsSource = connectionStore.List(); RemoteCode.Clear(); ConnectionName.Clear(); }
-        catch (Exception ex) { Error(ex); }
-    }
-    private void SaveSettings_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            using var validation = new RegistryClient(ServerUrl.Text.Trim());
-            SaveServerAddress(ServerUrl.Text.Trim());
-            RemoteCode.Text = connectionStore.Load(ServerUrl.Text)?.Code ?? "";
-            StatusBar.Text = "服务端地址已保存，下次连接生效。";
-        }
+        try { connectionStore.Forget(selected); SavedConnectionsList.ItemsSource = connectionStore.List(relayAddress); RemoteCode.Clear(); ConnectionName.Clear(); }
         catch (Exception ex) { Error(ex); }
     }
     private void Composer_KeyDown(object sender, KeyEventArgs e)
@@ -987,12 +975,19 @@ public partial class MainWindow : Window
         await SaveRemoteFileAsync(filesSession!, file);
     }
     private readonly DownloadedAttachments downloadedAttachments = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "downloads"));
-    private string AttachmentKey(string id, RemoteFile file) => DownloadedAttachments.Key(
-        activeDevice is null ? "" : DeviceConnectionPool<DeviceContext>.Identity(activeDevice.Server, activeDevice.Code), id, file);
+    private string AttachmentKey(string id, RemoteFile file, string? server = null) => DownloadedAttachments.Key(
+        activeDevice is null ? "" : DeviceConnectionPool<DeviceContext>.Identity(server ?? activeDevice.Server, activeDevice.Code), id, file);
+    private string? FindDownloadedAttachment(string id, RemoteFile file, string key)
+    {
+        string? path = downloadedAttachments.Find(key);
+        if (path is null && activeDevice is { } device && RelayEndpoint.IsBuiltIn(device.Server))
+            path = downloadedAttachments.Find(AttachmentKey(id, file, RelayEndpoint.LegacyAddress));
+        return path;
+    }
     private async Task SaveRemoteFileAsync(string id, RemoteFile file)
     {
         string key = AttachmentKey(id, file);
-        if (downloadedAttachments.Find(key) is { } existing)
+        if (FindDownloadedAttachment(id, file, key) is { } existing)
         {
             try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(existing) { UseShellExecute = true }); }
             catch (Exception ex) { Error(ex); }
@@ -1003,12 +998,12 @@ public partial class MainWindow : Window
         CloseOverlays();
         await TransferAsync(async (client, progress, ct) => { await client.DownloadAsync(id, file.Id, dialog.FileName, progress, ct); downloadedAttachments.Remember(key, dialog.FileName); });
     }
-    private void SaveServerAddress(string server)
+    private void SaveSettings()
     {
         Directory.CreateDirectory(Path.GetDirectoryName(SettingsFile)!);
         string temporary = SettingsFile + ".tmp";
         var saved = File.Exists(SettingsFile) ? JsonNode.Parse(File.ReadAllText(SettingsFile))!.AsObject() : new JsonObject();
-        saved["serverUrl"] = server; saved["localBackend"] = LocalBackend.SelectedIndex;
+        saved["localBackend"] = LocalBackend.SelectedIndex;
         saved["dshExecutable"] = DshExecutable.Text.Trim(); saved["uiTheme"] = uiTheme;
         File.WriteAllText(temporary, saved.ToJsonString(Json.Options));
         File.Move(temporary, SettingsFile, true);
@@ -1033,7 +1028,7 @@ public partial class MainWindow : Window
         { FilesStatus.Text = "此格式不支持图片预览，请下载后打开。"; return; }
         if (file.Size > 10 * 1024 * 1024) { FilesStatus.Text = "图片预览限制为 10 MiB，请下载原文件。"; return; }
         string key = AttachmentKey(id, file);
-        string path = downloadedAttachments.Find(key) ?? downloadedAttachments.NewPath(file.Name);
+        string path = FindDownloadedAttachment(id, file, key) ?? downloadedAttachments.NewPath(file.Name);
         try
         {
             await TransferAsync(async (client, progress, ct) =>
@@ -1060,17 +1055,33 @@ public partial class MainWindow : Window
         catch (Exception ex) { Error(ex); }
     }
     private void Error(Exception ex) => StatusBar.Text = "操作失败：" + ex.Message;
-    private string ArchiveIndexPath => Path.Combine(Path.GetDirectoryName(SettingsFile)!, "archived-" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(ServerUrl.Text.TrimEnd('/') + "|" + remote?.Device?.Name))) + ".json");
+    private string ArchiveIndexPath
+    {
+        get
+        {
+            string FileFor(string server) => Path.Combine(Path.GetDirectoryName(SettingsFile)!, "archived-" +
+                Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(server.TrimEnd('/') + "|" + remote?.Device?.Name))) + ".json");
+            string path = FileFor(relayAddress);
+            if (RelayEndpoint.IsBuiltIn(relayAddress) && !File.Exists(path))
+            {
+                string previous = FileFor(RelayEndpoint.LegacyAddress);
+                if (File.Exists(previous)) return previous;
+            }
+            return path;
+        }
+    }
     private List<SessionInfo> ArchiveIndex()
     {
-        if (!File.Exists(ArchiveIndexPath)) return [];
-        return JsonSerializer.Deserialize<List<SessionInfo>>(File.ReadAllText(ArchiveIndexPath), Json.Options) ?? [];
+        string path = ArchiveIndexPath;
+        if (!File.Exists(path)) return [];
+        return JsonSerializer.Deserialize<List<SessionInfo>>(File.ReadAllText(path), Json.Options) ?? [];
     }
     private void SaveArchiveIndex(List<SessionInfo> rows)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(ArchiveIndexPath)!);
-        File.WriteAllText(ArchiveIndexPath + ".tmp", JsonSerializer.Serialize(rows, Json.Options));
-        File.Move(ArchiveIndexPath + ".tmp", ArchiveIndexPath, true);
+        string path = ArchiveIndexPath;
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path + ".tmp", JsonSerializer.Serialize(rows, Json.Options));
+        File.Move(path + ".tmp", path, true);
     }
     private async void Archive_Click(object sender, RoutedEventArgs e)
     {
@@ -1124,7 +1135,7 @@ public partial class MainWindow : Window
         if (exitRequested) return;
         RestoreFromTray();
         if (activeDevice is not null || failedSavedConnection is not { } failed ||
-            failed != (ServerUrl.Text.Trim(), RemoteCode.Text.Trim())) return;
+            failed != (relayAddress, RemoteCode.Text.Trim())) return;
         try
         {
             if (connectionStore.Load(failed.Server) is not { AutoConnect: true } saved || saved.Code != failed.Code) return;

@@ -1,5 +1,6 @@
 using FurtherAgent.Core;
 using FurtherAgent.Mobile;
+using ConnectionProfile = FurtherAgent.Mobile.ConnectionProfile;
 
 namespace FurtherAgent.AndroidApp;
 
@@ -13,34 +14,35 @@ internal static class ConnectionRuntime
     public static MobileSession NewSession() => new(action => MainThread.BeginInvokeOnMainThread(action),
         new HistoryCache(Path.Combine(FileSystem.AppDataDirectory, "history-cache-v1")));
 
-    private static Task<MobileSession> OpenCoreAsync(string url, string code) => Connections.OpenAsync(url, code, async () =>
+    private static Task<MobileSession> OpenCoreAsync(string profileServer, string code) => Connections.OpenAsync(profileServer, code, async () =>
     {
         var added = NewSession();
-        string id = DeviceConnectionPool<MobileSession>.Identity(url, code);
+        string id = DeviceConnectionPool<MobileSession>.Identity(profileServer, code);
         added.Completed += completion =>
         {
             if (Connections.Entries.TryGetValue(id, out var current) && ReferenceEquals(current, added))
                 CompletionNotifications.Show(id, added.DeviceName, completion);
         };
-        try { await added.ConnectAsync(url, code); }
+        try { await added.ConnectAsync(RelayEndpoint.Address, code, profileServer); }
         catch { await added.DisposeAsync(); throw; }
         added.Changed += () => Changed?.Invoke();
         return added;
     });
 
-    public static async Task<MobileSession> ConnectAsync(string url, string code, string? name, string? replaceId,
+    public static async Task<(ConnectionProfile Profile, MobileSession Session)> ConnectAsync(string code, string? name, string? replaceId,
         bool? resumeOnLaunch = null)
     {
         await operations.WaitAsync();
         try
         {
-            var target = await OpenCoreAsync(url, code);
-            await SavedConnections.LoadAsync();
-            var profile = await SavedConnections.Store.SaveAsync(string.IsNullOrWhiteSpace(name) ? target.DeviceName : name,
-                url, code, replaceId);
+            var saved = await SavedConnections.LoadAsync();
+            var existing = SavedConnections.FindForSave(saved, code, replaceId);
+            var target = await OpenCoreAsync(existing?.Server ?? RelayEndpoint.Address, code);
+            var profile = await SavedConnections.SaveAsync(string.IsNullOrWhiteSpace(name) ? target.DeviceName : name,
+                code, existing, replaceId);
             if (resumeOnLaunch is bool resume)
                 Preferences.Set("resume-connection." + profile.Id, resume);
-            return target;
+            return (profile, target);
         }
         catch
         {

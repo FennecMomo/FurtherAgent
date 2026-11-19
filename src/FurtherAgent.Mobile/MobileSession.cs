@@ -91,12 +91,12 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         finally { Busy = false; operation.Release(); Notify(); }
     }
 
-    public Task ConnectAsync(string url, string code) => Run(async () =>
+    public Task ConnectAsync(string url, string code, string? profileServer = null) => Run(async () =>
     {
         await CloseConnectionAsync();
         selected = null; View = null; Settings = null; Agent = null; Sessions = []; pendingCreate = null;
         latest = null; readingOlder = false;
-        cacheScope = url.TrimEnd('/').ToLowerInvariant() + "\n" + code.Replace("-", "").Trim().ToUpperInvariant();
+        cacheScope = (profileServer ?? url).TrimEnd('/').ToLowerInvariant() + "\n" + code.Replace("-", "").Trim().ToUpperInvariant();
         SendUncertain = false;
         if (string.IsNullOrWhiteSpace(code)) throw new ArgumentException("请输入远端显示的授权码。");
         var owner = new RemoteDevice();

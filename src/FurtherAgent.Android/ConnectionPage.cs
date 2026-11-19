@@ -6,11 +6,8 @@ namespace FurtherAgent.AndroidApp;
 
 internal sealed class ConnectionPage : ContentPage
 {
-    private const string DefaultServer = "https://furtheragent.fennecmomo.top";
-    private const string ServerAddressHint = "https://域名 或 http://IP:端口";
     private readonly MainPage home;
     private readonly Entry name = new() { Placeholder = "选填，例如家里电脑", ReturnType = ReturnType.Next };
-    private readonly Entry server = new() { Placeholder = ServerAddressHint, Keyboard = Keyboard.Url, ReturnType = ReturnType.Next };
     private readonly Entry code = new() { Placeholder = "输入远端显示的授权码", IsPassword = true, IsTextPredictionEnabled = false };
     private readonly Picker saved = new() { Title = "尚无保存的设备" };
     private readonly Label formTitle = Ui.Text("新增设备", 17, true);
@@ -33,7 +30,6 @@ internal sealed class ConnectionPage : ContentPage
         this.home = home;
         Title = "连接设备";
         Ui.Theme(this);
-        server.Text = Preferences.Get("server-url", DefaultServer);
         saved.ItemDisplayBinding = new Binding(nameof(ConnectionProfile.Name));
         saved.SelectedIndexChanged += (_, _) =>
         {
@@ -47,8 +43,7 @@ internal sealed class ConnectionPage : ContentPage
                 Preferences.Set("resume-connection." + profileId, autoConnect.IsToggled);
         };
         SemanticProperties.SetDescription(autoConnect, "启动时自动恢复连接");
-        name.Completed += (_, _) => server.Focus();
-        server.Completed += (_, _) => code.Focus();
+        name.Completed += (_, _) => code.Focus();
 
         var add = Action("新增", "新建会话", () =>
         {
@@ -82,7 +77,7 @@ internal sealed class ConnectionPage : ContentPage
         delete = Action("删除保存的设备", "忘记保存的连接", DeleteAsync, message);
         delete.IsVisible = false;
         Ui.TextTheme(formTitle);
-        var formCard = Card(formTitle, Field("设备名称", name), Field("中继服务", server), Field("授权码", code), remaining,
+        var formCard = Card(formTitle, Field("设备名称", name), Field("授权码", code), remaining,
             formActions, formStatus, delete);
 
         var services = Card("设备服务",
@@ -115,7 +110,7 @@ internal sealed class ConnectionPage : ContentPage
             maintenanceMessage);
         Ui.TextTheme(notificationStatus);
         message.IsVisible = maintenanceMessage.IsVisible = false;
-        controls.AddRange([saved, name, server, code, autoConnect]);
+        controls.AddRange([saved, name, code, autoConnect]);
         UpdateControls();
         Content = new ScrollView
         {
@@ -253,7 +248,6 @@ internal sealed class ConnectionPage : ContentPage
             editing = profile?.Id;
             formTitle.Text = profile is null ? "新增设备" : "编辑设备";
             name.Text = profile?.Name ?? "";
-            server.Text = profile?.Server ?? Preferences.Get("server-url", DefaultServer);
             code.Text = profile?.Code ?? "";
             autoConnect.IsToggled = profile is null || Preferences.Get("resume-connection." + profile.Id, true);
         }
@@ -278,8 +272,10 @@ internal sealed class ConnectionPage : ContentPage
 
     private async Task SaveAsync()
     {
-        var (url, pairingCode) = ReadAddress();
-        var profile = await SavedConnections.Store.SaveAsync(name.Text ?? "", url, pairingCode, editing);
+        string pairingCode = ReadCode();
+        var saved = await SavedConnections.LoadAsync();
+        var existing = SavedConnections.FindForSave(saved, pairingCode, editing);
+        var profile = await SavedConnections.SaveAsync(name.Text ?? "", pairingCode, existing, editing);
         Preferences.Set("resume-connection." + profile.Id, autoConnect.IsToggled);
         await ReloadAsync(profile.Id);
         ShowMessage(message, "设备已保存。");
@@ -287,8 +283,7 @@ internal sealed class ConnectionPage : ContentPage
 
     private async Task ConnectAsync()
     {
-        var (url, pairingCode) = ReadAddress();
-        await home.ConnectAsync(url, pairingCode, name.Text, editing, autoConnect.IsToggled);
+        await home.ConnectAsync(ReadCode(), name.Text, editing, autoConnect.IsToggled);
         if (Navigation.NavigationStack.LastOrDefault() != this) return;
         await Navigation.PopAsync();
         if (home.CurrentSession.View is null) home.ShowSessionDrawer();
@@ -298,18 +293,15 @@ internal sealed class ConnectionPage : ContentPage
     {
         if (editing is not { } profileId) return;
         if (!await DisplayAlertAsync("删除保存的设备", "当前连接和聊天草稿会保留。", "删除", "取消")) return;
-        await SavedConnections.Store.RemoveAsync(profileId);
+        await SavedConnections.RemoveAsync(profileId);
         await ReloadAsync();
         ShowMessage(message, "所选设备已从列表移除。");
     }
 
-    private (string Url, string Code) ReadAddress()
+    private string ReadCode()
     {
-        string url = server.Text?.Trim() ?? "";
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var address) || string.IsNullOrEmpty(address.Host))
-            throw new ArgumentException("请输入完整的中继地址，格式为 " + ServerAddressHint + "。");
         string pairingCode = code.Text?.Trim() ?? "";
         if (pairingCode.Length == 0) throw new ArgumentException("请输入设备授权码。");
-        return (url, pairingCode);
+        return pairingCode;
     }
 }

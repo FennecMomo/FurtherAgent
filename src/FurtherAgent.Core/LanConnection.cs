@@ -25,6 +25,12 @@ public static class LanTrustStore
         && value.Token is { Length: 64 } && value.Token.All(Uri.IsHexDigit);
     public static LanPairing? Load(string server, string code)
     {
+        string legacy = RelayEndpoint.LegacyAddress + '/';
+        return LoadFrom(server, code) ?? (RelayEndpoint.IsBuiltIn(server) && server != legacy ? LoadFrom(legacy, code) : null);
+    }
+
+    private static LanPairing? LoadFrom(string server, string code)
+    {
         try
         {
             string text = File.ReadAllText(PathFor(server, code));

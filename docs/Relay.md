@@ -2,7 +2,7 @@
 
 这个包是中继服务 `FurtherAgent.Server`，不是 Hermes 接入端 `FurtherAgent.Host`。
 Linux x64 自包含发布，包含 .NET / ASP.NET Core 运行时；不要求服务器安装 .NET 10。
-在目标服务器上验证进程启动、网络入口和实际配对。Windows 桌面端和接入端从 0.16.3 起支持公网 HTTP IP，Android 从 0.14.2 起支持。
+在目标服务器上验证进程启动、网络入口和实际配对。Windows 桌面端和接入端 0.16.4、Android 0.14.3 内置公网中继 `http://175.24.131.154:47320`。
 
 ## 本机临时启动验证
 
@@ -38,10 +38,8 @@ HTTPS 健康检查成功只证明普通 HTTP 路由可达；还要让接入端�
 
 部署完成后：
 
-- A 的 WPF：中继服务地址填写已经验证的 `https://中继域名`。
-- B 的 Hermes 接入端：`FURTHERAGENT_SERVER` 使用同一个 HTTPS 地址。
-- B 的 `HERMES_API_URL` 仍是 `http://127.0.0.1:8642`，两种地址不可互换。
-- 中继无需 Hermes API key。key 只给同机 Hermes 接入端，不传给 WPF 或中继。
+- HTTPS 入口可继续供支持配置地址的旧版客户端使用。
+- `HERMES_API_URL` 是接入端访问 Hermes 的本机 API 地址，通常为 `http://127.0.0.1:8642`。Hermes API key 只用于这一段。
 
 ## 公网 HTTP IP 直连
 
@@ -51,9 +49,9 @@ HTTPS 健康检查成功只证明普通 HTTP 路由可达；还要让接入端�
 ./FurtherAgent.Server --urls http://0.0.0.0:47320
 ```
 
-从服务器外访问 `http://服务器公网IPv4:47320/health`。返回正常后，桌面和手机端填写 `http://服务器公网IPv4:47320`，接入端将 `FURTHERAGENT_SERVER` 指向同一个地址。用真实配对和一次只读会话列表加载验证 WebSocket 可用。
+从服务器外访问 `http://175.24.131.154:47320/health`。返回正常后，更新接入端和客户端，用原配对码连接并加载一次只读会话列表，验证 WebSocket 可用。
 
-切换中继地址前，B 用 `FURTHERAGENT_IDENTITY_FILE` 指向原有身份文件，保持原授权码。HTTPS 与 HTTP 两个入口可以共用同一个中继进程。HTTP 配对和中继转发使用明文；公网 P2P 成功后的数据通道仍加密。
+B 沿用已有的 `FURTHERAGENT_IDENTITY_FILE`，保持原授权码。默认身份文件也会查找从旧 Cloudflare 入口迁移的同名身份。HTTPS 与 HTTP 两个入口可以共用同一个中继进程。HTTP 配对和中继转发使用明文，公网 P2P 成功后的数据通道仍加密。
 
 已有版本的中继支持 HTTP 和 WebSocket。开启这个入口时，关键变化是服务器监听和更新使用 HTTP 的 A、B 端。使用本包可以同步更新中继版本。
 

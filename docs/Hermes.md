@@ -55,16 +55,15 @@ export HERMES_API_KEY_FILE="$HOME/.config/furtheragent/hermes-api.key"
 
 ## 前台联调
 
-需要已经部署、证书可信、支持 WebSocket 的 FurtherAgent 中继服务。该包只含接入端，不会安装或启动中继。
+接入端使用内置中继 `http://175.24.131.154:47320`，需要该入口支持 WebSocket。此包用于启动接入端。
 
 ```bash
-export FURTHERAGENT_SERVER=https://你的中继服务域名
 export FURTHERAGENT_NAME=Hermes-default
 ./FurtherAgent.Host
 ```
 
 将打印的授权码提供给可信任的 A。授权码具备实际控制权限，systemd 日志也需限制访问。
-A 使用 0.4.0 WPF，填写同一中继地址和授权码。不要把 Hermes API 地址填入 WPF 的中继服务地址。
+A 使用新版桌面客户端，选择已保存的设备或输入授权码。
 确认要执行联调后，选择单独的测试会话，顺序验证：
 
 1. 列出会话、显示已有历史；外部运行状态应显示不可见。
@@ -81,7 +80,6 @@ A 使用 0.4.0 WPF，填写同一中继地址和授权码。不要把 Hermes API
 `~/.local/share/furtheragent`，配置为 `~/.config/furtheragent/host.env`：
 
 ```ini
-FURTHERAGENT_SERVER=https://你的中继服务域名
 FURTHERAGENT_NAME=Hermes-default
 HERMES_API_URL=http://127.0.0.1:8642
 HERMES_API_KEY_FILE=/home/ubuntu/.config/furtheragent/hermes-api.key

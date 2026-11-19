@@ -1,11 +1,19 @@
 using System.Text.Json;
 using System.Security.Cryptography;
 using System.Text;
+using FurtherAgent.Core;
 
 namespace FurtherAgent.Mobile;
 
 public sealed record ConnectionProfile(string Id, string Name, string Server, string Code);
-public sealed record ConnectionProfileState(List<ConnectionProfile> Connections, string? SelectedId);
+public sealed record ConnectionProfileState(List<ConnectionProfile> Connections, string? SelectedId)
+{
+    public ConnectionProfileState ForBuiltInRelay()
+    {
+        var connections = Connections.Where(p => RelayEndpoint.IsBuiltIn(p.Server)).ToList();
+        return new(connections, connections.Any(p => p.Id == SelectedId) ? SelectedId : null);
+    }
+}
 
 // The platform supplies encrypted storage. A single document makes updates and migration atomic.
 public sealed class ConnectionProfiles(Func<Task<string?>> read, Func<string, Task> write)

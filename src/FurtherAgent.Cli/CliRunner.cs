@@ -96,7 +96,7 @@ This CLI does not read or modify WPF settings and never opens a desktop window.
                 if (options.TryGetValue("response-file", out var path)) response = JsonNode.Parse(await File.ReadAllTextAsync(path, ct)) ?? throw new ArgumentException("Empty response JSON.");
             }
             string server = options.GetValueOrDefault("server") ?? Environment.GetEnvironmentVariable("FURTHERAGENT_SERVER")
-                ?? "https://furtheragent.fennecmomo.top";
+                ?? RelayEndpoint.Address;
             string? codeFile = options.GetValueOrDefault("code-file") ?? Environment.GetEnvironmentVariable("FURTHERAGENT_CODE_FILE");
             code = codeFile is null ? Environment.GetEnvironmentVariable("FURTHERAGENT_CODE") : await File.ReadAllTextAsync(codeFile, ct);
             code = code?.Trim();

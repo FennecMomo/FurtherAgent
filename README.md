@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.16.4 / Android 0.14.3** 桌面、接入端和手机直接使用固定中继 `http://175.24.131.154:47320`。已有同一中继的保存连接继续使用原配对码。[部署方式](docs/Relay.md#公网-http-ip-直连)
+
 **0.16.3 / Android 0.14.2** 支持手动填写 `http://公网IP:端口` 直连自建中继。原 HTTPS 地址仍可用，两种入口都支持公网 P2P 协商和中继回退。[部署方式](docs/Relay.md#公网-http-ip-直连)
 
 **0.16.2** 桌面首次自动连接失败后，再次打开原快捷方式会在已有窗口中重新尝试同一保存连接。[验证记录](docs/Pending-Tests.md)
@@ -76,8 +78,8 @@ WPF 的「添加文件」「会话文件 / 下载」与 CLI 的 upload/files/dow
 ## 0.3.0 使用入口
 
 - 主界面：左侧搜索、刷新及「＋ 新建会话」，右侧消息、确认和输入框；Ctrl+Enter 发送，运行中发送为追加指令。
-- 「设置」：中继地址、本机 Codex 共享、授权码和断开连接。地址保存在 `%LocalAppData%/FurtherAgent/settings.json`；不保存授权码。环境变量 `FURTHERAGENT_SERVER` 在启动时优先于保存值。
-- 「连接设备」：输入授权码，弹窗会显示当前中继地址。默认预置 `https://furtheragent.fennecmomo.top`。
+- 「设置」：本机 Agent 共享、授权码和断开连接。
+- 「连接设备」：选择已保存的设备，或输入授权码添加设备。
 - 「模型与模式」：在打开会话后使用，修改成功后供后续轮次使用。实际执行权限仍由 Agent 管理。
 
 | 功能 | Hermes 接入端 0.3.0 | Codex 桌面适配 |
@@ -134,13 +136,13 @@ dotnet build FurtherAgent.slnx
 dotnet run --project src/FurtherAgent.Server -- --urls http://127.0.0.1:47320
 ```
 
-另开终端启动客户端（可启动两次，分别模拟 A、B）：
+另开终端启动桌面客户端：
 
 ```powershell
 dotnet run --project src/FurtherAgent.Client
 ```
 
-本机测试时，两端服务地址均为 `http://127.0.0.1:47320`：
+桌面客户端和接入端使用内置的公网中继地址。开发时可用 `tests/FurtherAgent.SmokeTests` 验证本机回环中继。连接设备的步骤如下。
 
 1. 在 B 打开 Codex 桌面，使用与 FurtherAgent 相同的 Windows 用户。
 2. B 进入「设置」，点击「开启共享」，复制服务端生成的授权码。
@@ -148,13 +150,11 @@ dotnet run --project src/FurtherAgent.Client
 4. A 选择会话时，B 会通过 `codex://threads/会话ID` 自动切换 Codex 桌面页面，等待会话加载后连接，无需在 B 手动打开。B 仍须运行 Codex，并保留 Windows 的 `codex://` 协议关联；加载超时可稍后重选。
 5. A 可以查看输出、发送消息、停止任务、回答支持的确认。执行中的消息作为补充指令。
 
-`FURTHERAGENT_SERVER` 环境变量可预置服务端地址。界面只保留服务端部署配置，不包含客户端 IP 或端口输入。
-
 ## 公网部署
 
 将服务端部署在常开且双方可达的服务器上。现有 HTTPS/WSS 入口使用受信任的证书；反向代理需允许 WebSocket Upgrade，空闲超时应大于心跳周期（建议至少 75 秒）。自用中继也可按[公网 HTTP IP 直连说明](docs/Relay.md#公网-http-ip-直连)提供独立入口。
 
-客户端服务地址填写同一个 `https://你的服务域名`。除本机回环测试外，客户端拒绝明文 HTTP。服务器证书由系统正常验证，不跳过证书错误。服务端地址是部署配置，后续可以预置固定地址。
+当前桌面、接入端与 Android 使用内置地址 `http://175.24.131.154:47320`。原 HTTPS 入口可以继续给旧客户端使用，两种入口可指向同一中继。
 
 第一版授权机制是持有码访问：只有 B 持有设备管理密钥，A 通过授权码换取 60 秒有效的一次性票据；密钥和票据不放在 URL 中。授权码与在线记录目前保存在服务端内存，重启会失效。中继增加服务端带宽消耗，公网容量与延迟需在实际部署后测量。
 

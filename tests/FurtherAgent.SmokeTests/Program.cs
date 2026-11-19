@@ -24,6 +24,13 @@ if (args.Contains("--connection-recovery-smoke")) { await ConnectionRecoveryChec
 if (args.Contains("--shared-connection-smoke")) { await SharedConnectionChecks.Run(Check); return; }
 if (args.Contains("--direct-network-smoke")) { await DirectNetworkChecks.Run(Check); return; }
 if (args.Contains("--http-relay-checks")) { HttpRelayChecks.Run(Check); await DirectNetworkChecks.Run(Check); return; }
+if (args.Contains("--fixed-relay-checks"))
+{
+    FixedRelayChecks.Run(Check);
+    await ConnectionProfileChecks.RunBuiltIn(Check);
+    Console.WriteLine($"ALL {passed} FIXED RELAY CHECKS PASSED");
+    return;
+}
 if (args.Contains("--mobile-completion-smoke")) { await CompletionChecks.MobileSmoke(Check); return; }
 if (args.Contains("--image-preview-checks")) { ImagePreviewChecks.Run(Check); return; }
 if (args.Contains("--attachment-cache-checks")) { AttachmentCacheChecks.Run(Check); return; }

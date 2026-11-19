@@ -15,7 +15,9 @@ public partial class MainWindow
 
     private void InitializeMailbox()
     {
-        foreach (var saved in mailboxVault.Load()) AddMailboxSession(saved);
+        var savedMailboxes = mailboxVault.Load().Where(s => SavedConnectionStore.IsSameRelay(s.Server, relayAddress))
+            .GroupBy(s => MailboxVault.Key(relayAddress, s.Binding.Code));
+        foreach (var mailbox in savedMailboxes) AddMailboxSession(mailbox.Last());
         mailboxTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher) { Interval = TimeSpan.FromSeconds(12) };
         mailboxTimer.Tick += async (_, _) => await PollMailboxesAsync();
         mailboxTimer.Start();
@@ -25,8 +27,8 @@ public partial class MainWindow
     internal IReadOnlyList<SavedConnection> MailboxProfiles()
     {
         List<SavedConnection> profiles;
-        try { profiles = connectionStore.List().ToList(); }
-        catch (Exception) { profiles = mailboxSessions.Values.Select(s => new SavedConnection(s.State.Server, s.State.Binding.Code, s.State.Name, false)).ToList(); }
+        try { profiles = connectionStore.List(relayAddress).ToList(); }
+        catch (Exception) { profiles = mailboxSessions.Values.Select(s => new SavedConnection(relayAddress, s.State.Binding.Code, s.State.Name, false)).ToList(); }
         if (activeDevice is { } device && !profiles.Any(p => MailboxVault.Key(p.Server, p.Code) == MailboxVault.Key(device.Server, device.Code)))
             profiles.Add(new(device.Server, device.Code, device.Name, false));
         return profiles;
@@ -36,19 +38,19 @@ public partial class MainWindow
 
     internal async Task<DesktopMailboxSession> BindMailboxAsync(SavedConnection profile)
     {
-        var binding = await MailboxClient.PairAsync(profile.Server, profile.Code);
-        string key = MailboxVault.Key(profile.Server, profile.Code);
+        var binding = await MailboxClient.PairAsync(relayAddress, profile.Code);
+        string key = MailboxVault.Key(relayAddress, profile.Code);
         var previous = mailboxSessions.GetValueOrDefault(key);
-        var state = previous is null ? new MailboxLocalState(profile.Server, profile.Name, binding, [], [])
+        var state = previous is null ? new MailboxLocalState(relayAddress, profile.Name, binding, [], [])
             : previous.State with { Binding = binding, Name = profile.Name };
         mailboxVault.Save(state);
-        previous?.Dispose();
+        previous?.Dispose(persistState: false);
         return AddMailboxSession(state);
     }
 
     private DesktopMailboxSession AddMailboxSession(MailboxLocalState saved)
     {
-        var session = new DesktopMailboxSession(mailboxVault, saved);
+        var session = new DesktopMailboxSession(mailboxVault, saved, relayAddress);
         mailboxSessions[session.Key] = session;
         session.Changed += UpdateMailboxBadge;
         session.Received += message => ShowMailboxToast(session, message);

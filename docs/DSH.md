@@ -44,7 +44,6 @@ CLI 接入端：
 
 ```powershell
 $env:FURTHERAGENT_BACKEND = 'dsh-desktop'
-$env:FURTHERAGENT_SERVER = 'https://你的中继地址'
 $env:FURTHERAGENT_NAME = '我的 DSH'
 .\Host\FurtherAgent.Host.exe --probe
 .\Host\FurtherAgent.Host.exe
@@ -55,7 +54,7 @@ $env:FURTHERAGENT_NAME = '我的 DSH'
 | FURTHERAGENT_BACKEND | hermes（默认）、dsh-desktop、dsh-background |
 | FURTHERAGENT_DSH_EXE | 独立后台所用正式 DSH 程序的绝对路径 |
 | FURTHERAGENT_DSH_DESCRIPTOR | 可选；显式固定现有插件实例。多个实例时必须明确目标 |
-| FURTHERAGENT_SERVER / FURTHERAGENT_NAME | 中继地址与设备名称 |
+| FURTHERAGENT_NAME | 设备名称 |
 | FURTHERAGENT_IDENTITY_FILE | 可选；设备持久身份文件位置 |
 
 `--probe` 读取能力和会话数量，不连接中继、不提交 Agent 提示词；后台模式会启动并退出自己的独立运行时。

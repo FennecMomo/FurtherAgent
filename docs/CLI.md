@@ -18,12 +18,11 @@ dotnet build FurtherAgent.slnx
 
 0.4.1 在共享 RegistryClient 内增加 TLS 握手有限重试：每个 HTTP/WS 建连步骤最多 3 次，重试等待 300/600 毫秒，仍受原有超时与取消约束。仅匹配 SecureConnectionError；不重试 HTTP 状态错误、普通断线、RPC 或结果未知的业务请求，不关闭证书校验。CLI 输出 connection-retry 事件，包含阶段、次数和错误链。此机制区别于已建立连接断开后的自动重连；CLI 仍不会自动重连并重放命令。
 
-使用 `FURTHERAGENT_CODE` 环境变量，或 `--code-file` / `FURTHERAGENT_CODE_FILE` 指向仅含授权码的本机文件。授权码不接受直接命令行值，不输出到 JSON。服务端通过 `--server`、`FURTHERAGENT_SERVER` 指定，默认 https://furtheragent.fennecmomo.top。业务正文与历史会出现在 read/watch 的输出中，应按私有文件保存。
+使用 `FURTHERAGENT_CODE` 环境变量，或 `--code-file` / `FURTHERAGENT_CODE_FILE` 指向仅含授权码的本机文件。授权码不接受直接命令行值，不输出到 JSON。CLI 默认使用 `http://175.24.131.154:47320`，诊断时可通过 `--server` 或 `FURTHERAGENT_SERVER` 指定测试中继。业务正文与历史会出现在 read/watch 的输出中，应按私有文件保存。
 
 ```powershell
 # 文件在你自己的受限目录中准备，不要提交到 Git。
 $env:FURTHERAGENT_CODE_FILE = '你的授权码文件路径'
-$env:FURTHERAGENT_SERVER = 'https://furtheragent.fennecmomo.top'
 $cli = 'E:/etc/FurtherAgent/artifacts/release/FurtherAgent-Cli-0.4.0-win-x64/FurtherAgent.Cli.exe'
 & $cli probe --seconds 35
 & $cli agents
