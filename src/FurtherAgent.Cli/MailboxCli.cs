@@ -47,8 +47,8 @@ These commands only use the independent persistent mailbox. Reading counts never
                 string identity = Path.GetFullPath(Required("identity-file"));
                 if (!File.Exists(identity)) throw new IOException("请指定已有接入端身份文件；不会自动创建或更换设备身份。");
                 var uri = new Uri(Required("server").TrimEnd('/') + '/');
-                if (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-                    throw new ArgumentException("请提供不含凭据的 HTTPS 中继地址。");
+                if (!RegistryClient.IsSupportedAddress(uri) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+                    throw new ArgumentException("请填写不含凭据、查询或片段的 HTTPS 中继地址，或使用 http://IP:端口 直连中继。");
                 _ = DeviceIdentity.LoadOrCreate(identity);
                 string accountFile = MailboxAgentAccount.Register(Required("name"), uri.AbsoluteUri, identity);
                 Emit("mailbox-account", new { accountFile }); return 0;

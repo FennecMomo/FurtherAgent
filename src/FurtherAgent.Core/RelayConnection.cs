@@ -31,9 +31,12 @@ public sealed class DeviceHost : IAsyncDisposable
     public event Action<string>? Status;
     public event Action<string>? CodeChanged;
     public DeviceHost(RegistryClient registry, Func<IAgentAdapter>? factory = null, string? filesRoot = null, bool persistentIdentity = false, bool enableLan = true, bool? enableP2p = null)
-    { this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; this.enableLan = enableLan;
+    {
+        this.registry = registry; this.factory = factory ?? (() => new CodexDesktopAdapter()); agents = new(this.factory); files = new(() => new FileTransferStore(filesRoot)); this.persistentIdentity = persistentIdentity; this.enableLan = enableLan;
         // Isolated HTTP relays require explicit opt-in, so local fixtures do not query public STUN.
-        this.enableP2p = enableP2p ?? new Uri(registry.ServerIdentity).Scheme == Uri.UriSchemeHttps; }
+        var relay = new Uri(registry.ServerIdentity);
+        this.enableP2p = enableP2p ?? (relay.Scheme == Uri.UriSchemeHttps || !relay.IsLoopback);
+    }
 
     private readonly bool enableLan;
     private readonly bool enableP2p;

@@ -23,6 +23,7 @@ if (args.Contains("--connection-open-checks")) { await ConnectionOpenChecks.Run(
 if (args.Contains("--connection-recovery-smoke")) { await ConnectionRecoveryChecks.Run(Check); return; }
 if (args.Contains("--shared-connection-smoke")) { await SharedConnectionChecks.Run(Check); return; }
 if (args.Contains("--direct-network-smoke")) { await DirectNetworkChecks.Run(Check); return; }
+if (args.Contains("--http-relay-checks")) { HttpRelayChecks.Run(Check); await DirectNetworkChecks.Run(Check); return; }
 if (args.Contains("--mobile-completion-smoke")) { await CompletionChecks.MobileSmoke(Check); return; }
 if (args.Contains("--image-preview-checks")) { ImagePreviewChecks.Run(Check); return; }
 if (args.Contains("--attachment-cache-checks")) { AttachmentCacheChecks.Run(Check); return; }
@@ -110,7 +111,7 @@ await Reject(async () => await Frames.ReadAsync(new MemoryStream([255, 255, 255,
 var state = JsonNode.Parse("""{"messages":[{"text":"old"}],"flag":true}""")!;
 StatePatches.Apply(state, JsonNode.Parse("""[{"op":"replace","path":["messages",0,"text"],"value":"new"},{"op":"add","path":["messages",1],"value":{"text":"second"}},{"op":"remove","path":["flag"]}]""")!.AsArray());
 Check(state["messages"]![0]!["text"]!.ToString() == "new" && state["messages"]!.AsArray().Count == 2 && state["flag"] is null, "desktop state patches");
-await Reject(() => { _ = new RegistryClient("http://example.com"); return Task.CompletedTask; }, "public plaintext relay forbidden");
+HttpRelayChecks.Run(Check);
 Check(typeof(PairResult).GetProperties().All(p => p.Name is not ("Host" or "Port" or "Fingerprint")), "pairing never exposes or requires a client endpoint");
 
 string configuration = AppContext.BaseDirectory.Contains("Release") ? "Release" : "Debug";

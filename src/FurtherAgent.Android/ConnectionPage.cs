@@ -7,9 +7,10 @@ namespace FurtherAgent.AndroidApp;
 internal sealed class ConnectionPage : ContentPage
 {
     private const string DefaultServer = "https://furtheragent.fennecmomo.top";
+    private const string ServerAddressHint = "https://域名 或 http://IP:端口";
     private readonly MainPage home;
     private readonly Entry name = new() { Placeholder = "选填，例如家里电脑", ReturnType = ReturnType.Next };
-    private readonly Entry server = new() { Placeholder = DefaultServer, Keyboard = Keyboard.Url, ReturnType = ReturnType.Next };
+    private readonly Entry server = new() { Placeholder = ServerAddressHint, Keyboard = Keyboard.Url, ReturnType = ReturnType.Next };
     private readonly Entry code = new() { Placeholder = "输入远端显示的授权码", IsPassword = true, IsTextPredictionEnabled = false };
     private readonly Picker saved = new() { Title = "尚无保存的设备" };
     private readonly Label formTitle = Ui.Text("新增设备", 17, true);
@@ -306,7 +307,7 @@ internal sealed class ConnectionPage : ContentPage
     {
         string url = server.Text?.Trim() ?? "";
         if (!Uri.TryCreate(url, UriKind.Absolute, out var address) || string.IsNullOrEmpty(address.Host))
-            throw new ArgumentException("请输入完整的中继地址，例如 " + DefaultServer + "。");
+            throw new ArgumentException("请输入完整的中继地址，格式为 " + ServerAddressHint + "。");
         string pairingCode = code.Text?.Trim() ?? "";
         if (pairingCode.Length == 0) throw new ArgumentException("请输入设备授权码。");
         return (url, pairingCode);

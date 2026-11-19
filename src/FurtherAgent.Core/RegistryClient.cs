@@ -20,11 +20,15 @@ public sealed class RegistryClient : IDisposable
     public RegistryClient(string url)
     {
         var uri = new Uri(url.TrimEnd('/') + '/');
-        if (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback))
-            throw new ArgumentException("公网配对服务必须使用 HTTPS；HTTP 仅允许本机测试。");
+        if (!IsSupportedAddress(uri))
+            throw new ArgumentException("请使用 HTTPS 中继地址，或填写 http://IP:端口 直连中继。");
         http = DirectNetwork.CreateHttpClient(TimeSpan.FromSeconds(10));
         http.BaseAddress = uri;
     }
+    public static bool IsSupportedAddress(Uri uri) => uri.IsAbsoluteUri &&
+        (uri.Scheme == Uri.UriSchemeHttps || uri.Scheme == Uri.UriSchemeHttp &&
+            (uri.IsLoopback || uri.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6));
+
     public async Task<T> PostAsync<T>(string path, object value, CancellationToken ct = default)
     {
         using var response = await TlsHandshakeRetry.RunAsync(

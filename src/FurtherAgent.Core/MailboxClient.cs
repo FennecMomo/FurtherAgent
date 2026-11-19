@@ -14,8 +14,8 @@ public sealed class MailboxClient : IDisposable
     private static Uri Address(string server)
     {
         var uri = new Uri(server.TrimEnd('/') + '/');
-        if (uri.Scheme != "https" && !(uri.Scheme == "http" && uri.IsLoopback) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
-            throw new ArgumentException("留言服务需要 HTTPS 或本机回环 HTTP 地址。");
+        if (!RegistryClient.IsSupportedAddress(uri) || uri.UserInfo.Length != 0 || uri.Query.Length != 0 || uri.Fragment.Length != 0)
+            throw new ArgumentException("请填写不含凭据、查询或片段的 HTTPS 中继地址，或使用 http://IP:端口 直连中继。");
         return uri;
     }
     public MailboxClient(string server, MailboxBinding binding)
