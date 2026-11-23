@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.16.7** 桌面 Mini 窗口支持 Markdown 消息，包含标题、列表、代码块、表格和链接。[迷你窗口说明](docs/Compact-Desktop-Mode.md)
+
 **0.16.6** 桌面客户端明确显示只读历史、读取失败和自动重试。接入端确认缺少旧 Codex 管道时直接读取历史，省去每次切换前的等待。[验证记录](docs/Pending-Tests.md)
 
 **0.16.5** 接入端在新版 Codex 桌面未提供 `codex-ipc` 时，也能按 ID 打开所选会话并读取已保存的历史。此模式为只读，发送、停止和审批仍在 Codex 桌面处理。[验证记录](docs/Pending-Tests.md)

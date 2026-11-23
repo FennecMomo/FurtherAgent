@@ -33,6 +33,7 @@ public sealed class MarkdownView : RichTextBox
     static MarkdownView() => VisualTheme.IsCodexProperty.OverrideMetadata(typeof(MarkdownView),
         new FrameworkPropertyMetadata(false, FrameworkPropertyMetadataOptions.Inherits, (d, _) => ((MarkdownView)d).Refresh()));
     public Func<string, FrameworkElement?>? AttachmentFactory { get; init; }
+    internal bool LimitLength { get; init; } = true;
     public static readonly DependencyProperty MarkdownProperty = DependencyProperty.Register(nameof(Markdown), typeof(string), typeof(MarkdownView),
         new PropertyMetadata("", (d, _) => ((MarkdownView)d).Refresh()));
     public string Markdown { get => (string)GetValue(MarkdownProperty); set => SetValue(MarkdownProperty, value); }
@@ -50,7 +51,7 @@ public sealed class MarkdownView : RichTextBox
             Language = System.Windows.Markup.XmlLanguage.GetLanguage(codex ? "zh-CN" : Language.IetfLanguageTag),
             Foreground = new SolidColorBrush((Color)ColorConverter.ConvertFromString(codex ? "#202123" : "#202C32")), LineStackingStrategy = codex ? LineStackingStrategy.BlockLineHeight : LineStackingStrategy.MaxHeight, LineHeight = codex ? 22 : double.NaN };
         string text = Markdown ?? "";
-        if (text.Length > 30000) text = text[..30000] + "\n[显示已截断]";
+        if (LimitLength && text.Length > 30000) text = text[..30000] + "\n[显示已截断]";
         string[] lines = text.Replace("\r", "").Split('\n');
         bool fenced = false; var code = new System.Text.StringBuilder(); Table? table = null;
         foreach (string line in lines)

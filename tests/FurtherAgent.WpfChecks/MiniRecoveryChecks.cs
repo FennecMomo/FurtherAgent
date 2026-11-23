@@ -122,7 +122,7 @@ internal static class MiniRecoveryChecks
             Check(ReferenceEquals(recovery, StartMini(first)), "starting a mini twice reuses its single recovery task");
             await Until(() => Volatile.Read(ref initialPairFailures) > 0);
             Check(!recovery.IsCompleted && !Ready(first) && Field<TextBox>(first, "composer").Text == "保留的草稿" &&
-                Field<TextBlock>(first, "context").Text.Contains("先前已收到的正文"),
+                CompactUiChecks.TranscriptText(Field<StackPanel>(first, "context")).Contains("先前已收到的正文"),
                 "an initial pairing failure keeps recovery alive and preserves cached text and draft");
 
             host = await StartHost();

@@ -4,6 +4,7 @@ using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shell;
@@ -32,7 +33,7 @@ internal sealed class MiniWindow : Window
     private AgentInfo? agent;
     private SessionView? view;
     private readonly Grid surface = new() { Background = Brushes.White, Margin = new Thickness(6) };
-    private readonly TextBlock context = new() { FontSize = 13, LineHeight = 21, TextWrapping = TextWrapping.Wrap, Foreground = Brushes.DimGray, Padding = new Thickness(4, 0, 4, 0) };
+    private readonly StackPanel context = new() { Margin = new Thickness(4, 0, 4, 0) };
     private readonly ScrollViewer scroll;
     private readonly TextBox composer = new() { FontSize = 13, TextWrapping = TextWrapping.Wrap, AcceptsReturn = true, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, Padding = new Thickness(7), MinHeight = 48, Background = Brushes.White, Foreground = Brushes.Black, BorderBrush = Brushes.LightGray, BorderThickness = new Thickness(1), VerticalContentAlignment = VerticalAlignment.Top };
     private readonly Button send = new() { Content = "↑", Width = 34, Height = 34, Padding = new Thickness(0), Margin = new Thickness(4), VerticalAlignment = VerticalAlignment.Bottom, FontSize = 20 };
@@ -50,6 +51,27 @@ internal sealed class MiniWindow : Window
     private Size expandedSize = new(420, 210);
     private ResizeMode expandedResizeMode;
     private record CompactPosition(double Left, double Top, double Width, double Height);
+
+    private sealed class TranscriptRow : DockPanel
+    {
+        public bool IsUser { get; }
+        public MarkdownView Body { get; } = new() { LimitLength = false, IsTabStop = false };
+
+        public TranscriptRow(bool isUser)
+        {
+            IsUser = isUser;
+            if (isUser)
+            {
+                var label = new TextBlock
+                {
+                    Text = "你：", FontSize = 13, Foreground = Brushes.DimGray, Margin = new Thickness(0, 2, 0, 0)
+                };
+                SetDock(label, Dock.Left);
+                Children.Add(label);
+            }
+            Children.Add(Body);
+        }
+    }
 
     public bool IsSending => sending;
     public bool HasUnsentDraft => !string.IsNullOrWhiteSpace(composer.Text);
@@ -123,9 +145,17 @@ internal sealed class MiniWindow : Window
             double target = Math.Clamp(scroll.VerticalOffset - e.Delta, 0, scroll.ScrollableHeight);
             followLatest = target >= scroll.ScrollableHeight - 2;
             scroll.ScrollToVerticalOffset(target);
-            if (followLatest) RenderLatestText();
+            if (followLatest) RenderLatestMessages();
         };
-        scroll.PreviewMouseLeftButtonDown += (_, e) => { dragging = true; dragY = e.GetPosition(scroll).Y; dragOffset = scroll.VerticalOffset; scroll.CaptureMouse(); e.Handled = true; };
+        scroll.PreviewMouseLeftButtonDown += (_, e) =>
+        {
+            if (IsHyperlinkSource(e.OriginalSource)) return;
+            dragging = true;
+            dragY = e.GetPosition(scroll).Y;
+            dragOffset = scroll.VerticalOffset;
+            scroll.CaptureMouse();
+            e.Handled = true;
+        };
         scroll.PreviewMouseMove += (_, e) =>
         {
             if (!dragging) return;
@@ -238,7 +268,9 @@ internal sealed class MiniWindow : Window
             collapsed = false; Background = Brushes.White; Opacity = 1; ball.Visibility = Visibility.Collapsed; surface.Visibility = Visibility.Visible;
             ResizeMode = expandedResizeMode; MinWidth = 280; MinHeight = 180;
             Width = expandedSize.Width; Height = expandedSize.Height;
-            Left = right - Width; Top = bottom - Height; if (followLatest) ScrollToLatestAfterLayout(); composer.Focus();
+            Left = right - Width; Top = bottom - Height;
+            RenderLatestMessages();
+            composer.Focus();
         }
         SavePosition();
     }
@@ -385,16 +417,36 @@ internal sealed class MiniWindow : Window
         UpdateRunStatus();
         send.IsEnabled = SessionReady && !sending && update.CanSend;
         composer.IsEnabled = send.IsEnabled;
-        RenderLatestText();
+        RenderLatestMessages();
     }
 
-    private void RenderLatestText()
+    private void RenderLatestMessages()
     {
-        if (dragging || !followLatest || view is null) return;
-        string text = string.Join("\n", view.Messages.Where(HistoryPaging.IsConversation)
-            .Select(m => (ChatPresentation.Kind(m) == "user" ? "你：" : "") + ChatPresentation.Display(m).Text));
-        if (context.Text != text) context.Text = text;
+        if (collapsed || dragging || !followLatest || view is null) return;
+        int index = 0;
+        foreach (var message in view.Messages.Where(HistoryPaging.IsConversation))
+        {
+            bool isUser = ChatPresentation.Kind(message) == "user";
+            if (index == context.Children.Count)
+                context.Children.Add(new TranscriptRow(isUser));
+            else if (((TranscriptRow)context.Children[index]).IsUser != isUser)
+            {
+                context.Children.RemoveAt(index);
+                context.Children.Insert(index, new TranscriptRow(isUser));
+            }
+            var row = (TranscriptRow)context.Children[index++];
+            string markdown = ChatPresentation.Display(message).Text;
+            if (row.Body.Markdown != markdown) row.Body.Markdown = markdown;
+        }
+        if (index < context.Children.Count) context.Children.RemoveRange(index, context.Children.Count - index);
         ScrollToLatestAfterLayout();
+    }
+
+    private static bool IsHyperlinkSource(object source)
+    {
+        for (var item = source as FrameworkContentElement; item is not null; item = item.Parent as FrameworkContentElement)
+            if (item is Hyperlink) return true;
+        return false;
     }
 
     private void ScrollToLatestAfterLayout()
@@ -456,7 +508,7 @@ internal sealed class MiniWindow : Window
     {
         dragging = false;
         if (scroll.IsMouseCaptured) scroll.ReleaseMouseCapture();
-        if (followLatest) RenderLatestText();
+        if (followLatest) RenderLatestMessages();
     }
 
     private void LoadPosition(bool allowLegacy)
