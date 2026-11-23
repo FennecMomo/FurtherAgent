@@ -10,7 +10,7 @@ public record AgentIndicator(string Label, string Color)
         return view.Status switch
         {
             "active" or "running" or "inProgress" or "in_progress" => new("执行中", "#2563EB"),
-            "queued" or "started" => new("排队中", "#D97706"),
+            "queued" or "inputQueued" or "started" => new("排队中", "#D97706"),
             "stopping" => new("停止中", "#D97706"),
             "waiting_for_approval" => new("等待确认", "#D97706"),
             "readOnly" => new("只读历史", "#64748B"),

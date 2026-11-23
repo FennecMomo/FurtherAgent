@@ -67,6 +67,7 @@ if (args.Length is 3 or 4 && args[0] == "--question-watch") { await QuestionChec
 if (args.Contains("--codex-activation-checks")) { await CodexActivationChecks.Run(Check); return; }
 if (args.Contains("--codex-activation-live")) { await CodexActivationChecks.RunLive(Check); return; }
 if (args.Contains("--codex-saved-session-checks")) { await CodexSavedSessionChecks.Run(Check); return; }
+if (args.Contains("--codex-queue-checks")) { await CodexQueueChecks.Run(Check); return; }
 if (args.Length == 2 && args[0] == "--codex-history-live") { await CodexHistoryChecks.RunLive(args[1], Check); return; }
 if (args.Length == 4 && args[0] == "--paging-live") { await PagingChecks.RunLive(args[1], args[2], args[3], Check); return; }
 async Task Reject(Func<Task> action, string name)
@@ -102,6 +103,7 @@ OperationHistoryChecks.Run(Check);
 await CodexSettingsChecks.Run(Check);
 await CodexHistoryChecks.Run(Check);
 await CodexActivationChecks.Run(Check);
+await CodexQueueChecks.Run(Check);
 await WorkspaceChecks.Run(Check);
 await DshDiscoveryChecks.Run(Check);
 await DshAdapterChecks.Run(Check);

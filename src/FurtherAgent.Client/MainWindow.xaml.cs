@@ -459,6 +459,7 @@ public partial class MainWindow : Window
             : recovering ? "网络已连接 · 正在加载会话…"
             : current is null ? (selectedId is null ? "已连接 · 请选择会话" : "正在加载会话…")
             : current.Status == "readOnly" ? "会话已加载 · 只读历史"
+            : current.Status == "inputQueued" ? "消息已进入 Codex 队列 · 等待原会话处理"
             : current.Prompts.Count > 0 ? "等待你的审批或回答"
             : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
             : "会话已加载 · 等待指令（其他入口运行状态不可见）";

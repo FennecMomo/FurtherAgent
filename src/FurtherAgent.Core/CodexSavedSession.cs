@@ -4,13 +4,10 @@ namespace FurtherAgent.Core;
 
 internal static class CodexSavedSession
 {
-    internal static async Task<SessionView> ReadAsync(string home, string id, CancellationToken ct)
-    {
-        await using var server = await CodexAppServer.OpenAsync(home, ct);
-        return await ReadAsync(server, id, ct);
-    }
-
     internal static async Task<SessionView> ReadAsync(ICodexMetadata server, string id, CancellationToken ct)
+        => ToView(await ReadThreadAsync(server, id, ct)) with { Id = id };
+
+    internal static async Task<JsonObject> ReadThreadAsync(ICodexMetadata server, string id, CancellationToken ct)
     {
         if (!Guid.TryParse(id, out var expected)) throw new ArgumentException("会话 ID 无效。", nameof(id));
         string threadId = expected.ToString("D");
@@ -30,7 +27,7 @@ internal static class CodexSavedSession
             !Guid.TryParse(CodexDesktopAdapter.Text(thread["id"]), out var actual) || actual != expected)
             throw new IOException("Codex 返回的会话与所选会话不一致。");
 
-        return ToView(thread) with { Id = id };
+        return thread;
     }
 
     internal static SessionView ToView(JsonNode thread)

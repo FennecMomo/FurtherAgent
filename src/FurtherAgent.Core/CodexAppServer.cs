@@ -4,11 +4,14 @@ using System.Text.Json.Nodes;
 
 namespace FurtherAgent.Core;
 
-// Short-lived metadata client. Never sends turns or resumes an existing desktop writer.
+// Short-lived client for stored metadata and the native queue. It never starts or resumes a turn.
 internal interface ICodexMetadata : IAsyncDisposable
 {
     Task<JsonNode> CallAsync(string method, object args, CancellationToken ct);
 }
+internal sealed class CodexAppServerRequestException(string method, string detail)
+    : IOException($"Codex {method}：{detail}。请确认远端 Codex 版本和账号支持此接口。");
+
 internal sealed class CodexAppServer : ICodexMetadata
 {
     private readonly Process process;
@@ -84,8 +87,9 @@ internal sealed class CodexAppServer : ICodexMetadata
         while (await process.StandardOutput.ReadLineAsync(deadline.Token) is { } line)
         {
             var reply = JsonNode.Parse(line);
-            if (reply?["id"]?.ToString() != id.ToString()) continue;
-            if (reply["error"] is { } error) throw new IOException($"Codex {method}：{error["message"]}。请确认远端 Codex 版本和账号支持此接口。");
+            if (reply?["method"] is not null || reply?["id"]?.ToString() != id.ToString()) continue;
+            if (reply["error"] is { } error)
+                throw new CodexAppServerRequestException(method, CodexDesktopAdapter.Text(error["message"]));
             return reply["result"] ?? throw new IOException("Codex 返回了空结果。");
         }
         throw new IOException("Codex 元数据接口已断开。");

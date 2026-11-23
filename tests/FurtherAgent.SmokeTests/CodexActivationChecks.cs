@@ -48,6 +48,12 @@ internal static class CodexActivationChecks
     public static async Task Run(Action<bool, string> check)
     {
         string id = Guid.NewGuid().ToString();
+        check(CodexThreadActivation.WakeUrl(Guid.Parse(id).ToString("B").ToUpperInvariant()) == $"codex://threads/wake/{id}",
+            "queued desktop wake uses the canonical thread ID and the wake route");
+        bool rejectedWake = false;
+        try { CodexThreadActivation.WakeUrl(id + "?prompt=unexpected"); }
+        catch (ArgumentException) { rejectedWake = true; }
+        check(rejectedWake, "queued desktop wake rejects IDs containing navigation parameters");
         int loadedLaunches = 0, loadedProbes = 0;
         var loadedOwner = await CodexThreadActivation.ActivateAsync(id, _ => loadedLaunches++, _ =>
         {

@@ -4,10 +4,14 @@ namespace FurtherAgent.Core;
 
 internal static class CodexThreadActivation
 {
-    internal static string ThreadUrl(string id)
+    internal static string ThreadUrl(string id) => $"codex://threads/{CanonicalId(id)}";
+
+    internal static string WakeUrl(string id) => $"codex://threads/wake/{CanonicalId(id)}";
+
+    private static string CanonicalId(string id)
     {
         if (!Guid.TryParse(id, out var guid)) throw new ArgumentException("会话 ID 无效。");
-        return $"codex://threads/{guid:D}";
+        return guid.ToString("D");
     }
 
     internal static void Open(string url)

@@ -5,8 +5,8 @@ using System.Text.Json.Nodes;
 
 namespace FurtherAgent.Core;
 
-// Experimental desktop IPC profile for the observed v11 and v13 state streams.
-// Never launches another writer or edits Codex history/configuration.
+// Desktop IPC (v11/v13) or the native queue for versions without that pipe.
+// Never starts a second writer or edits Codex history/configuration directly.
 public sealed class CodexDesktopAdapter : IAgentAdapter
 {
     private const string DesktopPipeName = "codex-ipc";
@@ -25,11 +25,18 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
     private SessionView? savedView;
+    private volatile CodexQueuedSession? savedQueue;
+    private volatile bool observed = true;
     private sealed class DesktopPipeUnavailable(Exception? cause = null)
         : IOException("无法连接 Codex 桌面。请在 B 上以同一 Windows 用户打开 Codex。", cause);
-    public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 支持远程工作空间和空会话 · 需在 B 运行 Codex", true, true, CanWorkspaces: true);
+    public AgentInfo Info => new("codex", "Codex 桌面", true, "桌面实时接口与原生消息队列 · 支持远程工作空间和空会话", true, true, CanWorkspaces: true);
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
+    public void SetObserved(bool value)
+    {
+        observed = value;
+        savedQueue?.SetObserved(value);
+    }
     public CodexDesktopAdapter(string? codexHome = null) => home = codexHome ??
         Environment.GetEnvironmentVariable("CODEX_HOME") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex");
 
@@ -91,12 +98,28 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         try { await ConnectAsync(ct); }
         catch (DesktopPipeUnavailable) when (OperatingSystem.IsWindows())
         {
-            var view = await CodexSavedSession.ReadAsync(home, id, ct);
+            if (savedQueue is { } existing && existing.View.Id == id)
+                return await existing.RefreshAsync(ct);
+
+            await using var server = await CodexAppServer.OpenAsync(home, ct);
+            var view = await CodexQueuedSession.ReadAsync(server, id, ct);
             ct.ThrowIfCancellationRequested();
-            CodexThreadActivation.Open(CodexThreadActivation.ThreadUrl(id));
+            var previous = savedQueue;
+            savedQueue = null;
+            if (previous is not null) await previous.DisposeAsync();
             lock (gate) savedView = view;
+            if (view.CanSend)
+            {
+                var queue = new CodexQueuedSession(home, view, snapshot => Changed?.Invoke(snapshot));
+                savedQueue = queue;
+                queue.SetObserved(observed);
+            }
+            else CodexThreadActivation.Open(CodexThreadActivation.ThreadUrl(id));
             return view;
         }
+        var disabled = savedQueue;
+        savedQueue = null;
+        if (disabled is not null) await disabled.DisposeAsync();
         lock (gate) savedView = null;
         string discoveredOwner = await CodexThreadActivation.ActivateAsync(id, CodexThreadActivation.Open, async token =>
         {
@@ -210,8 +233,8 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         JsonNode value;
         lock (gate)
         {
-            if (savedView is { } view)
-                return new(view.Model ?? "", "", view.Mode ?? "default", [], false, false, view.StatusDetail ?? "当前会话仅可查看已保存的历史。");
+            if ((savedQueue?.View ?? savedView) is { } view)
+                return new(view.Model ?? "", "", view.Mode ?? "default", [], false, false, "请在 Codex 桌面修改会话设置。");
             value = (state ?? throw new IOException("请先打开会话。")).DeepClone();
         }
         string model = Text(value["latestCollaborationMode"]?["settings"]?["model"] ?? value["latestModel"]);
@@ -278,6 +301,11 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private async Task SendMessageAsync(string text, bool questionReply, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 100000) throw new ArgumentException("消息不能为空或超过 100000 字符。");
+        if (!questionReply && savedQueue is { } queue)
+        {
+            await queue.SendAsync(text, ct);
+            return;
+        }
         SessionView view;
         lock (gate) view = ToView(RequireLiveState());
         var request = CodexMessageSubmission.Build(view, text, questionReply);
@@ -352,9 +380,12 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         else args["decision"] = decision;
         await RequestAsync(follower, args, 1, ct);
     }
-    private JsonNode RequireLiveState() => savedView is { } view
-        ? throw new IOException(view.StatusDetail ?? "当前会话仅可查看已保存的历史。")
-        : state ?? throw new IOException("请先选择会话。");
+    private JsonNode RequireLiveState()
+    {
+        if (savedQueue is not null) throw new IOException("请在 Codex 桌面执行此会话操作。");
+        if (savedView is { } view) throw new IOException(view.StatusDetail ?? "当前会话仅可查看已保存的历史。");
+        return state ?? throw new IOException("请先选择会话。");
+    }
 
     public static SessionView ToView(JsonNode s)
     {
@@ -418,6 +449,9 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             try { using var timeout = new CancellationTokenSource(1000); await FollowAsync(false, timeout.Token); } catch { }
         lifetime.Cancel(); pipe.Dispose();
         if (reader is not null) await reader;
+        var queue = savedQueue;
+        savedQueue = null;
+        if (queue is not null) await queue.DisposeAsync();
     }
 }
 
