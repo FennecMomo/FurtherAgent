@@ -46,7 +46,7 @@ public static class CodexSubmissionReceipt
                     if (remaining <= 0) break;
                     await Task.Delay((int)Math.Min(100, remaining), ct);
                 }
-                throw new IOException("远端确认超时，发送结果待确认，不代表 B 端拒收。草稿已保留；原请求可能仍在执行，请先核对会话，勿重复发送。", ex);
+                throw new SubmissionUncertainException("远端确认超时，发送结果待确认。草稿已保留，请先核对会话，避免重复提交。", ex);
             }
         }
         finally

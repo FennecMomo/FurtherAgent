@@ -6,9 +6,10 @@ if (args.Contains("--help"))
     Console.WriteLine($"""
         FurtherAgent.Host [--probe | --reset-pairing]
         固定中继 {RelayEndpoint.Address}
-        通用：FURTHERAGENT_BACKEND=hermes|dsh-desktop|dsh-background、FURTHERAGENT_IDENTITY_FILE、FURTHERAGENT_NAME。
+        通用：FURTHERAGENT_BACKEND=hermes|dsh-desktop|dsh-background|codex、FURTHERAGENT_IDENTITY_FILE、FURTHERAGENT_NAME。
         Hermes：HERMES_API_URL（默认 http://127.0.0.1:8642）、HERMES_API_KEY_FILE 或 HERMES_API_KEY。
         DSH：FURTHERAGENT_DSH_EXE（后台匹配运行时）、FURTHERAGENT_DSH_DESCRIPTOR（可选固定实例）；先运行 Install-DshBridge.ps1 安装对应模式插件。
+        Codex：同一用户下的 Codex Desktop。共享实时接入使用 FURTHERAGENT_CODEX_APP_SERVER_WS_URL；可通过 Start-CodexSharedDesktop.ps1 一起启动。
         --probe 读取能力和会话数量，不连接中继、不执行 Agent；DSH 后台模式会启动并退出独立运行时。退出接入端不会停止 Hermes 或 DSH 桌面；DSH 后台有运行或排队任务时拒绝关闭。
         """);
     return;
@@ -19,8 +20,10 @@ using var terminate = OperatingSystem.IsWindows() ? null : PosixSignalRegistrati
 try
 {
     string backend = Environment.GetEnvironmentVariable("FURTHERAGENT_BACKEND") ?? "hermes";
-    if (backend is not ("hermes" or "dsh-desktop" or "dsh-background")) throw new ArgumentException("FURTHERAGENT_BACKEND 必须是 hermes、dsh-desktop 或 dsh-background。");
-    string defaultName = Environment.MachineName + " · " + (backend == "hermes" ? "Hermes" : backend);
+    if (backend is not ("hermes" or "dsh-desktop" or "dsh-background" or "codex"))
+        throw new ArgumentException("FURTHERAGENT_BACKEND 必须是 hermes、dsh-desktop、dsh-background 或 codex。");
+    string defaultName = backend == "codex" ? Environment.MachineName
+        : Environment.MachineName + " · " + (backend == "hermes" ? "Hermes" : backend);
     if (args.Contains("--reset-pairing"))
     {
         using var resetRegistry = new RegistryClient(RelayEndpoint.Address);
@@ -37,23 +40,31 @@ try
     if (backend.StartsWith("dsh") && descriptor.Length == 0) descriptor = DshAdapter.FindDescriptor("desktop");
     string? keyFile = backend == "hermes" ? Environment.GetEnvironmentVariable("HERMES_API_KEY_FILE") : null;
     string key = backend != "hermes" ? "" : keyFile is null ? Environment.GetEnvironmentVariable("HERMES_API_KEY") ?? "" : (await File.ReadAllTextAsync(keyFile)).Trim();
-    await using IAgentAdapter adapter = backend.StartsWith("dsh") ? new DshAdapter(descriptor, followDesktopRestarts)
-        : new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key);
-    var capabilities = adapter is DshAdapter dsh ? await dsh.ProbeAsync(lifetime.Token) : await ((HermesAdapter)adapter).ProbeAsync(lifetime.Token);
-    Console.WriteLine(adapter.Info.Name + " 能力检查通过。");
+    IAgentAdapter CreateAdapter(string? hermesState = null) => backend switch
+    {
+        "codex" => new CodexDesktopAdapter(),
+        "dsh-desktop" or "dsh-background" => new DshAdapter(descriptor, followDesktopRestarts),
+        _ => new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key, stateDirectory: hermesState)
+    };
+    await using var adapter = CreateAdapter();
+    var capabilities = adapter switch
+    {
+        DshAdapter dsh => await dsh.ProbeAsync(lifetime.Token),
+        HermesAdapter hermes => await hermes.ProbeAsync(lifetime.Token),
+        _ => null
+    };
+    if (backend != "codex") Console.WriteLine(adapter.Info.Name + " 能力检查通过。");
     if (args.Contains("--probe"))
     {
         Console.WriteLine(capabilities?.ToJsonString());
-        Console.WriteLine($"可读取会话数量（最多 1000）：{(await adapter.ListAsync(lifetime.Token)).Count}");
+        Console.WriteLine($"可读取会话数量（最多 {(backend == "codex" ? 300 : 1000)}）：{(await adapter.ListAsync(lifetime.Token)).Count}");
         return;
     }
     using var registry = new RegistryClient(RelayEndpoint.Address);
     string deviceName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName;
     string stateDirectory = Environment.GetEnvironmentVariable("FURTHERAGENT_HERMES_STATE_ROOT")
         ?? DeviceIdentity.DefaultPath(registry.ServerIdentity, deviceName) + ".hermes-runs";
-    await using var host = new DeviceHost(registry, () => backend.StartsWith("dsh")
-        ? new DshAdapter(descriptor, followDesktopRestarts)
-        : new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key, stateDirectory: stateDirectory), persistentIdentity: true);
+    await using var host = new DeviceHost(registry, () => CreateAdapter(stateDirectory), persistentIdentity: true);
     host.Status += Console.WriteLine;
     host.CodeChanged += code => Console.WriteLine($"授权码：{DeviceIdentity.DisplayCode(code)}（支持多端同时连接）");
     await host.StartAsync(deviceName, lifetime.Token);

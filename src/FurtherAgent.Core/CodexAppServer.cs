@@ -9,8 +9,12 @@ internal interface ICodexMetadata : IAsyncDisposable
 {
     Task<JsonNode> CallAsync(string method, object args, CancellationToken ct);
 }
-internal sealed class CodexAppServerRequestException(string method, string detail)
-    : IOException($"Codex {method}：{detail}。请确认远端 Codex 版本和账号支持此接口。");
+internal sealed class CodexAppServerRequestException(string method, string detail, int? code = null)
+    : IOException($"Codex {method}：{detail}。请确认远端 Codex 版本和账号支持此接口。")
+{
+    public int? Code { get; } = code;
+    public bool MethodNotFound => Code == -32601 || (Code is null && detail.Equals("Method not found", StringComparison.OrdinalIgnoreCase));
+}
 
 internal sealed class CodexAppServer : ICodexMetadata
 {
@@ -89,7 +93,8 @@ internal sealed class CodexAppServer : ICodexMetadata
             var reply = JsonNode.Parse(line);
             if (reply?["method"] is not null || reply?["id"]?.ToString() != id.ToString()) continue;
             if (reply["error"] is { } error)
-                throw new CodexAppServerRequestException(method, CodexDesktopAdapter.Text(error["message"]));
+                throw new CodexAppServerRequestException(method, CodexDesktopAdapter.Text(error["message"]),
+                    error["code"] is JsonValue code && code.TryGetValue<int>(out int value) ? value : null);
             return reply["result"] ?? throw new IOException("Codex 返回了空结果。");
         }
         throw new IOException("Codex 元数据接口已断开。");

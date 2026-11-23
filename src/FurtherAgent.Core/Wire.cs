@@ -68,6 +68,9 @@ internal sealed class FrameReadStream(Stream source, int length) : Stream
 // One reader and serialized writes per stream. Mutating requests are never replayed.
 public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
 {
+    private const string SubmissionUncertainCode = "submission-uncertain";
+    private sealed class ConnectionClosedException(string message, Exception? cause) : IOException(message, cause);
+
     public RpcPeer(Stream stream) : this(new StreamTransport(stream)) { }
     private readonly SemaphoreSlim writes = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonNode?>> pending = new();
@@ -92,6 +95,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         }
     }
     public Func<string, JsonNode?, CancellationToken, Task<JsonNode?>>? Handler { get; set; }
+    internal event Action<string>? ResponseSent;
     public event Action<string, JsonNode?>? Notification;
     public event Action<string>? Closed;
     public Task? Completion { get; private set; }
@@ -127,7 +131,16 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         try
         {
             await WriteAsync(Json.Node(new { id, method, args }), ct, finishPhysicalWrite);
-            var result = await source.Task.WaitAsync(responseTimeout ?? TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            JsonNode? result;
+            try
+            {
+                result = await source.Task.WaitAsync(responseTimeout ?? TimeSpan.FromSeconds(40), ct).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (method is ("send" or "send-files" or "interrupt-send") &&
+                ex is (TimeoutException or ConnectionClosedException or OperationCanceledException))
+            {
+                throw new SubmissionUncertainException("消息回执未确认。请先核对远端会话和队列，避免重复发送。", ex);
+            }
             CallSucceeded?.Invoke(method, args);
             return result;
         }
@@ -166,7 +179,12 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
                 {
                     if (pending.TryGetValue(id, out var source))
                     {
-                        if (m["error"] is { } error) source.TrySetException(new IOException(error.GetValue<string>()));
+                        if (m["error"] is { } error)
+                        {
+                            string message = error.GetValue<string>();
+                            source.TrySetException(m["errorCode"] is JsonValue code && code.TryGetValue<string>(out var value) &&
+                                value == SubmissionUncertainCode ? new SubmissionUncertainException(message) : new IOException(message));
+                        }
                         else source.TrySetResult(m["result"]?.DeepClone());
                     }
                 }
@@ -182,7 +200,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         {
             lifetime.Cancel();
             requests.Writer.TryComplete();
-            foreach (var p in pending.Values) p.TrySetException(new IOException(reason, cause));
+            foreach (var p in pending.Values) p.TrySetException(new ConnectionClosedException(reason, cause));
             Closed?.Invoke(reason);
         }
     }
@@ -208,8 +226,10 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
             var result = await Handler(method, args, lifetime.Token);
             response = new JsonObject { ["id"] = id, ["result"] = result };
         }
+        catch (SubmissionUncertainException ex) { response = Json.Node(new { id, error = ex.Message, errorCode = SubmissionUncertainCode }); }
         catch (Exception ex) { response = Json.Node(new { id, error = ex.Message }); }
         await WriteAsync(response, lifetime.Token);
+        ResponseSent?.Invoke(method);
     }
     public async ValueTask DisposeAsync()
     {

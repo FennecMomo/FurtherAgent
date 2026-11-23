@@ -227,26 +227,28 @@ public sealed partial class MainPage : ContentPage
     private List<RemoteFile> PendingFiles => uploads.GetValueOrDefault(draftKey) ?? [];
     private void RefreshButtons()
     {
-        bool ready = session.Connected && !session.Busy && !interactionBusy && session.View is not null && !preview;
-        composer.IsEnabled = !session.Busy && !interactionBusy && session.View is not null && !preview;
+        var view = session.View;
+        bool ready = session.Connected && !session.Busy && !interactionBusy && view is not null && !preview;
+        bool hasDraft = !string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0;
+        composer.IsEnabled = !session.Busy && !interactionBusy && view is not null && !preview;
         voice.IsEnabled = recognizingSpeech || composer.IsEnabled;
         Ui.SetAction(voice, recognizingSpeech ? (recordingSpeech ? "结束" : "取消") : "语音");
         SemanticProperties.SetDescription(voice, "按住说话，松手停止，文字保留，下拉放弃");
         composer.Placeholder = session.View is not null && !preview ? "继续这个会话…" : "连接设备后，在这里发送消息…";
-        send.IsEnabled = ready && session.View!.CanSend && (!string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0);
-        Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : "发送 ↑", true);
+        send.IsEnabled = ready && (session.SendUncertain || view!.CanSend && hasDraft);
+        Ui.SetAction(send, session.SendUncertain ? "核对" : session.Busy ? "等待…" : view?.CanSteer == false ? "排队发送"
+            : view is { CanSteer: true, Status: "active" or "running" } ? "追加指令" : "发送 ↑", true);
         stop.IsEnabled = ready && session.View!.CanStop == true;
         files.IsEnabled = downloadCancel is not null || ready && session.Agent?.CanFiles == true;
         string fileAction = downloadCancel is null ? "附件" : "取消下载";
         Ui.SetAction(files, fileAction);
         files.SetAppTheme(Button.ImageSourceProperty, Ui.Icon(fileAction), Ui.Icon(fileAction, true));
         voice.SetAppTheme(Button.ImageSourceProperty, Ui.Icon(recognizingSpeech ? "停止" : "语音"), Ui.Icon(recognizingSpeech ? "停止" : "语音", true));
-        models.IsEnabled = ready && session.Agent?.CanConfigure == true;
+        models.IsEnabled = ready && session.CanConfigure;
         prompts.IsEnabled = ready && session.View!.Prompts.Count > 0;
         bool hasQuestion = session.View?.Prompts.Any(p => p.Kind is "item/tool/requestUserInput" or CodexQuestions.AsyncKind) == true;
         Ui.SetAction(prompts, session.View?.Prompts.Count > 0 ? $"{(hasQuestion ? "回答问题" : "确认")} {session.View.Prompts.Count}" : "待确认", hasQuestion);
         conversations.IsEnabled = !session.Busy && !interactionBusy;
-        bool hasDraft = !string.IsNullOrWhiteSpace(composer.Text) || PendingFiles.Count > 0;
         stop.IsVisible = session.View?.CanStop == true && !session.SendUncertain && !(hasDraft && session.View.CanSend);
         send.IsVisible = !stop.IsVisible;
         prompts.IsVisible = session.View?.Prompts.Count > 0;

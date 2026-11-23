@@ -13,7 +13,9 @@ public static class CodexRecovery
         string hint = code switch
         {
             "usageLimitExceeded" => "模型使用额度已达上限。请等待额度恢复，或在模型设置中选择仍可用的模型，再手动继续任务。",
+            "rateLimitExceeded" => "模型请求速率已达上限。可以稍后手动继续，或切换可用模型。",
             "serverOverloaded" => "模型服务容量拥堵，当前请求未能完成。可以稍后手动继续，或切换可用模型。",
+            "policyCapacityUnavailable" or "flexUnavailable" => "模型服务容量受限，当前请求未能完成。可以稍后手动继续，或切换可用模型。",
             _ => ""
         };
         return hint.Length == 0 ? message : hint + (message.Length == 0 ? "" : "\n" + message);
@@ -23,9 +25,10 @@ public static class CodexRecovery
         if (latest is null || runtime == "active" || CodexDesktopAdapter.Text(latest["status"]) != "failed") return null;
         var error = latest["error"] ?? (latest["items"] as JsonArray)?.LastOrDefault(i => CodexDesktopAdapter.Text(i?["type"]) == "error");
         string code = CodexDesktopAdapter.Text(error?["codexErrorInfo"] ?? error?["errorInfo"]);
-        string id = CodexDesktopAdapter.Text(latest["turnId"]);
-        if (id.Length == 0 || code is not ("usageLimitExceeded" or "serverOverloaded")) return null;
-        return new("codex-recovery:" + id, Kind, code == "usageLimitExceeded" ? "模型额度已用尽" : "模型服务拥堵",
+        string id = CodexDesktopAdapter.Text(latest["turnId"] ?? latest["id"]);
+        bool usageLimit = code is "usageLimitExceeded" or "rateLimitExceeded";
+        if (id.Length == 0 || (!usageLimit && code is not ("serverOverloaded" or "policyCapacityUnavailable" or "flexUnavailable"))) return null;
+        return new("codex-recovery:" + id, Kind, usageLimit ? "模型额度已用尽" : "模型服务拥堵",
             ErrorText(error) + "\n继续会发送一条继续任务的消息，开始新一轮；不会自动重放原始请求。", null);
     }
 }

@@ -23,6 +23,18 @@ internal static class CodexSavedSession
             result = await server.CallAsync("thread/read", new { threadId, includeTurns = false }, ct);
         }
 
+        return ValidateThread(result, expected);
+    }
+
+    internal static async Task<JsonObject> ReadMetadataAsync(ICodexMetadata server, string id, CancellationToken ct)
+    {
+        var expected = Guid.Parse(id);
+        var result = await server.CallAsync("thread/read", new { threadId = expected.ToString("D"), includeTurns = false }, ct);
+        return ValidateThread(result, expected);
+    }
+
+    private static JsonObject ValidateThread(JsonNode result, Guid expected)
+    {
         if (result["thread"] is not JsonObject thread ||
             !Guid.TryParse(CodexDesktopAdapter.Text(thread["id"]), out var actual) || actual != expected)
             throw new IOException("Codex 返回的会话与所选会话不一致。");

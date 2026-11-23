@@ -38,6 +38,7 @@ public partial class MainWindow : Window
     private ConnectionHeartbeat? heartbeat;
     private AgentInfo? agent;
     private string? createRequestId, modelSession;
+    private AgentSettings? modelSettings;
     private List<PermissionOption> modelPermissionOptions = [];
     private int modelSettingsGeneration;
     private string transcriptText = "";
@@ -47,6 +48,10 @@ public partial class MainWindow : Window
     private void ClearAttachments() { attachedFiles.Clear(); RenderAttachments(); }
 
     private Dictionary<string, string> drafts = [];
+    private readonly SubmissionRecovery submissionRecovery = new();
+    private (string Device, string Session)? SelectedSubmissionKey =>
+        activeDevice is { } device && selectedId is { } id ? (device.Identity, id) : null;
+    private bool SendUncertain => SelectedSubmissionKey is { } key && submissionRecovery.IsUncertain(key);
     private static string SettingsFile => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FurtherAgent", "settings.json");
     private readonly SavedConnectionStore connectionStore = new(Path.Combine(Path.GetDirectoryName(SettingsFile)!, "connection.json"));
     private readonly string relayAddress;
@@ -57,6 +62,10 @@ public partial class MainWindow : Window
         this.relayAddress = relayAddress;
         completionServices = notificationServices;
         InitializeComponent();
+        submissionRecovery.Changed += key =>
+        {
+            if (SelectedSubmissionKey == key) SetSessionEnabled(!actionBusy && remote?.IsConnected == true);
+        };
         ConnectServer.Text = "中继：" + relayAddress;
         InitializeCompact();
         InitializeCompactHotkey();
@@ -459,9 +468,11 @@ public partial class MainWindow : Window
             : recovering ? "网络已连接 · 正在加载会话…"
             : current is null ? (selectedId is null ? "已连接 · 请选择会话" : "正在加载会话…")
             : current.Status == "readOnly" ? "会话已加载 · 只读历史"
-            : current.Status == "inputQueued" ? "消息已进入 Codex 队列 · 等待原会话处理"
+            : SendUncertain ? "发送结果待确认 · 请核对远端会话"
+            : current.Status is ("queued" or "inputQueued") && agent?.Id == "codex" ? "消息已进入 Codex 队列 · 等待原会话处理"
             : current.Prompts.Count > 0 ? "等待你的审批或回答"
             : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
+            : current.Status == "codexStatePending" ? "会话已加载 · 执行状态待同步"
             : "会话已加载 · 等待指令（其他入口运行状态不可见）";
     }
     private void Render(SessionView view) => RenderSnapshot(view, false);
@@ -618,15 +629,18 @@ public partial class MainWindow : Window
     {
         enabled &= !preparingAttachment && activeDevice?.Recovery is null && CurrentSessionLoadFailure is null;
         UpdateHistoryActions();
-        SendButton.IsEnabled = enabled && current is not null && current.CanSend;
-        InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
-        Composer.IsEnabled = SendButton.IsEnabled || InterruptSendButton.IsEnabled;
+        bool uncertain = SendUncertain;
+        SendButton.IsEnabled = enabled && current is not null && (uncertain || current.CanSend);
+        InterruptSendButton.IsEnabled = enabled && !uncertain && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) &&
+            current?.CanStop == true && current.TurnId is not null;
+        Composer.IsEnabled = (enabled && current?.CanSend == true) || InterruptSendButton.IsEnabled;
         PasteImageButton.IsEnabled = UploadButton.IsEnabled = FilesButton.IsEnabled = enabled && current is not null && agent?.CanFiles == true;
-        ModelButton.IsEnabled = enabled && current is not null && agent?.CanConfigure == true;
+        ModelButton.IsEnabled = enabled && current is not null && (current.CanConfigure ?? agent?.CanConfigure) == true;
         ArchiveButton.IsEnabled = enabled && current is not null && agent?.CanArchive == true && current.Status is not ("active" or "running");
         DeliveryPicker.Visibility = agent?.CanChooseDelivery == true ? Visibility.Visible : Visibility.Collapsed;
         DeliveryPicker.IsEnabled = enabled;
-        SendButton.Content = DeliveryMode == "queue" ? "排队发送" : DeliveryMode == "steer" || current?.Status is "active" or "running" ? "追加指令" : "发送";
+        SendButton.Content = uncertain ? "核对发送" : DeliveryMode == "queue" || current?.CanSteer == false ? "排队发送"
+            : DeliveryMode == "steer" || current?.Status is "active" or "running" ? "追加指令" : "发送";
         StopButton.IsEnabled = enabled && (current?.CanStop ?? current?.Status == "active");
     }
     private async Task ActionAsync(Func<RpcPeer, Task> action)
@@ -639,6 +653,10 @@ public partial class MainWindow : Window
     }
     private async void Send_Click(object sender, RoutedEventArgs e)
     {
+        if (current is null || actionBusy) return;
+        var submissionKey = SelectedSubmissionKey;
+        if (submissionKey is { } key && submissionRecovery.PromptIfUncertain(this, key)) return;
+        if (!current.CanSend) return;
         string text = Composer.Text;
         if (string.IsNullOrWhiteSpace(text) && attachedFiles.Count == 0) return;
         var ids = attachedFiles.Select(f => f.Id).ToArray(); string id = current!.Id;
@@ -653,8 +671,11 @@ public partial class MainWindow : Window
             if (await Task.WhenAny(submission, Task.Delay(TimeSpan.FromSeconds(12))) != submission)
                 StatusBar.Text = "远端确认较慢，仍在等待原请求；请勿重复发送。";
             try { await submission; }
-            catch (TimeoutException)
-            { throw new IOException("远端确认超时，发送结果未知，不代表发送失败。原请求可能仍在处理；程序没有重发，请先查看会话结果，不要重复提交。"); }
+            catch (SubmissionUncertainException)
+            {
+                if (submissionKey is { } pending) submissionRecovery.MarkUncertain(pending);
+                throw;
+            }
             if (sentDrafts.GetValueOrDefault(id) == text) sentDrafts[id] = "";
             sentAttachments.RemoveAll(f => ids.Contains(f.Id));
             if (remote == connection && selectedId == id)
@@ -666,15 +687,24 @@ public partial class MainWindow : Window
     }
     private async void InterruptSend_Click(object sender, RoutedEventArgs e)
     {
-        if (current is null || agent is null) return;
+        if (current is null || agent is null || SendUncertain) return;
+        var submissionKey = SelectedSubmissionKey;
         var target = current; var selectedAgent = agent; string text = Composer.Text;
         var connection = remote; var sentDrafts = drafts; var sentAttachments = attachedFiles; string id = target.Id;
         var ids = attachedFiles.Select(f => f.Id).ToArray();
         if (string.IsNullOrWhiteSpace(text) && ids.Length == 0) return;
         await ActionAsync(async peer =>
         {
-            await SessionActions.InterruptAndSendAsync(peer, selectedAgent, target, text, ids,
-                phase => { operationPhase = phase; StatusBar.Text = phase; RenderConnectionHealth(); });
+            try
+            {
+                await SessionActions.InterruptAndSendAsync(peer, selectedAgent, target, text, ids,
+                    phase => { operationPhase = phase; StatusBar.Text = phase; RenderConnectionHealth(); });
+            }
+            catch (SubmissionUncertainException)
+            {
+                if (submissionKey is { } pending) submissionRecovery.MarkUncertain(pending);
+                throw;
+            }
             if (sentDrafts.GetValueOrDefault(id) == text) sentDrafts[id] = "";
             sentAttachments.RemoveAll(f => ids.Contains(f.Id));
             if (remote == connection && selectedId == id)
@@ -873,6 +903,7 @@ public partial class MainWindow : Window
         if (remote is null || current is null) return;
         var connection = remote; string id = current.Id;
         int generation = ++modelSettingsGeneration;
+        modelSettings = null;
         CloseOverlays(); ModelOverlay.Visibility = Visibility.Visible; ModelError.Text = ""; ModelHint.Text = "正在读取远端设置…";
         ApplyPermissionsButton.IsEnabled = false; PermissionPanel.Visibility = Visibility.Collapsed;
         ApplyModelButton.IsEnabled = false; ModelPicker.IsEnabled = ProviderText.IsEnabled = ModePicker.IsEnabled = ReasoningPicker.IsEnabled = false;
@@ -888,7 +919,7 @@ public partial class MainWindow : Window
     }
     private void ApplyModelSettings(AgentSettings settings, string id)
     {
-            loadingSettings = true; modelSession = id;
+            loadingSettings = true; modelSession = id; modelSettings = settings;
             modelPermissionOptions = settings.PermissionOptions ?? (agent?.Id == "codex" ? CodexPermissions.Values.Select((value, index) => new PermissionOption(value, CodexPermissions.Labels[index])).ToList() : []);
             PermissionPanel.Visibility = settings.CanChangePermissions && modelPermissionOptions.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
             PermissionPicker.ItemsSource = modelPermissionOptions;
@@ -898,37 +929,45 @@ public partial class MainWindow : Window
             PermissionHint.Text = "当前：" + (permission?.Label ?? settings.Permission ?? "未知") + "。空闲时修改，后续轮次生效。" + (string.IsNullOrEmpty(permission?.Description) ? "" : "\n" + permission.Description);
             ApplyPermissionsButton.IsEnabled = settings.CanChangePermissions && modelPermissionOptions.Count > 0;
             ModelPicker.ItemsSource = settings.Models; ModelPicker.Text = settings.Model; ProviderText.Text = settings.Provider;
-            ModelPicker.IsEditable = !settings.RequireModelSelection;
+            ModelPicker.IsEditable = settings.CanChangeModel && !settings.RequireModelSelection;
             ModelPicker.SelectedItem = settings.Models.FirstOrDefault(m => m.Id == settings.Model);
-            ReasoningLabel.Visibility = ReasoningPicker.Visibility = settings.CanChangeReasoning ? Visibility.Visible : Visibility.Collapsed;
+            ReasoningLabel.Visibility = ReasoningPicker.Visibility = settings.CanChangeReasoning || !string.IsNullOrEmpty(settings.ReasoningEffort)
+                ? Visibility.Visible : Visibility.Collapsed;
             UpdateReasoning(settings.ReasoningEffort);
             UsageText.Text = settings.Usage ?? "此接入端暂不提供套餐限额。";
             ModePicker.SelectedIndex = settings.Mode == "plan" ? 1 : 0;
-            ModelPicker.IsEnabled = settings.CanChangeModel; ProviderText.IsEnabled = settings.CanChangeModel && agent?.Id == "hermes";
+            ModelPicker.IsEnabled = settings.CanChangeModel || settings.Models.Count > 0;
+            ProviderText.IsEnabled = settings.CanChangeModel && agent?.Id == "hermes";
             ModePicker.IsEnabled = settings.CanChangeMode; ModelHint.Text = settings.Detail;
-            ApplyModelButton.IsEnabled = (settings.CanChangeModel || settings.CanChangeMode) && (!settings.RequireModelSelection || ModelPicker.SelectedItem is ModelOption);
+            UpdateModelApplyButton();
         loadingSettings = false;
     }
     private void ModelSelection_Changed(object sender, SelectionChangedEventArgs e)
     {
-        if (!loadingSettings && ModelPicker.SelectedItem is ModelOption model)
+        if (!loadingSettings && modelSettings?.CanChangeModel == true && ModelPicker.SelectedItem is ModelOption model)
         {
             ProviderText.Text = model.Provider; UpdateReasoning(ReasoningPicker.SelectedItem as string);
-            ApplyModelButton.IsEnabled = true;
+            UpdateModelApplyButton();
         }
     }
+    private void UpdateModelApplyButton() =>
+        ApplyModelButton.IsEnabled = modelSettings is { } settings &&
+            (settings.CanChangeModel || settings.CanChangeMode || settings.CanChangeReasoning) &&
+            (!settings.RequireModelSelection || !settings.CanChangeModel || ModelPicker.SelectedItem is ModelOption);
+
     private void UpdateReasoning(string? preferred)
     {
         var model = ModelPicker.SelectedItem as ModelOption;
-        var efforts = model?.ReasoningEfforts ?? [];
+        List<string> efforts = modelSettings?.CanChangeReasoning == true ? model?.ReasoningEfforts ?? []
+            : preferred is { Length: > 0 } ? [preferred] : [];
         ReasoningPicker.ItemsSource = efforts;
         ReasoningPicker.SelectedItem = preferred is not null && efforts.Contains(preferred) ? preferred : model?.DefaultReasoningEffort;
         if (ReasoningPicker.SelectedIndex < 0 && efforts.Count > 0) ReasoningPicker.SelectedIndex = 0;
-        ReasoningPicker.IsEnabled = efforts.Count > 0;
+        ReasoningPicker.IsEnabled = modelSettings?.CanChangeReasoning == true && efforts.Count > 0;
     }
     private async void ApplyModel_Click(object sender, RoutedEventArgs e)
     {
-        if (remote is null || current?.Id != modelSession || actionBusy) return;
+        if (remote is null || current?.Id != modelSession || actionBusy || !ApplyModelButton.IsEnabled) return;
         ApplyModelButton.IsEnabled = false; ModelError.Text = "";
         await ActionAsync(async peer =>
         {
@@ -940,11 +979,12 @@ public partial class MainWindow : Window
             }
             catch (Exception ex) { ModelError.Text = ex.Message; throw; }
         });
-        ApplyModelButton.IsEnabled = true;
+        UpdateModelApplyButton();
     }
     private async void ApplyPermissions_Click(object sender, RoutedEventArgs e)
     {
-        if (remote is null || current?.Id != modelSession || actionBusy || PermissionPicker.SelectedItem is not PermissionOption selectedPermission) return;
+        if (remote is null || current?.Id != modelSession || actionBusy || modelSettings?.CanChangePermissions != true ||
+            PermissionPicker.SelectedItem is not PermissionOption selectedPermission) return;
         string permission = selectedPermission.Value;
         ModelError.Text = "";
         await ActionAsync(async peer =>

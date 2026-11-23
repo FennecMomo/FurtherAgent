@@ -15,7 +15,7 @@ foreach ($component in @('Host', 'Cli')) {
     if ($LASTEXITCODE -ne 0) { throw "$component publish failed." }
 }
 New-Item -ItemType Directory -Force (Join-Path $releaseDir 'scripts'), (Join-Path $releaseDir 'plugins/furtheragent-dsh') | Out-Null
-Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-DshBridge.ps1') -Destination (Join-Path $releaseDir 'scripts') -Force
+Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Install-DshBridge.ps1'), (Join-Path $PSScriptRoot 'Start-CodexSharedDesktop.ps1') -Destination (Join-Path $releaseDir 'scripts') -Force
 Copy-Item -Path (Join-Path $repoRoot 'plugins/furtheragent-dsh/*') -Destination (Join-Path $releaseDir 'plugins/furtheragent-dsh') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'README.md'), (Join-Path $repoRoot 'docs/Stable-Pairing.md'), (Join-Path $repoRoot 'LICENSE') -Destination $releaseDir -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'Start-LocalServer.ps1') -Destination $releaseDir -Force
@@ -32,6 +32,7 @@ $zip = Join-Path $repoRoot "artifacts/release/FurtherAgent-$version.zip"
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Multi-Device-Connections.md'), (Join-Path $repoRoot 'docs/Hermes-Compatibility-Update.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Completion-Notifications.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Codex-Interaction-And-Permissions-QA.md') -Destination (Join-Path $releaseDir 'docs') -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Codex-Shared-App-Server.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Background-Connection-And-State.md'), (Join-Path $repoRoot 'docs/Pending-Tests.md'), (Join-Path $repoRoot 'docs/Network-Connection-Design.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Install-Direct-Network-Prompt.md') -Destination (Join-Path $releaseDir 'docs') -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/Text-Delta-Sync.md') -Destination (Join-Path $releaseDir 'docs') -Force

@@ -60,6 +60,8 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
         public SessionCompletionTracker CompletionTracker { get; } = new();
         private readonly object stateGate = new();
         private readonly HashSet<string> answered = [];
+        private long viewRevision;
+        public long ViewRevision => Interlocked.Read(ref viewRevision);
         private readonly Func<IAgentAdapter> factory;
         private readonly string id;
         private volatile bool failed;
@@ -78,6 +80,11 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
             adapter.SetObserved(observers > 0);
             adapter.Changed += view => { if (ReferenceEquals(Adapter, adapter) && view.Id == id) Publish(view); };
             adapter.Faulted += reason => { if (ReferenceEquals(Adapter, adapter)) { failed = true; Faulted?.Invoke(reason); } };
+            if (adapter is CodexDesktopAdapter)
+                adapter.Completed += completion =>
+                {
+                    if (ReferenceEquals(Adapter, adapter) && completion.SessionId == id) Completed?.Invoke(completion);
+                };
         }
         public async Task RecoverAsync()
         {
@@ -86,12 +93,14 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
             if (!failed || Adapter is not CodexDesktopAdapter) return;
             await Adapter.DisposeAsync(); Open(); Initialized = false;
         }
-        public SessionView Publish(SessionView view)
+        public SessionView Publish(SessionView view, long? expectedRevision = null)
         {
             lock (stateGate)
             {
+                if (expectedRevision is long expected && viewRevision != expected && View is { } latest) return latest;
                 View = view with { Prompts = view.Prompts.Where(p => !answered.Contains(p.Id)).ToList() };
-                var completion = CompletionTracker.Observe(view);
+                Interlocked.Increment(ref viewRevision);
+                var completion = Adapter is CodexDesktopAdapter { ReportsCompletion: true } ? null : CompletionTracker.Observe(view);
                 if (completion is not null) Completed?.Invoke(completion);
                 Changed?.Invoke(View); return View;
             }
@@ -132,14 +141,15 @@ internal sealed class SharedAgentHub(Func<IAgentAdapter> factory) : IAsyncDispos
             {
                 await next.RecoverAsync();
                 if (!next.Initialized) { await Probe(next.Adapter, ct); next.Initialized = true; }
-                var view = next.Publish(await next.Adapter.AttachAsync(id, ct));
+                long revision = next.ViewRevision;
+                var attached = await next.Adapter.AttachAsync(id, ct);
                 if (!ReferenceEquals(selected, next))
                 {
                     Unsubscribe(); selected = next;
-                    next.Observe(true);
                     next.Changed += OnChanged; next.Faulted += OnFaulted;
+                    next.Observe(true);
                 }
-                return view;
+                return next.Publish(attached, next.Adapter is CodexDesktopAdapter { ReportsCompletion: true } ? revision : null);
             }
             finally { next.Operations.Release(); }
         }

@@ -9,13 +9,15 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private string cacheScope = "";
     private bool paging, readingOlder;
     private string? selecting;
+    private SessionView? selectingUpdate;
     private SessionView? latest;
     public bool HasOlder => View?.History?.Start > 0;
     public bool ReadingOlder => readingOlder;
     private static IReadOnlyList<SessionInfo> Sorted(JsonNode? node) => Json.Read<SessionInfo[]>(node).OrderByDescending(s => s.SortTime).ThenBy(s => s.Id).ToArray();
     private void Accept(SessionView incoming, bool reset = false)
     {
-        if (incoming.Id != View?.Id || incoming.Model is { } model && Settings is { } settings && settings.Model != model)
+        if (incoming.Id != View?.Id || incoming.CanConfigure != View?.CanConfigure || incoming.CanSteer != View?.CanSteer ||
+            incoming.Model is { } model && Settings is { } settings && settings.Model != model)
             Settings = null;
         // Older Codex hosts omit files in snapshots. Preserve the separately queried list.
         if (incoming.OutputFiles is null && View?.Id == incoming.Id)
@@ -65,6 +67,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public event Action<SessionCompletion>? Completed;
     private readonly HashSet<string> seenCompletions = [];
     private readonly Queue<string> completionOrder = new();
+    private readonly HashSet<(string Scope, string Session)> uncertainSends = [];
     public AgentSettings? Settings { get; private set; }
     public AgentInfo? Agent { get; private set; }
     public SessionView? View { get; private set; }
@@ -76,10 +79,14 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public bool HasConnection => remote is not null;
     public AgentIndicator Indicator => AgentIndicator.From(Connected, Connecting, View);
     public bool Busy { get; private set; }
-    public bool SendUncertain { get; private set; }
+    public bool CanConfigure => View is { } view && (view.CanConfigure ?? Agent?.CanConfigure) == true;
+    public bool SendUncertain => View is { } view && uncertainSends.Contains((cacheScope, view.Id));
     public string Heartbeat => heartbeat is null ? Status : $"中继 {heartbeat.Relay.State} · 设备 {heartbeat.Host.State}";
     public string Traffic => remote is null ? "" : $"↓ {remote.ReceivedBytes / 1024d:N0} KB  ↑ {remote.SentBytes / 1024d:N0} KB";
-    public void AcknowledgeUncertain() { SendUncertain = false; Notify(); }
+    public void AcknowledgeUncertain()
+    {
+        if (View is { } view && uncertainSends.Remove((cacheScope, view.Id))) Notify();
+    }
     private void Notify() => Changed?.Invoke();
     private RpcPeer Peer => remote is { IsConnected: true } r ? r.Peer : throw new IOException("连接已断开，请等待恢复后再操作。");
 
@@ -97,7 +104,6 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         selected = null; View = null; Settings = null; Agent = null; Sessions = []; pendingCreate = null;
         latest = null; readingOlder = false;
         cacheScope = (profileServer ?? url).TrimEnd('/').ToLowerInvariant() + "\n" + code.Replace("-", "").Trim().ToUpperInvariant();
-        SendUncertain = false;
         if (string.IsNullOrWhiteSpace(code)) throw new ArgumentException("请输入远端显示的授权码。");
         var owner = new RemoteDevice();
         var client = new RegistryClient(url);
@@ -120,7 +126,12 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             }
             if (method != "session" || node is null) return;
             var incoming = Json.Read<SessionView>(node);
-            dispatch(() => { if (remote == owner && selecting is null && incoming.Id == selected) { Accept(incoming); Notify(); } });
+            dispatch(() =>
+            {
+                if (remote != owner) return;
+                if (incoming.Id == selecting) selectingUpdate = incoming;
+                else if (selecting is null && incoming.Id == selected) { Accept(incoming); Notify(); }
+            });
         };
         owner.ConnectionChanged += (_, message) => dispatch(() =>
         {
@@ -202,11 +213,12 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             { View = saved with { CanSend = false, CanStop = false, Prompts = [] }; Status = "显示本地缓存 · 正在同步最新状态…"; Notify(); }
             var view = Json.Read<SessionView>(await SessionHistory.ReadAsync(Peer, "attach", new { id }));
             if (revision != generation) return;
-            selected = id; Settings = null; Accept(view, true); Status = "已同步最新记录";
+            selected = id; Settings = null; Accept(selectingUpdate ?? view, true); Status = "已同步最新记录";
+            selecting = null; selectingUpdate = null;
             await RefreshFilesCoreAsync();
         }
         catch { View = oldView; throw; }
-        finally { selecting = null; }
+        finally { selecting = null; selectingUpdate = null; }
     });
 
     public Task CreateAsync() => Run(async () =>
@@ -226,6 +238,7 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
         if (View is not { CanSend: true } view) throw new IOException("当前会话暂不可发送。");
         if (string.IsNullOrWhiteSpace(text) && fileIds.Count == 0) throw new ArgumentException("请输入内容或添加文件。");
         if (text.Length > 100000) throw new ArgumentException("消息过长。");
+        if (Agent?.CanFiles != true && fileIds.Count > 0) throw new NotSupportedException("此 Agent 不支持文件。");
         var peer = Peer;
         try
         {
@@ -233,13 +246,15 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
             if (Agent?.CanFiles == true) await new FileTransferClient(peer).SendAsync(view.Id,
                 string.IsNullOrWhiteSpace(text) ? "请查看所附文件。" : text, fileIds, responseTimeout: TimeSpan.FromMinutes(3));
             else
-            {
-                if (fileIds.Count > 0) throw new NotSupportedException("此 Agent 不支持文件。");
                 await peer.CallAsync("send", new { text }, responseTimeout: TimeSpan.FromMinutes(3));
-            }
-            Status = "已收到提交确认 · 等待 Agent 输出";
+            Status = view.CanSteer == false ? "消息已进入远端队列" : "已收到提交确认 · 等待 Agent 输出";
         }
-        catch { SendUncertain = true; Status = "提交结果未知 · 草稿已保留，请先核对历史"; throw; }
+        catch
+        {
+            uncertainSends.Add((cacheScope, view.Id));
+            Status = "提交结果未知 · 草稿已保留，请先核对历史";
+            throw;
+        }
     });
 
     public Task StopAsync() => Run(async () =>
@@ -314,18 +329,23 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     public async Task<AgentSettings> GetSettingsAsync()
     {
         AgentSettings? settings = null;
-        await Run(async () => Settings = settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null, responseTimeout: TimeSpan.FromMinutes(1))));
+        await Run(async () =>
+        {
+            if (!CanConfigure) throw new NotSupportedException("此会话暂不提供设置。");
+            Settings = settings = Json.Read<AgentSettings>(await Peer.CallAsync("settings", null, responseTimeout: TimeSpan.FromMinutes(1)));
+        });
         return settings!;
     }
     public Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort = null) => Run(async () =>
     {
-        if (Agent?.CanConfigure != true) throw new NotSupportedException("远端不支持设置。");
+        if (!CanConfigure || Settings is { CanChangeModel: false, CanChangeMode: false, CanChangeReasoning: false })
+            throw new NotSupportedException("此会话的设置可查看，请在远端修改。");
         await Peer.CallAsync("configure", new { model, provider, mode, reasoningEffort });
         if (Settings is { } current) Settings = current with { Model = model, Provider = provider, Mode = mode, ReasoningEffort = reasoningEffort };
     });
     public Task ConfigurePermissionsAsync(string permission) => Run(async () =>
     {
-        if (Settings?.CanChangePermissions != true) throw new NotSupportedException("请升级 Codex 接入端以配置会话权限。");
+        if (!CanConfigure || Settings?.CanChangePermissions != true) throw new NotSupportedException("当前会话无法从此端修改权限。");
         await Peer.CallAsync("configure-permissions", new { permission });
         if (Settings is { } current) Settings = current with { Permission = permission };
     });

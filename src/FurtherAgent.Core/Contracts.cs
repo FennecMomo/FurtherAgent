@@ -50,7 +50,10 @@ public record PendingPrompt(string Id, string Kind, string Title, string Detail,
 public record SessionView(string Id, string Title, string Cwd, string Status, string? TurnId,
     List<ChatEntry> Messages, List<PendingPrompt> Prompts,
     string? StatusDetail = null, bool CanSend = true, bool? CanStop = null, string? Model = null, string? Mode = null, int? PendingMessages = null,
-    List<RemoteFile>? OutputFiles = null, HistoryWindow? History = null);
+    List<RemoteFile>? OutputFiles = null, HistoryWindow? History = null, bool? CanSteer = null, bool? CanConfigure = null);
+
+public sealed class SubmissionUncertainException(string message, Exception? innerException = null)
+    : IOException(message, innerException);
 
 public record HistoryWindow(string Revision, int Start, int Total);
 public record HistoryPage(string Session, string Revision, int Start, int End, int Total, List<ChatEntry> Messages);

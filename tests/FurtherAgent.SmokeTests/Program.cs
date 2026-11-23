@@ -68,6 +68,8 @@ if (args.Contains("--codex-activation-checks")) { await CodexActivationChecks.Ru
 if (args.Contains("--codex-activation-live")) { await CodexActivationChecks.RunLive(Check); return; }
 if (args.Contains("--codex-saved-session-checks")) { await CodexSavedSessionChecks.Run(Check); return; }
 if (args.Contains("--codex-queue-checks")) { await CodexQueueChecks.Run(Check); return; }
+if (args.Contains("--codex-live-checks")) { await CodexLiveChecks.Run(Check); return; }
+if (args.Contains("--rpc-scheduling-checks")) { await RpcSchedulingChecks.Run(Check); return; }
 if (args.Length == 2 && args[0] == "--codex-history-live") { await CodexHistoryChecks.RunLive(args[1], Check); return; }
 if (args.Length == 4 && args[0] == "--paging-live") { await PagingChecks.RunLive(args[1], args[2], args[3], Check); return; }
 async Task Reject(Func<Task> action, string name)

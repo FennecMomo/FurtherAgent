@@ -244,6 +244,11 @@ public sealed class DeviceHost : IAsyncDisposable
             adapter.Changed += view => updates.Writer.TryWrite(view);
             adapter.Faulted += message => { Status?.Invoke(message); socket.Abort(); };
             string? attachedSession = null;
+            TaskCompletionSource? attaching = null;
+            peer.ResponseSent += method =>
+            {
+                if (method == "attach") Interlocked.Exchange(ref attaching, null)?.TrySetResult();
+            };
             SessionView WithFiles(SessionView view)
             {
                 view = OperationSummary.ForTransport(view);
@@ -253,6 +258,7 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             async Task<JsonNode> Attach(string id, CancellationToken token)
             {
+                Volatile.Write(ref attaching, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
                 var view = WithFiles(await adapter.AttachAsync(id, token));
                 if (adapter.Info.Id == "hermes" || adapter.Info.Id == "dsh" && adapter.Info.CanFiles)
                     await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
@@ -330,6 +336,8 @@ public sealed class DeviceHost : IAsyncDisposable
                 {
                     await foreach (var view in updates.Reader.ReadAllAsync(pumping.Token))
                     {
+                        while (Volatile.Read(ref attaching) is { } pendingAttach)
+                            await pendingAttach.Task.WaitAsync(pumping.Token);
                         if (view.Id != attachedSession) continue;
                         int mode = Volatile.Read(ref incremental);
                         if (mode != lastIncremental) { sync = new SessionSyncEncoder(textDeltas: mode >= 2); lastIncremental = mode; }

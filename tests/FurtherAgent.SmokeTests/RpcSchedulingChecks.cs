@@ -34,6 +34,48 @@ static class RpcSchedulingChecks
         await nextTransport.Input.Writer.WriteAsync(new JsonObject { ["id"] = next["id"]!.ToString(), ["result"] = new JsonObject { ["ok"] = true } });
         check((await forwarded)?["ok"]?.GetValue<bool>() == true && !nextTransport.Output.Reader.TryRead(out _) && !transport.Output.Reader.TryRead(out _),
             "stale RPC reference submits exactly once on the new route");
+
+        await SubmissionReceiptsAsync(nextPeer, nextTransport, check);
+    }
+
+    private static async Task SubmissionReceiptsAsync(RpcPeer peer, ProbeTransport transport, Action<bool, string> check)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        const string unresolved = "fixture queue acknowledgement missing";
+        peer.Handler = (_, _, _) => throw new SubmissionUncertainException(unresolved);
+        await transport.Input.Writer.WriteAsync(Json.Node(new { id = "server-side", method = "send" }), deadline.Token);
+        var response = await transport.Output.Reader.ReadAsync(deadline.Token);
+        check(response["error"]?.ToString() == unresolved && response["errorCode"]?.ToString() == "submission-uncertain",
+            "RPC preserves an old client's error text and sends a typed uncertain submission code");
+
+        var send = peer.CallAsync("send", null, deadline.Token);
+        response["id"] = (await transport.Output.Reader.ReadAsync(deadline.Token))["id"]!.GetValue<string>();
+        await transport.Input.Writer.WriteAsync(response, deadline.Token);
+        check(await IsUncertainAsync(send), "RPC restores the typed remote uncertain outcome");
+
+        var rejection = peer.CallAsync("send", null, deadline.Token);
+        string rejectedId = (await transport.Output.Reader.ReadAsync(deadline.Token))["id"]!.GetValue<string>();
+        await transport.Input.Writer.WriteAsync(Json.Node(new { id = rejectedId, error = "fixture queue rejected" }), deadline.Token);
+        bool rejected = false;
+        try { await rejection; }
+        catch (IOException ex) when (ex is not SubmissionUncertainException) { rejected = ex.Message == "fixture queue rejected"; }
+        check(rejected, "an ordinary remote rejection stays distinct from uncertain delivery");
+
+        var timedOut = peer.CallAsync("send-files", null, deadline.Token, responseTimeout: TimeSpan.FromMilliseconds(100));
+        await transport.Output.Reader.ReadAsync(deadline.Token);
+        check(await IsUncertainAsync(timedOut) && !transport.Output.Reader.TryRead(out _),
+            "lost send response marks the single submission uncertain without replay");
+
+        var disconnected = peer.CallAsync("send", null, deadline.Token);
+        await transport.Output.Reader.ReadAsync(deadline.Token);
+        transport.Input.Writer.TryComplete();
+        check(await IsUncertainAsync(disconnected), "disconnect after a send frame leaves its outcome uncertain");
+    }
+
+    private static async Task<bool> IsUncertainAsync(Task submission)
+    {
+        try { await submission; return false; }
+        catch (SubmissionUncertainException) { return true; }
     }
     private sealed class UnpumpedContext : SynchronizationContext
     {

@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.17.0 / Android 0.14.4** Windows 可用共享 App Server 模式连接新版 Codex 的原会话，恢复实时回复、停止、审批、提问和会话设置。原生队列兼容模式改进了历史读取、完成通知和回执处理。[B 端启动方式](docs/Codex-Shared-App-Server.md)
+
 **0.16.9** 重新打开已读取过的 Codex 会话时，接入端先返回内存中的会话快照，再在后台刷新历史和原生队列。[验证记录](docs/Pending-Tests.md)
 
 **0.16.8** 新版 Codex 桌面缺少旧实时管道时，接入端支持向原会话发送文字，消息由 Codex 原生队列接收并交给原会话执行。停止和审批仍通过 Codex 桌面操作。[验证记录](docs/Pending-Tests.md)

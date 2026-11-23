@@ -11,40 +11,45 @@ internal sealed class ModelPage : ContentPage
         var model = new Entry { Text = settings.Model, Placeholder = "模型 ID", IsEnabled = settings.CanChangeModel };
         var provider = new Entry { Text = settings.Provider, Placeholder = "提供商（可选）", IsEnabled = settings.CanChangeModel };
         var mode = new Picker { Title = "执行模式", ItemsSource = new[] { "Build", "Plan" }, SelectedIndex = settings.Mode == "plan" ? 1 : 0, IsEnabled = settings.CanChangeMode };
-        var catalog = new Picker { Title = "选择远端可用模型", ItemsSource = settings.Models.Select(m => m.Label + " · " + m.Provider).ToArray(), IsEnabled = settings.CanChangeModel };
+        var catalog = new Picker { Title = settings.CanChangeModel ? "选择远端可用模型" : "查看远端可用模型",
+            ItemsSource = settings.Models.Select(m => m.Label + " · " + m.Provider).ToArray(), IsEnabled = settings.Models.Count > 0 };
         model.IsVisible = !settings.RequireModelSelection;
         provider.IsEnabled = settings.CanChangeModel && !settings.RequireModelSelection;
-        var reasoning = new Picker { Title = "思考强度", IsVisible = settings.CanChangeReasoning };
+        var reasoning = new Picker { Title = "思考强度", IsVisible = settings.CanChangeReasoning || !string.IsNullOrEmpty(settings.ReasoningEffort) };
+        Button? save = null;
+        bool CanApply() => (settings.CanChangeModel || settings.CanChangeMode || settings.CanChangeReasoning) &&
+            (!settings.RequireModelSelection || !settings.CanChangeModel || catalog.SelectedIndex >= 0);
         void UpdateReasoning(string? preferred)
         {
             var selected = catalog.SelectedIndex >= 0 ? settings.Models[catalog.SelectedIndex] : null;
-            var efforts = selected?.ReasoningEfforts ?? [];
-            reasoning.ItemsSource = efforts; reasoning.IsEnabled = efforts.Count > 0;
+            List<string> efforts = settings.CanChangeReasoning ? selected?.ReasoningEfforts ?? [] : preferred is { Length: > 0 } ? [preferred] : [];
+            reasoning.ItemsSource = efforts; reasoning.IsEnabled = settings.CanChangeReasoning && efforts.Count > 0;
             reasoning.SelectedItem = preferred is not null && efforts.Contains(preferred) ? preferred : selected?.DefaultReasoningEffort;
             if (reasoning.SelectedIndex < 0 && efforts.Count > 0) reasoning.SelectedIndex = 0;
         }
         catalog.SelectedIndexChanged += (_, _) =>
         {
-            if (catalog.SelectedIndex < 0) return;
+            if (!settings.CanChangeModel || catalog.SelectedIndex < 0) return;
             var item = settings.Models[catalog.SelectedIndex]; model.Text = item.Id; provider.Text = item.Provider;
             UpdateReasoning(reasoning.SelectedItem as string);
+            if (save is not null) save.IsEnabled = CanApply();
         };
         catalog.SelectedIndex = settings.Models.FindIndex(m => m.Id == settings.Model);
         UpdateReasoning(settings.ReasoningEffort);
         var note = Ui.Text(settings.Detail, 13);
-        Button? save = null;
         save = Ui.Button("应用到此会话", async () =>
         {
+            if (!CanApply()) return;
             save!.IsEnabled = false;
             try
             {
-                if (settings.RequireModelSelection && catalog.SelectedIndex < 0) throw new InvalidOperationException("请先选择远端可用模型。");
                 await session.ConfigureAsync(model.Text ?? "", provider.Text ?? "", mode.SelectedIndex == 1 ? "plan" : "default", reasoning.IsEnabled ? reasoning.SelectedItem as string : null);
                 await Navigation.PopAsync();
             }
             catch (Exception ex) { await DisplayAlertAsync("设置未完成", ex.Message, "知道了"); }
-            finally { save.IsEnabled = true; }
+            finally { save.IsEnabled = CanApply(); }
         }, true);
+        save.IsEnabled = CanApply();
         var stack = new VerticalStackLayout { Padding = 24, Spacing = 18,
             Children = { Ui.Text("由远端 Agent 决定可用能力", 21, true), note, catalog, model, provider, reasoning, mode,
                 Ui.Text(settings.Usage ?? "此接入端暂不提供套餐限额。", 13),

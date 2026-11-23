@@ -14,6 +14,7 @@ public partial class MainWindow
     {
         public string Server { get; } = server;
         public string Code { get; } = code;
+        public string Identity { get; } = DeviceConnectionPool<DeviceContext>.Identity(server, code);
         public string Name = "";
         public RegistryClient Registry { get; } = new(server);
         public RemoteDevice Remote { get; } = new();

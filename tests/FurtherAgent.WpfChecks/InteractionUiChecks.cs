@@ -197,10 +197,31 @@ internal static class InteractionUiChecks
             Require((string)miniType.GetField("sessionId", Private)!.GetValue(mini)! == "history" &&
                     (string)miniType.GetField("sessionId", Private)!.GetValue(secondMini)! == "another",
                 "each mini retains its own session subscription after main switches");
+            Set("selectedId", "history");
+            Invoke("Render", Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = "history" })));
+            adapter.Publish(latest with { Status = "queued", CanSteer = false });
+            var mainSend = Find<Button>("SendButton");
+            await Until(() => (string)mainSend.Content == "排队发送" && miniStatus.Text == "排队中");
+            Require((string)miniSend.Content == "排队" && AgentIndicator.From(true, false, latest with { Status = "queued" }).Label == "排队中",
+                "native queued-only capabilities label both send buttons and the existing queued badge correctly");
+            adapter.Acknowledgement = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            composer.Text = "需要核对的发送";
+            Invoke("Send_Click", window, new RoutedEventArgs());
+            await Until(() => adapter.Sends == 8);
+            adapter.Acknowledgement.SetException(new SubmissionUncertainException("fixture acknowledgement missing"));
+            await Until(() => !Busy() && (string)mainSend.Content == "核对发送");
+            Require(composer.Text == "需要核对的发送" && miniComposer.Text == composer.Text &&
+                (string)miniSend.Content == "核对" && adapter.Sends == 8 && secondStatus.Text == "空闲",
+                "one ambiguous send keeps the draft and requires review in both windows for only that session");
             foreach (var floating in minis) floating.Close();
             Set("selectedId", "history");
             Invoke("Render", Json.Read<SessionView>(await remote.Peer.CallAsync("attach", new { id = "history" })));
             var settings = Json.Read<AgentSettings>(await remote.Peer.CallAsync("settings", null));
+            Invoke("ApplyModelSettings", settings with { Models = [new("model-a", "openai", "A"), new("model-b", "openai", "B")],
+                CanChangePermissions = false }, "history");
+            Find<ComboBox>("ModelPicker").SelectedIndex = 1;
+            Require(!Find<Button>("ApplyModelButton").IsEnabled && !Find<Button>("ApplyPermissionsButton").IsEnabled,
+                "browsing a read-only model catalogue leaves both settings mutations disabled");
             Invoke("ApplyModelSettings", settings, "history");
             Find<ComboBox>("PermissionPicker").SelectedIndex = 0;
             Invoke("ApplyPermissions_Click", window, new RoutedEventArgs());

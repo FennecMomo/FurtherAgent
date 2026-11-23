@@ -38,7 +38,7 @@ internal static class Ui
     {
         string name = action switch
         {
-            "会话" => "chats", "连接" or "连接并查看会话" => "link", "发送 ↑" => "send",
+            "会话" => "chats", "连接" or "连接并查看会话" => "link", "发送 ↑" or "追加指令" => "send", "排队发送" => "clock",
             "停止" or "结束" => "stop", "附件" => "attach", "模型" => "model", "语音" => "mic",
             "核对" => "check", "等待…" => "clock", "取消" or "取消下载" => "close", "刷新" or "检查更新" => "refresh",
             "新建会话" => "plus", "归档当前" => "archive", "保存" or "应用到此会话" => "save",

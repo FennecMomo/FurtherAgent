@@ -19,6 +19,8 @@ internal sealed class MiniWindow : Window
     private readonly Func<string> readDraft;
     private readonly Action<string> writeDraft;
     private readonly Action showMain;
+    private readonly SubmissionRecovery submissionRecovery;
+    private readonly (string Device, string Session) submissionKey;
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim recoveryWake = new(0, 1);
     private readonly RegistryClient? sharedRegistry;
@@ -94,12 +96,20 @@ internal sealed class MiniWindow : Window
     public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
         string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade,
         RemoteDevice? sharedRemote, RegistryClient? sharedRegistry)
+        : this(server, code, sessionId, sessionTitle, initialView, positionPath, readDraft, writeDraft, showMain,
+            shortcutSlot, cascade, sharedRemote, sharedRegistry, new SubmissionRecovery(), server) { }
+
+    public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
+        string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade,
+        RemoteDevice? sharedRemote, RegistryClient? sharedRegistry, SubmissionRecovery submissionRecovery, string deviceIdentity)
     {
         this.server = server; this.code = code; this.sessionId = sessionId; this.positionPath = positionPath;
         this.sharedRemote = sharedRemote; this.sharedRegistry = sharedRegistry;
         if ((sharedRemote is null) != (sharedRegistry is null)) throw new ArgumentException("共享连接和注册客户端必须同时提供。");
         if (string.IsNullOrWhiteSpace(sessionTitle)) sessionTitle = sessionId;
         this.readDraft = readDraft; this.writeDraft = writeDraft; this.showMain = showMain;
+        this.submissionRecovery = submissionRecovery;
+        submissionKey = (deviceIdentity, sessionId);
         view = initialView;
         ShortcutSlot = shortcutSlot;
         SetSessionTitle(sessionTitle);
@@ -173,7 +183,7 @@ internal sealed class MiniWindow : Window
         composer.Text = readDraft(); composer.TextChanged += (_, _) => { if (!settingDraft) writeDraft(composer.Text); };
         composer.PreviewKeyDown += (_, e) => { if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control && send.IsEnabled) { e.Handled = true; _ = SendAsync(); } };
         input.Children.Add(composer);
-        AutomationProperties.SetName(send, "发送消息"); send.Click += (_, _) => _ = SendAsync();
+        send.Click += (_, _) => _ = SendAsync();
         Grid.SetColumn(send, 1); input.Children.Add(send);
         Grid.SetRow(input, 3); surface.Children.Add(input);
 
@@ -215,6 +225,7 @@ internal sealed class MiniWindow : Window
         SizeChanged += (_, _) => { if (!closed && !collapsed) { positionTimer.Stop(); positionTimer.Start(); } };
         Closed += async (_, _) =>
         {
+            submissionRecovery.Changed -= OnSubmissionStateChanged;
             closed = true; positionTimer.Stop(); SavePosition(); lifetime.Cancel();
             try { if (recoveryTask is not null) await recoveryTask; }
             finally
@@ -231,6 +242,7 @@ internal sealed class MiniWindow : Window
                 }
             }
         };
+        submissionRecovery.Changed += OnSubmissionStateChanged;
         Refresh(initialView);
         send.IsEnabled = false;
         composer.IsEnabled = false;
@@ -415,9 +427,27 @@ internal sealed class MiniWindow : Window
         view = update;
         if (!string.IsNullOrWhiteSpace(update.Title)) { SetSessionTitle(update.Title); SetStatus(update.Title); }
         UpdateRunStatus();
-        send.IsEnabled = SessionReady && !sending && update.CanSend;
-        composer.IsEnabled = send.IsEnabled;
+        RefreshSendAction();
         RenderLatestMessages();
+    }
+
+    private void OnSubmissionStateChanged((string Device, string Session) key)
+    {
+        if (closed || key != submissionKey) return;
+        RefreshSendAction();
+        UpdateRunStatus();
+    }
+
+    private void RefreshSendAction()
+    {
+        bool uncertain = submissionRecovery.IsUncertain(submissionKey);
+        bool queued = view?.CanSteer == false;
+        bool ready = SessionReady && !sending;
+        composer.IsEnabled = ready && view?.CanSend == true;
+        send.IsEnabled = ready && (uncertain || view?.CanSend == true);
+        send.Content = uncertain ? "核对" : queued ? "排队" : "↑";
+        send.FontSize = uncertain || queued ? 11 : 20;
+        AutomationProperties.SetName(send, uncertain ? "核对上次发送" : queued ? "排队发送消息" : "发送消息");
     }
 
     private void RenderLatestMessages()
@@ -464,7 +494,8 @@ internal sealed class MiniWindow : Window
     private async Task SendAsync()
     {
         var connection = remote;
-        if (sending || connection is null || !SessionReady || view?.CanSend != true) return;
+        if (sending || connection is null || !SessionReady) return;
+        if (submissionRecovery.PromptIfUncertain(this, submissionKey) || view?.CanSend != true) return;
         string text = composer.Text;
         if (string.IsNullOrWhiteSpace(text)) return;
         sending = true; send.IsEnabled = false; composer.IsEnabled = false;
@@ -479,11 +510,15 @@ internal sealed class MiniWindow : Window
                 SetStatus("远端确认较慢，仍在等待原请求；请勿重复发送。");
             await submission;
             if (composer.Text == text) { SetDraft(""); writeDraft(""); }
-            SetStatus("消息已由远端接收，结果以会话状态为准。");
+            SetStatus(view?.CanSteer == false ? "消息已进入远端队列。" : "消息已由远端接收，结果以会话状态为准。");
         }
-        catch (TimeoutException) { SetStatus("确认超时，发送结果未知。请先查看会话结果，不要重复提交。"); }
+        catch (SubmissionUncertainException ex)
+        {
+            submissionRecovery.MarkUncertain(submissionKey);
+            SetStatus(ex.Message);
+        }
         catch (Exception ex) { SetStatus("发送失败：" + ex.Message); }
-        finally { sending = false; send.IsEnabled = SessionReady && view?.CanSend == true; composer.IsEnabled = send.IsEnabled; UpdateRunStatus(); }
+        finally { sending = false; RefreshSendAction(); UpdateRunStatus(); }
     }
 
     private void UpdateRunStatus()
@@ -491,6 +526,7 @@ internal sealed class MiniWindow : Window
         var indicator = sending ? new AgentIndicator("提交中", "#D97706")
             : !(remote?.IsNetworkConnected ?? sharedRemote?.IsConnected ?? ownedRemote?.IsConnected ?? false) ? new AgentIndicator(sessionConnecting ? "网络连接中" : "网络已断开", "#D97706")
             : !SessionReady ? new AgentIndicator(recoveryError is null ? "会话加载中" : "会话待重试", "#D97706")
+            : submissionRecovery.IsUncertain(submissionKey) ? new AgentIndicator("发送待核对", "#D97706")
             : AgentIndicator.From(true, false, view);
         statusLabel.Text = indicator.Label;
         var color = (Brush)new BrushConverter().ConvertFromString(indicator.Color)!;
