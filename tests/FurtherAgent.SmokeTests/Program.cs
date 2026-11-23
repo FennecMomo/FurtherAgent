@@ -66,6 +66,7 @@ if (args.Contains("--question-submission-fixture"))
 if (args.Length is 3 or 4 && args[0] == "--question-watch") { await QuestionChecks.Watch(args[1], args[2], args.Length == 4 ? int.Parse(args[3]) : 10); return; }
 if (args.Contains("--codex-activation-checks")) { await CodexActivationChecks.Run(Check); return; }
 if (args.Contains("--codex-activation-live")) { await CodexActivationChecks.RunLive(Check); return; }
+if (args.Contains("--codex-saved-session-checks")) { await CodexSavedSessionChecks.Run(Check); return; }
 if (args.Length == 2 && args[0] == "--codex-history-live") { await CodexHistoryChecks.RunLive(args[1], Check); return; }
 if (args.Length == 4 && args[0] == "--paging-live") { await PagingChecks.RunLive(args[1], args[2], args[3], Check); return; }
 async Task Reject(Func<Task> action, string name)

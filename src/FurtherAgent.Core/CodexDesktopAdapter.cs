@@ -23,6 +23,9 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private readonly HashSet<string> submittedQuestions = [];
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
+    private SessionView? savedView;
+    private sealed class DesktopPipeUnavailable(Exception cause)
+        : IOException("无法连接 Codex 桌面。请在 B 上以同一 Windows 用户打开 Codex。", cause);
     public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 支持远程工作空间和空会话 · 需在 B 运行 Codex", true, true, CanWorkspaces: true);
     public event Action<SessionView>? Changed;
     public event Action<string>? Faulted;
@@ -63,7 +66,8 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(4));
         try { await pipe.ConnectAsync(timeout.Token); }
-        catch (Exception ex) { throw new IOException("无法连接 Codex 桌面。请在 B 上以同一 Windows 用户打开 Codex。", ex); }
+        catch (Exception ex) when (!ct.IsCancellationRequested && ex is (OperationCanceledException or IOException or UnauthorizedAccessException))
+        { throw new DesktopPipeUnavailable(ex); }
         reader = ReadLoopAsync();
         var result = await RequestAsync("initialize", new { clientType = "furtheragent" }, 0, ct, targeted: false);
         clientId = result["result"]!["clientId"]!.GetValue<string>();
@@ -71,7 +75,16 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
     {
         if (!Guid.TryParse(id, out _)) throw new ArgumentException("会话 ID 无效。");
-        await ConnectAsync(ct);
+        try { await ConnectAsync(ct); }
+        catch (DesktopPipeUnavailable) when (OperatingSystem.IsWindows())
+        {
+            var view = await CodexSavedSession.ReadAsync(home, id, ct);
+            ct.ThrowIfCancellationRequested();
+            CodexThreadActivation.Open(CodexThreadActivation.ThreadUrl(id));
+            lock (gate) savedView = view;
+            return view;
+        }
+        lock (gate) savedView = null;
         string discoveredOwner = await CodexThreadActivation.ActivateAsync(id, CodexThreadActivation.Open, async token =>
         {
             var discovered = await RequestAsync("thread-owner-discovery", new { hostId = "local", conversationId = id },
@@ -183,7 +196,11 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     {
         JsonNode value;
         lock (gate)
+        {
+            if (savedView is { } view)
+                return new(view.Model ?? "", "", view.Mode ?? "default", [], false, false, view.StatusDetail ?? "当前会话仅可查看已保存的历史。");
             value = (state ?? throw new IOException("请先打开会话。")).DeepClone();
+        }
         string model = Text(value["latestCollaborationMode"]?["settings"]?["model"] ?? value["latestModel"]);
         string provider = Text(value["modelProvider"]);
         string effort = Text(value["latestCollaborationMode"]?["settings"]?["reasoning_effort"] ?? value["latestReasoningEffort"]);
@@ -202,6 +219,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     public Task ConfigureAsync(string model, string provider, string mode, CancellationToken ct) => ConfigureAsync(model, provider, mode, null, ct);
     public async Task ConfigureAsync(string model, string provider, string mode, string? reasoningEffort, CancellationToken ct)
     {
+        lock (gate) _ = RequireLiveState();
         reasoningEffort = string.IsNullOrWhiteSpace(reasoningEffort) ? null : reasoningEffort.Trim();
         await using var metadata = await CodexAppServer.OpenAsync(home, ct);
         var models = await CodexSettingsCatalog.ModelsAsync(metadata, provider, ct);
@@ -212,7 +230,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         string id;
         lock (gate)
         {
-            var value = state ?? throw new IOException("请先选择会话。");
+            var value = RequireLiveState();
             if (ToView(value) is { } view && (view.Status == "active" || view.TurnId is not null)) throw new IOException("请等待当前任务结束后修改模型、模式或思考强度。");
             if (string.IsNullOrWhiteSpace(model) || mode is not ("default" or "plan")) throw new ArgumentException("模型或模式无效。");
             id = sessionId!;
@@ -235,7 +253,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         string id;
         lock (gate)
         {
-            var view = ToView(state ?? throw new IOException("请先选择会话。"));
+            var view = ToView(RequireLiveState());
             if (view.Status == "active" || view.TurnId is not null) throw new IOException("请等待当前任务结束后修改权限。");
             id = sessionId!;
         }
@@ -248,7 +266,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     {
         if (string.IsNullOrWhiteSpace(text) || text.Length > 100000) throw new ArgumentException("消息不能为空或超过 100000 字符。");
         SessionView view;
-        lock (gate) view = ToView(state ?? throw new IOException("请先选择会话。"));
+        lock (gate) view = ToView(RequireLiveState());
         var request = CodexMessageSubmission.Build(view, text, questionReply);
         string messageId = Text(request.Parameters["clientUserMessageId"] ?? request.Parameters["turnStart"]?["request"]?["clientUserMessageId"]);
         await CodexSubmissionReceipt.WaitAsync(
@@ -258,12 +276,13 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     public async Task InterruptAsync(CancellationToken ct)
     {
         SessionView view;
-        lock (gate) view = ToView(state ?? throw new IOException("请先选择会话。"));
+        lock (gate) view = ToView(RequireLiveState());
         if (view.Status != "active" || view.TurnId is null) throw new IOException("没有可停止的活动任务。");
         await RequestAsync("thread-follower-interrupt-turn", new { conversationId = sessionId, mode = "user-stop", expectedTurnId = view.TurnId }, 4, ct);
     }
     public async Task RespondAsync(string requestId, string decision, JsonNode? response, CancellationToken ct)
     {
+        lock (gate) _ = RequireLiveState();
         if (requestId.StartsWith("codex-recovery:", StringComparison.Ordinal))
         {
             if (decision != "continue") throw new ArgumentException("无效恢复操作。");
@@ -272,7 +291,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             {
                 lock (gate)
                 {
-                    var view = ToView(state ?? throw new IOException("请先选择会话。"));
+                    var view = ToView(RequireLiveState());
                     if (submittedQuestions.Contains(requestId) || view.TurnId is not null ||
                         !view.Prompts.Any(p => p.Id == requestId && p.Kind == CodexRecovery.Kind))
                         throw new IOException("该任务状态已变化，请刷新后再操作。");
@@ -291,7 +310,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             {
                 PendingPrompt prompt;
                 lock (gate) prompt = !submittedQuestions.Contains(requestId)
-                    ? ToView(state ?? throw new IOException("请先选择会话。")).Prompts.SingleOrDefault(p => p.Id == requestId)
+                    ? ToView(RequireLiveState()).Prompts.SingleOrDefault(p => p.Id == requestId)
                         ?? throw new IOException("该问题已回答或失效，请刷新。")
                     : throw new IOException("该问题的回答已提交，请等待同步。");
                 await SendMessageAsync(CodexQuestions.Reply(prompt, response), true, ct);
@@ -320,6 +339,10 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         else args["decision"] = decision;
         await RequestAsync(follower, args, 1, ct);
     }
+    private JsonNode RequireLiveState() => savedView is { } view
+        ? throw new IOException(view.StatusDetail ?? "当前会话仅可查看已保存的历史。")
+        : state ?? throw new IOException("请先选择会话。");
+
     public static SessionView ToView(JsonNode s)
     {
         var turns = s["turnHistory"]?["history"]?["entitiesByKey"] is JsonObject entities
