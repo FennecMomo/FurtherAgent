@@ -95,12 +95,10 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
     {
         if (!Guid.TryParse(id, out _)) throw new ArgumentException("会话 ID 无效。");
+        if (savedQueue is { } existing && existing.View.Id == id) return existing.AttachCached(ct);
         try { await ConnectAsync(ct); }
         catch (DesktopPipeUnavailable) when (OperatingSystem.IsWindows())
         {
-            if (savedQueue is { } existing && existing.View.Id == id)
-                return await existing.RefreshAsync(ct);
-
             await using var server = await CodexAppServer.OpenAsync(home, ct);
             var view = await CodexQueuedSession.ReadAsync(server, id, ct);
             ct.ThrowIfCancellationRequested();
@@ -110,7 +108,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
             lock (gate) savedView = view;
             if (view.CanSend)
             {
-                var queue = new CodexQueuedSession(home, view, snapshot => Changed?.Invoke(snapshot));
+                var queue = new CodexQueuedSession(view, OpenMetadataAsync, snapshot => Changed?.Invoke(snapshot));
                 savedQueue = queue;
                 queue.SetObserved(observed);
             }
@@ -143,6 +141,9 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         try { return await snapshot.Task.WaitAsync(TimeSpan.FromSeconds(15), ct); }
         catch (TimeoutException) { throw new IOException("桌面会话已打开，但未及时收到快照，请稍后重新选择该会话。"); }
     }
+
+    private async Task<ICodexMetadata> OpenMetadataAsync(CancellationToken ct) => await CodexAppServer.OpenAsync(home, ct);
+
     private Task FollowAsync(bool following, CancellationToken ct) => WriteAsync(Json.Node(new
     {
         type = "broadcast", method = "thread-stream-following-changed", sourceClientId = clientId, version = 1,

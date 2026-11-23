@@ -57,9 +57,50 @@ internal static class CodexQueueChecks
         catch (IOException) { rejected = true; }
         check(rejected && wrongReceipt.Calls.Count == 1,
             "a mismatched Codex queue receipt fails without issuing another add");
+
+        await CheckCachedAttachAsync(attached, check);
     }
 
-    private static JsonNode SavedThread() => Json.Node(new
+    private static async Task CheckCachedAttachAsync(SessionView initial, Action<bool, string> check)
+    {
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(8));
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var refreshed = new TaskCompletionSource<SessionView>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var extraOpen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        int opens = 0;
+        initial = initial with { Status = "idle", PendingMessages = 0 };
+        const string refreshedReply = "刷新后的回复";
+        await using var session = new CodexQueuedSession(initial, async ct =>
+        {
+            if (Interlocked.Increment(ref opens) > 1) extraOpen.TrySetResult();
+            entered.TrySetResult();
+            await release.Task.WaitAsync(ct);
+            return new Metadata(method => method switch
+            {
+                "thread/read" => SavedThread(refreshedReply),
+                "thread/queue/list" => Json.Node(new { data = Array.Empty<object>() }),
+                _ => throw new InvalidOperationException("Unexpected Codex method: " + method)
+            });
+        }, view => refreshed.TrySetResult(view));
+
+        var cached = await Task.Run(() => session.AttachCached(deadline.Token)).WaitAsync(deadline.Token);
+        await entered.Task.WaitAsync(deadline.Token);
+        check(cached.Id == ThreadId && cached.Messages.Single().Text == "原会话中的回复" && cached.CanSend &&
+            !refreshed.Task.IsCompleted,
+            "reopening Codex immediately returns the cached history and keeps sending enabled during blocked metadata refresh");
+        await Task.WhenAll(Enumerable.Range(0, 4).Select(_ => Task.Run(() => session.AttachCached(deadline.Token))))
+            .WaitAsync(deadline.Token);
+
+        release.SetResult();
+        var latest = await refreshed.Task.WaitAsync(deadline.Token);
+        check(latest.Id == ThreadId && latest.Messages.Single().Text == refreshedReply && latest.CanSend,
+            "Codex publishes refreshed history and send capability for the same thread");
+        await Task.WhenAny(extraOpen.Task, Task.Delay(TimeSpan.FromMilliseconds(500), deadline.Token));
+        check(Volatile.Read(ref opens) == 1, "repeated Codex attachments share a single outstanding metadata refresh");
+    }
+
+    private static JsonNode SavedThread(string reply = "原会话中的回复") => Json.Node(new
     {
         thread = new
         {
@@ -69,7 +110,7 @@ internal static class CodexQueueChecks
                 new
                 {
                     id = "old-turn", status = "completed",
-                    items = new[] { new { type = "agentMessage", id = "answer", text = "原会话中的回复" } }
+                    items = new[] { new { type = "agentMessage", id = "answer", text = reply } }
                 }
             }
         }

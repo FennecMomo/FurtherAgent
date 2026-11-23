@@ -7,8 +7,8 @@ namespace FurtherAgent.Core;
 // state and hands input to Codex's native persistent queue.
 internal sealed class CodexQueuedSession : IAsyncDisposable
 {
-    private readonly string home;
     private readonly string id;
+    private readonly Func<CancellationToken, Task<ICodexMetadata>> open;
     private readonly Action<SessionView> changed;
     private readonly CancellationTokenSource lifetime = new();
     private readonly SemaphoreSlim operations = new(1, 1);
@@ -18,14 +18,15 @@ internal sealed class CodexQueuedSession : IAsyncDisposable
     private volatile SessionView view;
     private bool wakeFailed;
     private long followUntil;
+    private int refreshRequested;
 
     public SessionView View => view;
 
-    public CodexQueuedSession(string home, SessionView initial, Action<SessionView> changed)
+    public CodexQueuedSession(SessionView initial, Func<CancellationToken, Task<ICodexMetadata>> open, Action<SessionView> changed)
     {
-        this.home = home;
         id = initial.Id;
         view = initial;
+        this.open = open;
         this.changed = changed;
         watcher = WatchAsync(lifetime.Token);
     }
@@ -92,17 +93,11 @@ internal sealed class CodexQueuedSession : IAsyncDisposable
         if (value) Signal();
     }
 
-    public async Task<SessionView> RefreshAsync(CancellationToken ct)
+    public SessionView AttachCached(CancellationToken ct)
     {
-        await operations.WaitAsync(ct);
-        try
-        {
-            await using var server = await CodexAppServer.OpenAsync(home, ct);
-            view = await ReadAsync(server, id, ct);
-            Signal();
-            return view;
-        }
-        finally { operations.Release(); }
+        ct.ThrowIfCancellationRequested();
+        if (Interlocked.Exchange(ref refreshRequested, 1) == 0) Signal();
+        return view;
     }
 
     public async Task SendAsync(string text, CancellationToken ct)
@@ -115,7 +110,7 @@ internal sealed class CodexQueuedSession : IAsyncDisposable
             bool attempted = false;
             try
             {
-                await using var server = await CodexAppServer.OpenAsync(home, ct);
+                await using var server = await open(ct);
                 attempted = true;
                 await EnqueueAsync(server, id, text, messageId, ct);
             }
@@ -141,7 +136,7 @@ internal sealed class CodexQueuedSession : IAsyncDisposable
     {
         try
         {
-            await using var server = await CodexAppServer.OpenAsync(home, ct);
+            await using var server = await open(ct);
             var queued = await ReadQueueAsync(server, id, 100, ct);
             if (queued.Items.Any(item => CodexDesktopAdapter.Text(item?["clientUserMessageId"]) == messageId)) return true;
             return CodexSubmissionReceipt.Contains(await CodexSavedSession.ReadThreadAsync(server, id, ct), messageId);
@@ -171,23 +166,37 @@ internal sealed class CodexQueuedSession : IAsyncDisposable
         {
             while (true)
             {
-                if (!ShouldWatch)
+                if (Volatile.Read(ref refreshRequested) == 0 && !ShouldWatch)
                 {
                     await wake.WaitAsync(ct);
                     continue;
                 }
 
-                await Task.Delay(TimeSpan.FromSeconds(5), ct);
+                // A switch requests a fresh snapshot, but the attach reply carries
+                // the cached one immediately. Coalesce switches during one read.
+                if (Volatile.Read(ref refreshRequested) == 0)
+                    await wake.WaitAsync(TimeSpan.FromSeconds(5), ct);
+                else
+                    await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
                 await operations.WaitAsync(ct);
+                bool requested = Volatile.Read(ref refreshRequested) != 0;
                 try
                 {
-                    if (!ShouldWatch) continue;
-                    await using var server = await CodexAppServer.OpenAsync(home, ct);
+                    if (!requested && !ShouldWatch) continue;
+                    await using var server = await open(ct);
                     Publish(await ReadAsync(server, id, ct));
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested && ex is (IOException or OperationCanceledException or JsonException))
-                { Publish(view with { StatusDetail = "Codex 历史同步暂未完成，将自动重试。" }); }
-                finally { operations.Release(); }
+                {
+                    Publish(view with { StatusDetail = ShouldWatch
+                        ? "Codex 历史同步暂未完成，将自动重试。"
+                        : "暂时无法同步 Codex 历史，正在显示已缓存的会话。" });
+                }
+                finally
+                {
+                    if (requested) Volatile.Write(ref refreshRequested, 0);
+                    operations.Release();
+                }
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }

@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.16.9** 重新打开已读取过的 Codex 会话时，接入端先返回内存中的会话快照，再在后台刷新历史和原生队列。[验证记录](docs/Pending-Tests.md)
+
 **0.16.8** 新版 Codex 桌面缺少旧实时管道时，接入端支持向原会话发送文字，消息由 Codex 原生队列接收并交给原会话执行。停止和审批仍通过 Codex 桌面操作。[验证记录](docs/Pending-Tests.md)
 
 **0.16.7** 桌面 Mini 窗口支持 Markdown 消息，包含标题、列表、代码块、表格和链接。[迷你窗口说明](docs/Compact-Desktop-Mode.md)
