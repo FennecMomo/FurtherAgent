@@ -190,6 +190,28 @@ internal static class MiniRecoveryChecks
                     device.GetType().GetField("Recovery")!.GetValue(device) is null && state.Sends == 0,
                     "the main window retries session restoration and clears recovery state without sending a message");
 
+                state.FailAllAttaches = true;
+                int beforeFailure = state.AttachAttempts;
+                var composer = (TextBox)main.FindName("Composer");
+                composer.Text = "fixture draft";
+                await ((Task)typeof(MainWindow).GetMethod("RestoreDeviceAsync", Private)!.Invoke(main, [device])!)
+                    .WaitAsync(TimeSpan.FromSeconds(15));
+                await Until(() => (main.FindName("ActivityStatus") as TextBlock)?.Text.Contains("可刷新重试", StringComparison.Ordinal) == true);
+                var failedStatus = Json.Node(main.Control("status"));
+                Check(state.AttachAttempts == beforeFailure + 3 && failedStatus["sessionLoading"]?.GetValue<bool>() == false &&
+                    failedStatus["sessionError"]?.ToString() == "fixture attach failure" && failedStatus["sessionPhase"]?.ToString() == "读取会话历史" &&
+                    ReferenceEquals(mainView, typeof(MainWindow).GetField("current", Private)!.GetValue(main)) && composer.Text == "fixture draft",
+                    "persistent session errors stop automatic retries, report their phase and preserve the cached view and draft");
+
+                state.FailAllAttaches = false;
+                state.ReturnReadOnly = true;
+                typeof(MainWindow).GetMethod("Refresh_Click", Private)!.Invoke(main, [main, new RoutedEventArgs()]);
+                await Until(() => (main.FindName("ActivityStatus") as TextBlock)?.Text == "会话已加载 · 只读历史");
+                Check(Json.Node(main.Control("status"))["sessionError"] is null && state.AttachAttempts == beforeFailure + 4 &&
+                    !((Button)main.FindName("SendButton")).IsEnabled && state.Sends == 0,
+                    "manual refresh reloads the selected failed session and reports read-only history without sending a message");
+                state.ReturnReadOnly = false;
+
                 string delayedSecret = new('B', 64);
                 string delayedIdentity = Path.Combine(fixture, "delayed.identity");
                 File.WriteAllText(delayedIdentity, delayedSecret);
@@ -296,6 +318,8 @@ internal static class MiniRecoveryChecks
     {
         public int AttachAttempts;
         public int FailNextAttach = 1;
+        public volatile bool FailAllAttaches;
+        public volatile bool ReturnReadOnly;
         public int Sends;
         public TaskCompletionSource InitialAttachRelease { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource BlockedAttachEntered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -317,10 +341,12 @@ internal static class MiniRecoveryChecks
                 state.BlockedAttachEntered.TrySetResult();
                 await Task.Delay(Timeout.Infinite, ct);
             }
+            if (state.FailAllAttaches) throw new IOException("fixture attach failure");
             if (Interlocked.Exchange(ref state.FailNextAttach, 0) == 1)
                 throw new IOException("fixture session snapshot is temporarily unavailable");
             await state.InitialAttachRelease.Task.WaitAsync(ct);
-            return new SessionView(id, "恢复验证", "fixture", "idle", null, [new("assistant", "恢复后的正文")], []);
+            return new SessionView(id, "恢复验证", "fixture", state.ReturnReadOnly ? "readOnly" : "idle", null,
+                [new("assistant", "恢复后的正文")], [], CanSend: !state.ReturnReadOnly);
         }
 
         public Task SendAsync(string text, CancellationToken ct) { Interlocked.Increment(ref state.Sends); return Task.CompletedTask; }

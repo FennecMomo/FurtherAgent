@@ -9,8 +9,9 @@ namespace FurtherAgent.Core;
 // Never launches another writer or edits Codex history/configuration.
 public sealed class CodexDesktopAdapter : IAgentAdapter
 {
+    private const string DesktopPipeName = "codex-ipc";
     private readonly string home;
-    private readonly NamedPipeClientStream pipe = new(".", "codex-ipc", PipeDirection.InOut, PipeOptions.Asynchronous);
+    private readonly NamedPipeClientStream pipe = new(".", DesktopPipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
     private readonly SemaphoreSlim writes = new(1, 1);
     private readonly ConcurrentDictionary<string, TaskCompletionSource<JsonNode>> pending = new();
     private readonly CancellationTokenSource lifetime = new();
@@ -24,7 +25,7 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     private Task? reader;
     private TaskCompletionSource<SessionView>? snapshot;
     private SessionView? savedView;
-    private sealed class DesktopPipeUnavailable(Exception cause)
+    private sealed class DesktopPipeUnavailable(Exception? cause = null)
         : IOException("无法连接 Codex 桌面。请在 B 上以同一 Windows 用户打开 Codex。", cause);
     public AgentInfo Info => new("codex", "Codex 桌面", true, "实验性桌面 IPC · 支持远程工作空间和空会话 · 需在 B 运行 Codex", true, true, CanWorkspaces: true);
     public event Action<SessionView>? Changed;
@@ -58,11 +59,13 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
     }
     private async Task ConnectAsync(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (reader is not null)
         {
             if (reader.IsCompleted) throw new IOException("Codex 桌面连接已断开，请重新连接远端设备。");
             return;
         }
+        if (IsDesktopPipeMissing()) throw new DesktopPipeUnavailable();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromSeconds(4));
         try { await pipe.ConnectAsync(timeout.Token); }
@@ -72,6 +75,16 @@ public sealed class CodexDesktopAdapter : IAgentAdapter
         var result = await RequestAsync("initialize", new { clientType = "furtheragent" }, 0, ct, targeted: false);
         clientId = result["result"]!["clientId"]!.GetValue<string>();
     }
+
+    private static bool IsDesktopPipeMissing()
+    {
+        if (!OperatingSystem.IsWindows()) return false;
+        // Newer desktops do not always start this listener. A known-absent pipe can
+        // use stored history immediately, while an inconclusive check still tries IPC.
+        try { return !Directory.EnumerateFiles(@"\\.\pipe\", DesktopPipeName).Any(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or NotSupportedException) { return false; }
+    }
+
     public async Task<SessionView> AttachAsync(string id, CancellationToken ct)
     {
         if (!Guid.TryParse(id, out _)) throw new ArgumentException("会话 ID 无效。");

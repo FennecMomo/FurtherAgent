@@ -9,6 +9,7 @@ namespace FurtherAgent.Client;
 
 public partial class MainWindow
 {
+    private sealed record SessionLoadFailure(string? SessionId, string Phase, string Message);
     private sealed class DeviceContext(string server, string code) : IAsyncDisposable
     {
         public string Server { get; } = server;
@@ -19,6 +20,7 @@ public partial class MainWindow
         public ConnectionHeartbeat? Heartbeat;
         public CancellationTokenSource Lifetime { get; } = new();
         public CancellationTokenSource? Recovery;
+        public SessionLoadFailure? LoadFailure;
         public AgentInfo? Agent;
         public IReadOnlyList<SessionInfo> Sessions = [];
         public IReadOnlyList<WorkspaceInfo> Workspaces = [];
@@ -30,7 +32,8 @@ public partial class MainWindow
         public Dictionary<string, string> Drafts = [];
         public List<RemoteFile> Attachments = [];
         public string Label => Name + " · " + Remote.ConnectionKind + " · " +
-            (Remote.IsConnected && Recovery is not null ? "会话加载中" : AgentIndicator.From(Remote.IsConnected, Remote.IsReconnecting, View).Label);
+            (Remote.IsConnected && LoadFailure is not null ? (Recovery is null ? "读取失败" : "读取失败 · 自动重试") :
+                Remote.IsConnected && Recovery is not null ? "会话加载中" : AgentIndicator.From(Remote.IsConnected, Remote.IsReconnecting, View).Label);
         public async ValueTask DisposeAsync()
         {
             Lifetime.Cancel(); Recovery?.Cancel();
@@ -43,6 +46,7 @@ public partial class MainWindow
     private bool updatingDevicePicker;
     private string devicePickerSignature = "";
     private bool CanSwitchDevice => !actionBusy && !preparingAttachment && transferCancellation is null && !workspaceBusy && !loadingSettings;
+    private SessionLoadFailure? CurrentSessionLoadFailure => activeDevice?.LoadFailure is { } failure && failure.SessionId == selectedId ? failure : null;
 
     private async Task<DeviceContext> OpenDeviceAsync(string server, string code)
     {
@@ -172,6 +176,7 @@ public partial class MainWindow
         device.Recovery?.Cancel();
         using var recovery = CancellationTokenSource.CreateLinkedTokenSource(device.Lifetime.Token);
         device.Recovery = recovery;
+        device.LoadFailure = null;
         bool Current() => !recovery.IsCancellationRequested && ReferenceEquals(device.Recovery, recovery) &&
             (activeDevice == device ? selectedId == id && selectionVersion == version : device.SelectedId == id);
         int attempt = 0;
@@ -181,21 +186,25 @@ public partial class MainWindow
             {
                 if (!device.Remote.IsConnected) return null;
                 var peer = device.Remote.Peer;
+                string phase = "协商会话历史格式";
                 try
                 {
                     try { await OperationGroups.NegotiateAsync(peer, recovery.Token); }
                     catch (IOException) when (device.Remote.IsConnected) { /* Legacy history fallback. */ }
+                    phase = "读取会话列表";
                     var restoredSessions = refreshSessions
                         ? Json.Read<List<SessionInfo>>(await peer.CallAsync("sessions", null, recovery.Token)) : device.Sessions;
+                    phase = "读取会话历史";
                     var view = id is null ? null : Json.Read<SessionView>(await SessionHistory.ReadAsync(peer, "attach", new { id }, recovery.Token));
                     if (!Current()) return null;
                     if (!ReferenceEquals(peer, device.Remote.Peer)) continue;
                     if (!device.Remote.IsConnected) return null;
                     device.Sessions = restoredSessions;
+                    device.LoadFailure = null;
                     if (activeDevice == device)
                     {
                         RemoteStatus.Text = "已连接 · " + device.Name + " · " + device.Remote.ConnectionKind;
-                        StatusBar.Text = id is null ? "设备连接已恢复。" : "会话已恢复。";
+                        StatusBar.Text = view?.StatusDetail ?? (id is null ? "设备连接已恢复。" : "会话已恢复。");
                     }
                     return view;
                 }
@@ -203,14 +212,20 @@ public partial class MainWindow
                 catch (Exception ex)
                 {
                     if (!Current() || !device.Remote.IsConnected) return null;
+                    if (!ReferenceEquals(peer, device.Remote.Peer)) continue;
+                    string message = ConnectionErrorMessage(ex, device.Code);
+                    device.LoadFailure = new(id, phase, message);
+                    bool retry = ++attempt < 3 && ex is not TimeoutException && ex.InnerException is not TimeoutException;
+                    int delay = 2 * attempt;
                     if (activeDevice == device)
                     {
                         SetSessionEnabled(false);
-                        RemoteStatus.Text = "网络已连接 · 正在恢复会话";
-                        SessionMeta.Text = "会话读取失败，等待自动重试";
-                        StatusBar.Text = ex.Message;
+                        RemoteStatus.Text = retry ? "网络已连接 · 读取失败，等待重试" : "网络已连接 · 读取失败";
+                        SessionMeta.Text = phase + "失败";
+                        StatusBar.Text = $"{phase}失败：{message}" + (retry ? $"（{delay} 秒后重试）" : "（可点击刷新重试）");
                     }
-                    await Task.Delay(TimeSpan.FromSeconds(Math.Min(10, 2 + attempt++ * 2)), recovery.Token);
+                    if (!retry) return null;
+                    await Task.Delay(TimeSpan.FromSeconds(delay), recovery.Token);
                 }
             }
         }

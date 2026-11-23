@@ -172,6 +172,8 @@ public partial class MainWindow : Window
             stateDirectory = Path.GetDirectoryName(SettingsFile), autoConnect = startSavedConnection, uiTheme,
             connecting = !ConnectButton.IsEnabled, error = connectionFailure, visible = IsVisible, connectedAt = remote?.ConnectedAt, disconnectedAt = remote?.DisconnectedAt, reconnectCount = remote?.ReconnectCount, lastReceivedAt = remote?.Peer?.LastReceivedAt, receivedMessages = remote?.Peer?.ReceivedMessages, lastRenderedAt,
             relayHeartbeat = heartbeat?.Relay, hostHeartbeat = heartbeat?.Host, activity = ActivityStatus.Text,
+            sessionStatus = current?.Status, sessionLoading = activeDevice?.Recovery is not null,
+            sessionError = CurrentSessionLoadFailure?.Message, sessionPhase = CurrentSessionLoadFailure?.Phase,
             receivedBytes = remote?.ReceivedBytes, sentBytes = remote?.SentBytes, miniWindows = miniWindows.Count };
         if (command != "shutdown") return new { success = false, error = "unknown_command" };
         if (actionBusy || preparingAttachment || transferCancellation is not null || attachedFiles.Count > 0 || !string.IsNullOrEmpty(Composer.Text) || drafts.Values.Any(t => !string.IsNullOrEmpty(t))
@@ -375,7 +377,18 @@ public partial class MainWindow : Window
         Filter();
     }
     private async void Refresh_Click(object sender, RoutedEventArgs e)
-    { try { await RefreshAsync(); } catch (Exception ex) { Error(ex); } }
+    {
+        try
+        {
+            if (activeDevice is { } device && CurrentSessionLoadFailure is not null)
+            {
+                if (device.Recovery is null) await RestoreDeviceAsync(device);
+                return;
+            }
+            await RefreshAsync();
+        }
+        catch (Exception ex) { Error(ex); }
+    }
     private void Search_Changed(object sender, TextChangedEventArgs e) { if (SessionList is not null) Filter(); }
     private void Filter()
     {
@@ -419,8 +432,11 @@ public partial class MainWindow : Window
             activeDevice.View = latest?.Id == selectedId ? latest : null;
         }
         UpdateDevicePicker();
-        var indicator = remote?.IsConnected == true && activeDevice?.Recovery is not null
-            ? new AgentIndicator("会话加载中", "#D97706")
+        bool recovering = activeDevice?.Recovery is not null;
+        var loadFailure = CurrentSessionLoadFailure;
+        var indicator = remote?.IsConnected == true && loadFailure is not null
+            ? new AgentIndicator(recovering ? "读取失败 · 自动重试" : "读取失败", "#D97706")
+            : remote?.IsConnected == true && recovering ? new AgentIndicator("会话加载中", "#D97706")
             : AgentIndicator.From(remote?.IsConnected == true, !ConnectButton.IsEnabled || remote?.IsReconnecting == true, current);
         ConnectionStateLabel.Text = indicator.Label;
         ConnectionStateDot.Fill = (System.Windows.Media.Brush)new System.Windows.Media.BrushConverter().ConvertFromString(indicator.Color)!;
@@ -439,8 +455,10 @@ public partial class MainWindow : Window
             : remote?.IsConnected != true ? "连接未就绪"
             : transferCancellation is not null ? "正在传输文件…"
             : actionBusy ? operationPhase ?? "正在提交操作，等待远端确认…"
-            : activeDevice?.Recovery is not null ? "网络已连接 · 正在加载会话…"
+            : loadFailure is not null ? "网络已连接 · " + loadFailure.Phase + "失败" + (recovering ? "（自动重试）" : "（可刷新重试）")
+            : recovering ? "网络已连接 · 正在加载会话…"
             : current is null ? (selectedId is null ? "已连接 · 请选择会话" : "正在加载会话…")
+            : current.Status == "readOnly" ? "会话已加载 · 只读历史"
             : current.Prompts.Count > 0 ? "等待你的审批或回答"
             : current.Status is "active" or "running" ? "Agent 正在执行 / 生成回复…"
             : "会话已加载 · 等待指令（其他入口运行状态不可见）";
@@ -597,7 +615,7 @@ public partial class MainWindow : Window
     { if (IsLoaded) SetSessionEnabled(!actionBusy && remote?.IsConnected == true); }
     private void SetSessionEnabled(bool enabled)
     {
-        enabled &= !preparingAttachment && activeDevice?.Recovery is null;
+        enabled &= !preparingAttachment && activeDevice?.Recovery is null && CurrentSessionLoadFailure is null;
         UpdateHistoryActions();
         SendButton.IsEnabled = enabled && current is not null && current.CanSend;
         InterruptSendButton.IsEnabled = enabled && (agent?.Id == "hermes" || agent?.CanInterruptSend == true) && current?.CanStop == true && current.TurnId is not null;
@@ -612,7 +630,7 @@ public partial class MainWindow : Window
     }
     private async Task ActionAsync(Func<RpcPeer, Task> action)
     {
-        if (remote?.IsConnected != true || activeDevice?.Recovery is not null || actionBusy) return;
+        if (remote?.IsConnected != true || activeDevice?.Recovery is not null || CurrentSessionLoadFailure is not null || actionBusy) return;
         actionBusy = true; SessionList.IsEnabled = NewButton.IsEnabled = false; SetSessionEnabled(false);
         try { await action(remote.Peer); StatusBar.Text = "操作已由远端 Agent 接收，结果以会话状态为准。"; }
         catch (Exception ex) { Error(ex); }
