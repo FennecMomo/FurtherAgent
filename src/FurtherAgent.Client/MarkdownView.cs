@@ -65,7 +65,7 @@ public sealed class MarkdownView : RichTextBox
                 var row = new TableRow();
                 foreach (string cell in line.Trim().Trim('|').Split('|').Take(20))
                 {
-                    var para = new Paragraph { Margin = new Thickness(0) }; InlineText(para.Inlines, cell.Trim());
+                    var para = new Paragraph { Margin = new Thickness(0) }; InlineText(para, cell.Trim());
                     row.Cells.Add(new TableCell(para) { BorderBrush = Brushes.LightGray, BorderThickness = new Thickness(.5), Padding = new Thickness(6) });
                 }
                 table.RowGroups[0].Rows.Add(row); continue;
@@ -98,22 +98,29 @@ public sealed class MarkdownView : RichTextBox
             else if (Regex.IsMatch(line, @"^\s*[-*+]\s+")) { value = Regex.Replace(line, @"^\s*[-*+]\s+", "• "); p.Tag = "list"; p.Margin = codex ? new Thickness(12, 0, 0, 0) : new Thickness(12, 2, 0, 6); }
             else if (Regex.IsMatch(line, @"^\s*\d+[.)]\s+")) { value = line.TrimStart(); p.Tag = "list"; p.Margin = codex ? new Thickness(12, 0, 0, 0) : new Thickness(12, 2, 0, 6); }
             else if (line.Trim() is "---" or "***") { p.BorderThickness = new Thickness(0, 0, 0, 1); p.BorderBrush = Brushes.LightGray; value = ""; }
-            InlineText(p.Inlines, value); doc.Blocks.Add(p);
+            InlineText(p, value); doc.Blocks.Add(p);
         }
         if (code.Length > 0) AddCode(doc, code.ToString());
         Document = doc;
     }
     private static void AddCode(FlowDocument doc, string value) => doc.Blocks.Add(new Paragraph(new Run(value.TrimEnd('\n')))
     { FontFamily = new FontFamily("Consolas"), Background = new SolidColorBrush(Color.FromRgb(230, 235, 229)), Padding = new Thickness(10), Margin = new Thickness(0, 6, 0, 10) });
-    private void InlineText(InlineCollection output, string value)
+    private void InlineText(Paragraph paragraph, string value)
     {
+        var output = paragraph.Inlines;
         int offset = 0;
         foreach (Match m in Regex.Matches(value, InlinePattern))
         {
             output.Add(new Run(value[offset..m.Index])); string token = m.Value;
             string? reference = Reference(token);
             var attachment = reference is null ? null : AttachmentFactory?.Invoke(reference);
-            if (attachment is not null) output.Add(new InlineUIContainer(attachment) { BaselineAlignment = BaselineAlignment.Center });
+            if (attachment is not null)
+            {
+                // An inline preview can grow after the placeholder has already been measured.
+                paragraph.LineStackingStrategy = LineStackingStrategy.MaxHeight;
+                paragraph.LineHeight = double.NaN;
+                output.Add(new InlineUIContainer(attachment) { BaselineAlignment = BaselineAlignment.Center });
+            }
             else if (token.StartsWith('`')) output.Add(new Run(token[1..^1]) { FontFamily = new FontFamily("Consolas"), Background = Brushes.Gainsboro });
             else if (token.StartsWith("**") || token.StartsWith("__")) output.Add(new Bold(new Run(token[2..^2])));
             else if (token.StartsWith("~~")) output.Add(new Run(token[2..^2]) { TextDecorations = TextDecorations.Strikethrough });

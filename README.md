@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**Windows 0.17.3** 聊天图片加载后会按预览的实际高度重新排版，避免两张图或相邻文字互相遮挡。主窗口和 Mini 共用这项修复。
+
 **0.17.2 / Android 0.14.6** Codex 接入端能够预览历史回复中指向当前项目的 Markdown 图片。B 更新并重启后，Windows 0.17.1 已可显示和缓存这类图片。[文件与图片交互](docs/File-Transfer.md)
 
 **0.17.1 / Android 0.14.5** Windows 主窗口、Mini 和 Android 在局域网或点对点直连时，会在后台下载已加载聊天中的图片，并复用本机附件缓存。中继连接继续按需取缩略图。[文件与图片交互](docs/File-Transfer.md)

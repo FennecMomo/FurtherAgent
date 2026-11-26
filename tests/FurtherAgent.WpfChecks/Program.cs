@@ -23,6 +23,7 @@ static class Program
                 "ValleyTest actual image reference creates an inline WPF image");
             Require(!new TextRange(image.Document.ContentStart, image.Document.ContentEnd).Text.Contains("!["),
                 "Image Markdown punctuation is not rendered as filename text");
+            CheckLoadedImageLayout();
             return;
         }
         if (args.Length == 2 && args[0] == "--images") { ImageUiChecks.Run(args[1]); return; }
@@ -117,6 +118,47 @@ static class Program
         Console.WriteLine($"ALL {passed} WPF AND PERSISTENCE CHECKS PASSED (no windows opened)");
         if (args.Length == 2) Preview(args[0], args[1]);
     }
+    static void CheckLoadedImageLayout()
+    {
+        var previews = new Dictionary<string, Button>();
+        var view = new MarkdownView { AttachmentFactory = reference => previews[reference] = new Button { Content = "加载图片…" } };
+        VisualTheme.SetIsCodex(view, true);
+        view.Markdown = "图片之前\n\n![第一张](attachment:first.png)\n\n![第二张](attachment:second.png)\n\n图片之后";
+
+        const double width = 360;
+        void Layout()
+        {
+            view.Measure(new Size(width, double.PositiveInfinity));
+            view.Arrange(new Rect(0, 0, width, view.DesiredSize.Height));
+            view.UpdateLayout();
+        }
+        Layout();
+        double placeholderHeight = view.DesiredSize.Height;
+
+        Image LoadPreview(string id, double height)
+        {
+            var drawing = new GeometryDrawing(Brushes.SlateBlue, null, new RectangleGeometry(new Rect(0, 0, 176, height)));
+            var picture = new Image { Source = new DrawingImage(drawing), Stretch = Stretch.Uniform };
+            previews["attachment:" + id].Content = picture;
+            return picture;
+        }
+        var first = LoadPreview("first.png", 104);
+        Layout();
+        var second = LoadPreview("second.png", 132);
+        Layout();
+
+        Require(view.DesiredSize.Height >= placeholderHeight + 150,
+            "Codex transcript grows when two preview placeholders become images");
+        Rect Bounds(FrameworkElement element) => element.TransformToAncestor(view).TransformBounds(new Rect(element.RenderSize));
+        var firstBounds = Bounds(first);
+        var secondBounds = Bounds(second);
+        var before = view.Document.Blocks.FirstBlock!.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+        var after = view.Document.Blocks.LastBlock!.ContentStart.GetCharacterRect(LogicalDirection.Forward);
+        Require(!before.IsEmpty && !after.IsEmpty && firstBounds.Height >= 104 && secondBounds.Height >= 132 &&
+            before.Bottom <= firstBounds.Top + 1 && firstBounds.Bottom <= secondBounds.Top + 1 && secondBounds.Bottom <= after.Top + 1,
+            "asynchronously sized images do not overlap adjacent images or surrounding text");
+    }
+
     static void Preview(string repo, string output)
     {
         XNamespace w = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
