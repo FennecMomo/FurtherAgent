@@ -15,6 +15,7 @@ public record AgentIndicator(string Label, string Color)
             "waiting_for_approval" => new("等待确认", "#D97706"),
             "readOnly" => new("只读历史", "#64748B"),
             "codexStatePending" => new("执行状态待同步", "#D97706"),
+            "antigravityPending" => new("等待会话同步", "#D97706"),
             "idle" or "ready" or "completed" or "stopped" or "interrupted" => new("空闲", "#16A34A"),
             "error" or "failed" or "systemError" => new("执行异常", "#DC2626"),
             _ => new("状态未知", "#64748B")

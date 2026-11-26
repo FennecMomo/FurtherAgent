@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**0.18.0** 新增 Antigravity 桌面接入，通过原会话 ID 浏览和续发消息。[Antigravity 接入说明](docs/Antigravity-Desktop.md)
+
 **Windows 0.17.4** Mini 聊天中的图片显示为「预览图片」文字按钮，点开后在独立浮窗查看。[Mini 使用说明](docs/Compact-Desktop-Mode.md)
 
 **Windows 0.17.3** 聊天图片加载后会按预览的实际高度重新排版，避免两张图或相邻文字互相遮挡。主窗口和 Mini 共用这项修复。

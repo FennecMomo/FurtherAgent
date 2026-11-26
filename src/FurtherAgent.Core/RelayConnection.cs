@@ -250,10 +250,18 @@ public sealed class DeviceHost : IAsyncDisposable
             {
                 if (method == "attach") Interlocked.Exchange(ref attaching, null)?.TrySetResult();
             };
+            bool SupportsFiles(AgentInfo info) => info.Id is not ("dsh" or "antigravity") || info.CanFiles;
+            void RequireFileTransfers()
+            {
+                var info = adapter.Info;
+                if (!SupportsFiles(info)) throw new NotSupportedException(info.Id == "dsh"
+                    ? "当前 DSH 实例尚未开放文件传输。" : "当前 Antigravity 接入端尚未开放文件传输。");
+            }
+            bool UseHistoryPaging() => Volatile.Read(ref paged) > 0 || adapter.Info.Id is "codex" or "dsh" or "antigravity";
             SessionView WithFiles(SessionView view)
             {
                 view = OperationSummary.ForTransport(view);
-                if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) return view;
+                if (!SupportsFiles(adapter.Info)) return view;
                 try { view = ChatPresentation.IncludeFiles(view, files.Value.List(view.Id)); }
                 catch (IOException) { view = view with { StatusDetail = view.StatusDetail + " · 输出文件列表暂不可用，请打开会话文件查看。" }; }
                 return adapter.Info.Id == "codex" ? chatImages.Project(view) : view;
@@ -265,7 +273,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 if (adapter.Info.Id == "hermes" || adapter.Info.Id == "dsh" && adapter.Info.CanFiles)
                     await adapter.SetFileWorkspaceAsync(files.Value.List(id).Outbox, token);
                 historySource = view; attachedSession = view.Id;
-                return Json.Node(Volatile.Read(ref paged) > 0 || adapter.Info.Id is "codex" or "dsh" ? HistoryPaging.Latest(view, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3) : view);
+                return Json.Node(UseHistoryPaging() ? HistoryPaging.Latest(view, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3) : view);
             }
             string FileSession(JsonNode? args)
             {
@@ -275,12 +283,12 @@ public sealed class DeviceHost : IAsyncDisposable
             }
             async Task<JsonNode?> FileOperation(string method, JsonNode? args, CancellationToken token)
             {
-                if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) throw new NotSupportedException("当前 DSH 实例尚未开放文件传输。");
+                RequireFileTransfers();
                 _ = FileSession(args); return await files.Value.HandleAsync(method, args!, chatImages, token);
             }
             async Task<JsonNode?> SendFiles(JsonNode? args, CancellationToken token)
             {
-                if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) throw new NotSupportedException("当前 DSH 实例尚未开放文件传输。");
+                RequireFileTransfers();
                 string id = FileSession(args), text = args!["text"]?.ToString() ?? "";
                 if (text.Length > 100000) throw new ArgumentException("消息过长。");
                 var ids = args["files"]?.AsArray().Select(x => x!.ToString()).ToArray() ?? [];
@@ -297,7 +305,7 @@ public sealed class DeviceHost : IAsyncDisposable
                 "session-channel/open" when channels is not null => await channels.AcceptAsync(args, token),
                 "p2p/offer" when publicPeerAvailable => await AcceptPublicOffer(args, token),
                 "lan-info" => lan is null ? null : Json.Node(lan.Pairing),
-                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = adapter.Info.Id != "dsh" || adapter.Info.CanFiles, CanThumbnails = adapter.Info.Id is "hermes" or "codex" || adapter.Info.CanThumbnails } }),
+                "agents" => Json.Node(new[] { adapter.Info with { CanFiles = SupportsFiles(adapter.Info), CanThumbnails = adapter.Info.Id is "hermes" or "codex" || adapter.Info.CanThumbnails } }),
                 "sessions" => Json.Node(await adapter.ListAsync(token)),
                 "attach" => await Attach(args!["id"]!.GetValue<string>(), token),
                 "send-files" => await SendFiles(args, token),
@@ -345,7 +353,7 @@ public sealed class DeviceHost : IAsyncDisposable
                         if (mode != lastIncremental) { sync = new SessionSyncEncoder(textDeltas: mode >= 2); lastIncremental = mode; }
                         var enriched = WithFiles(view);
                         historySource = enriched;
-                        if (Volatile.Read(ref paged) > 0 || adapter.Info.Id is "codex" or "dsh") enriched = HistoryPaging.Latest(enriched, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3);
+                        if (UseHistoryPaging()) enriched = HistoryPaging.Latest(enriched, Volatile.Read(ref paged) >= 2, Volatile.Read(ref paged) >= 3);
                         var update = sync.Encode(enriched);
                         if (update is not null)
                             await peer.NotifyAsync(mode > 0 ? "session-update" : "session", mode > 0 ? (object)update : enriched);

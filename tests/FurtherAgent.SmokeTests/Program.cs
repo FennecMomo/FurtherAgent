@@ -36,6 +36,7 @@ if (args.Contains("--image-preview-checks")) { ImagePreviewChecks.Run(Check); re
 if (args.Contains("--attachment-cache-checks")) { AttachmentCacheChecks.Run(Check); return; }
 if (args.Contains("--codex-recovery-checks")) { CodexRecoveryChecks.Run(Check); return; }
 if (args.Contains("--dsh-adapter-checks")) { await DshAdapterChecks.Run(Check); Console.WriteLine($"ALL {passed} DSH CHECKS PASSED"); return; }
+if (args.Contains("--antigravity-checks")) { await AntigravityChecks.Run(Check); Console.WriteLine($"ALL {passed} ANTIGRAVITY CHECKS PASSED"); return; }
 if (args.Contains("--lan-checks")) { await LanChecks.Run(Check); Console.WriteLine($"ALL {passed} LAN CHECKS PASSED"); return; }
 if (args.Contains("--p2p-checks")) { await PublicDirectChecks.Run(Check); Console.WriteLine($"ALL {passed} PUBLIC DIRECT CHECKS PASSED"); return; }
 if (args.Contains("--codex-permission-fixture")) { Console.WriteLine(Json.Node(CodexPermissions.Values.Select(CodexPermissions.Build).ToArray()).ToJsonString()); return; }

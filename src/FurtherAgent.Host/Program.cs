@@ -6,10 +6,11 @@ if (args.Contains("--help"))
     Console.WriteLine($"""
         FurtherAgent.Host [--probe | --reset-pairing]
         固定中继 {RelayEndpoint.Address}
-        通用：FURTHERAGENT_BACKEND=hermes|dsh-desktop|dsh-background|codex、FURTHERAGENT_IDENTITY_FILE、FURTHERAGENT_NAME。
+        通用：FURTHERAGENT_BACKEND=hermes|dsh-desktop|dsh-background|codex|antigravity、FURTHERAGENT_IDENTITY_FILE、FURTHERAGENT_NAME。
         Hermes：HERMES_API_URL（默认 http://127.0.0.1:8642）、HERMES_API_KEY_FILE 或 HERMES_API_KEY。
         DSH：FURTHERAGENT_DSH_EXE（后台匹配运行时）、FURTHERAGENT_DSH_DESCRIPTOR（可选固定实例）；先运行 Install-DshBridge.ps1 安装对应模式插件。
         Codex：同一用户下的 Codex Desktop。共享实时接入使用 FURTHERAGENT_CODEX_APP_SERVER_WS_URL；可通过 Start-CodexSharedDesktop.ps1 一起启动。
+        Antigravity：通过 Install-AntigravitySidecar.ps1 配置 Antigravity 桌面 sidecar。可用 FURTHERAGENT_ANTIGRAVITY_IDENTITY_FILE 指定独立身份文件。
         --probe 读取能力和会话数量，不连接中继、不执行 Agent；DSH 后台模式会启动并退出独立运行时。退出接入端不会停止 Hermes 或 DSH 桌面；DSH 后台有运行或排队任务时拒绝关闭。
         """);
     return;
@@ -20,15 +21,31 @@ using var terminate = OperatingSystem.IsWindows() ? null : PosixSignalRegistrati
 try
 {
     string backend = Environment.GetEnvironmentVariable("FURTHERAGENT_BACKEND") ?? "hermes";
-    if (backend is not ("hermes" or "dsh-desktop" or "dsh-background" or "codex"))
-        throw new ArgumentException("FURTHERAGENT_BACKEND 必须是 hermes、dsh-desktop、dsh-background 或 codex。");
-    string defaultName = backend == "codex" ? Environment.MachineName
-        : Environment.MachineName + " · " + (backend == "hermes" ? "Hermes" : backend);
+    if (backend == "antigravity") Console.OutputEncoding = System.Text.Encoding.UTF8;
+    if (backend is not ("hermes" or "dsh-desktop" or "dsh-background" or "codex" or "antigravity"))
+        throw new ArgumentException("FURTHERAGENT_BACKEND 必须是 hermes、dsh-desktop、dsh-background、codex 或 antigravity。");
+    string defaultName = backend switch
+    {
+        "codex" => Environment.MachineName,
+        "hermes" => Environment.MachineName + " · Hermes",
+        "antigravity" => Environment.MachineName + " · Antigravity",
+        _ => Environment.MachineName + " · " + backend
+    };
+    string deviceName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName;
+    void ScopeAntigravityIdentity(string server)
+    {
+        if (backend != "antigravity") return;
+        // This Host process has a single backend. Ignore a generic identity inherited from another Host.
+        Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE",
+            Environment.GetEnvironmentVariable("FURTHERAGENT_ANTIGRAVITY_IDENTITY_FILE"));
+        string path = DeviceIdentity.DefaultPath(server, "antigravity\n" + deviceName);
+        Environment.SetEnvironmentVariable("FURTHERAGENT_IDENTITY_FILE", path);
+    }
     if (args.Contains("--reset-pairing"))
     {
         using var resetRegistry = new RegistryClient(RelayEndpoint.Address);
-        string resetName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName;
-        DeviceIdentity.Reset(DeviceIdentity.DefaultPath(resetRegistry.ServerIdentity, resetName));
+        ScopeAntigravityIdentity(resetRegistry.ServerIdentity);
+        DeviceIdentity.Reset(DeviceIdentity.DefaultPath(resetRegistry.ServerIdentity, deviceName));
         Console.WriteLine("设备身份已重置，下次启动使用新的固定配对码。请勿删除身份文件来升级软件。");
         return;
     }
@@ -43,6 +60,7 @@ try
     IAgentAdapter CreateAdapter(string? hermesState = null) => backend switch
     {
         "codex" => new CodexDesktopAdapter(),
+        "antigravity" => new AntigravityDesktopAdapter(),
         "dsh-desktop" or "dsh-background" => new DshAdapter(descriptor, followDesktopRestarts),
         _ => new HermesAdapter(Environment.GetEnvironmentVariable("HERMES_API_URL") ?? "http://127.0.0.1:8642", key, stateDirectory: hermesState)
     };
@@ -51,6 +69,7 @@ try
     {
         DshAdapter dsh => await dsh.ProbeAsync(lifetime.Token),
         HermesAdapter hermes => await hermes.ProbeAsync(lifetime.Token),
+        AntigravityDesktopAdapter antigravity => await antigravity.ProbeAsync(lifetime.Token),
         _ => null
     };
     if (backend != "codex") Console.WriteLine(adapter.Info.Name + " 能力检查通过。");
@@ -61,7 +80,7 @@ try
         return;
     }
     using var registry = new RegistryClient(RelayEndpoint.Address);
-    string deviceName = Environment.GetEnvironmentVariable("FURTHERAGENT_NAME") ?? defaultName;
+    ScopeAntigravityIdentity(registry.ServerIdentity);
     string stateDirectory = Environment.GetEnvironmentVariable("FURTHERAGENT_HERMES_STATE_ROOT")
         ?? DeviceIdentity.DefaultPath(registry.ServerIdentity, deviceName) + ".hermes-runs";
     await using var host = new DeviceHost(registry, () => CreateAdapter(stateDirectory), persistentIdentity: true);
