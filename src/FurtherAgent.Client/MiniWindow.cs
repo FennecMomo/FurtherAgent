@@ -169,7 +169,7 @@ internal sealed partial class MiniWindow : Window
         };
         scroll.PreviewMouseLeftButtonDown += (_, e) =>
         {
-            if (IsHyperlinkSource(e.OriginalSource)) return;
+            if (IsTranscriptActionSource(e.OriginalSource)) return;
             dragging = true;
             dragY = e.GetPosition(scroll).Y;
             dragOffset = scroll.VerticalOffset;
@@ -484,10 +484,15 @@ internal sealed partial class MiniWindow : Window
         ScrollToLatestAfterLayout();
     }
 
-    private static bool IsHyperlinkSource(object source)
+    private static bool IsTranscriptActionSource(object source)
     {
-        for (var item = source as FrameworkContentElement; item is not null; item = item.Parent as FrameworkContentElement)
-            if (item is Hyperlink) return true;
+        for (var item = source as DependencyObject; item is not null; item = item switch
+        {
+            FrameworkContentElement content => content.Parent,
+            Visual visual => VisualTreeHelper.GetParent(visual),
+            _ => null
+        })
+            if (item is Hyperlink or ButtonBase) return true;
         return false;
     }
 

@@ -1,5 +1,7 @@
 # FurtherAgent
 
+**Windows 0.17.4** Mini 聊天中的图片显示为「预览图片」文字按钮，点开后在独立浮窗查看。[Mini 使用说明](docs/Compact-Desktop-Mode.md)
+
 **Windows 0.17.3** 聊天图片加载后会按预览的实际高度重新排版，避免两张图或相邻文字互相遮挡。主窗口和 Mini 共用这项修复。
 
 **0.17.2 / Android 0.14.6** Codex 接入端能够预览历史回复中指向当前项目的 Markdown 图片。B 更新并重启后，Windows 0.17.1 已可显示和缓存这类图片。[文件与图片交互](docs/File-Transfer.md)
