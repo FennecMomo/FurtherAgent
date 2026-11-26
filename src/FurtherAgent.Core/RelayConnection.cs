@@ -253,7 +253,7 @@ public sealed class DeviceHost : IAsyncDisposable
             {
                 view = OperationSummary.ForTransport(view);
                 if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) return view;
-                try { return view with { OutputFiles = files.Value.List(view.Id).Files.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).ToList() }; }
+                try { return ChatPresentation.IncludeFiles(view, files.Value.List(view.Id)); }
                 catch (IOException) { return view with { StatusDetail = view.StatusDetail + " · 输出文件列表暂不可用，请打开会话文件查看。" }; }
             }
             async Task<JsonNode> Attach(string id, CancellationToken token)

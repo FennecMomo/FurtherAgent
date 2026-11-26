@@ -49,6 +49,14 @@ internal static class PublicDirectChecks
             check(Volatile.Read(ref TestAdapter.Sends) == sends + 1,
                 "a change of transport does not replay a submitted message");
 
+            var rootFiles = new FileTransferClient(peer.Peer);
+            var workspace = await rootFiles.ListAsync("test", ct);
+            byte[] image = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jP1sAAAAASUVORK5CYII=");
+            await File.WriteAllBytesAsync(Path.Combine(workspace.Outbox, "history.png"), image, ct);
+            var historicalImage = (await rootFiles.ListAsync("test", ct)).Files.Single(f => f.Name == "history.png");
+            string cacheRoot = Path.Combine(directory, "image-cache");
+            var cache = new DownloadedAttachments(cacheRoot);
+            string cacheKey = DownloadedAttachments.Key("fixture-device", "test", historicalImage);
             await using (var reconnecting = new RemoteDevice())
             {
                 await reconnecting.ConnectAsync(registry, host.Lease.Code, ct);
@@ -60,6 +68,9 @@ internal static class PublicDirectChecks
                 var restored = Json.Read<SessionView>(await reconnecting.Peer.CallAsync("attach", new { id = "test" }, ct));
                 check(reconnecting.ConnectionKind == "服务器中继" && restored.Id == "test",
                     "after direct transport loss, a new relay connection can read the previous session");
+                check(await cache.PrefetchImageAsync(reconnecting.Peer, cacheKey, "test", historicalImage, ct) is null &&
+                    cache.Find(cacheKey) is null,
+                    "history remains available but automatic original-image downloads never move to the relay");
             }
 
             string source = Path.Combine(directory, "payload.bin");
@@ -70,7 +81,6 @@ internal static class PublicDirectChecks
             await StopRelayAsync(server);
             check(peer.IsConnected && await peer.CheckConnectionAsync(ct),
                 "closing the coordination relay leaves the established direct data connection usable");
-            var rootFiles = new FileTransferClient(peer.Peer);
             var uploaded = await rootFiles.UploadAsync("test", source, ct: ct);
             await using var mini = new RemoteSessionConnection(peer, registry, host.Lease.Code);
             await mini.ConnectAsync(ct);
@@ -80,6 +90,17 @@ internal static class PublicDirectChecks
             await new FileTransferClient(mini.Peer).DownloadAsync("test", uploaded.Id, destination, ct: ct);
             check((await File.ReadAllBytesAsync(destination, ct)).AsSpan().SequenceEqual(expected),
                 "a direct connection transfers multiple full-size file chunks in both directions with the relay stopped");
+            var prefetch = cache.PrefetchImageAsync(mini.Peer, cacheKey, "test", historicalImage, ct);
+            var opening = cache.FindOrWaitAsync(cacheKey, ct);
+            var cached = await prefetch;
+            check(cached is not null && await opening == cached &&
+                (await File.ReadAllBytesAsync(cached, ct)).AsSpan().SequenceEqual(image) &&
+                new DownloadedAttachments(cacheRoot).Find(cacheKey) == cached,
+                "the direct Mini channel verifies and persists the original image, and opening shares the prefetch");
+            var stale = historicalImage with { Version = "older-version" };
+            string staleKey = DownloadedAttachments.Key("fixture-device", "test", stale);
+            check(await cache.PrefetchImageAsync(mini.Peer, staleKey, "test", stale, ct) is null && cache.Find(staleKey) is null,
+                "an image replaced after history was read does not populate an older history cache key");
         }
         finally
         {

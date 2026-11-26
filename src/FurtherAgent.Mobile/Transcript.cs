@@ -13,12 +13,17 @@ public static class Transcript
 {
     private static readonly MarkdownPipeline Pipeline = new MarkdownPipelineBuilder().UsePipeTables().DisableHtml().Build();
     private static string E(string text) => WebUtility.HtmlEncode(text);
-    private sealed class SafeLink(SessionView view) : HtmlObjectRenderer<LinkInline>
+    private sealed class SafeLink(SessionView view, ICollection<RemoteFile>? inlineImages) : HtmlObjectRenderer<LinkInline>
     {
         protected override void Write(HtmlRenderer renderer, LinkInline link)
         {
             var file = RemoteFileReferences.Resolve(view.OutputFiles, link.Url ?? "");
-            if (file is not null) { renderer.Write(AttachmentHtml(file)); return; }
+            if (file is not null)
+            {
+                if (ImageThumbnail.Supported(file.Name)) inlineImages?.Add(file);
+                renderer.Write(AttachmentHtml(file));
+                return;
+            }
             bool allowed = Uri.TryCreate(link.Url, UriKind.Absolute, out var uri) && uri.Scheme is "https" or "http" or "attachment";
             if (allowed) { renderer.Write("<a href=\""); renderer.WriteEscapeUrl(link.Url); renderer.Write("\">"); }
             renderer.WriteChildren(link);
@@ -35,12 +40,12 @@ public static class Transcript
             if (allowed) renderer.Write("</a>");
         }
     }
-    private static string MarkdownHtml(string text, SessionView view)
+    private static string MarkdownHtml(string text, SessionView view, ICollection<RemoteFile>? inlineImages)
     {
         using var writer = new StringWriter();
         var renderer = new HtmlRenderer(writer); Pipeline.Setup(renderer);
         renderer.ObjectRenderers.RemoveAll(r => r is LinkInlineRenderer or AutolinkInlineRenderer);
-        renderer.ObjectRenderers.Add(new SafeLink(view)); renderer.ObjectRenderers.Add(new SafeAutoLink());
+        renderer.ObjectRenderers.Add(new SafeLink(view, inlineImages)); renderer.ObjectRenderers.Add(new SafeAutoLink());
         renderer.Render(Markdown.Parse(text, Pipeline));
         return writer.ToString();
     }
@@ -51,7 +56,8 @@ public static class Transcript
             ? $"<a class='attachment-image' href='{E(link)}'><img data-attachment='{E(file.Id)}' data-version='{E(file.Version)}' alt='{label}' width='320' height='240'><span>{label} · 点击打开原图</span></a>"
             : $"<a href='{E(link)}'>{label}</a>";
     }
-    public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false, int conversationLimit = 32)
+    public static string Render(SessionView view, bool hasOlder = false, bool readingOlder = false, int conversationLimit = 32,
+        ICollection<RemoteFile>? inlineImages = null)
     {
         var html = new StringBuilder();
         if (hasOlder) html.Append("<p class='history'><a id='older' href='fa-history://older'>加载更早的记录</a></p>");
@@ -76,7 +82,7 @@ public static class Transcript
             string text = entry.Text.Length <= 8000 ? entry.Text : entry.Text[..8000] + "\n[长内容显示已截断，可复制原文或在电脑查看]";
             // Large tool output and compaction summaries are plain text, not Markdown trees.
             string content;
-            try { content = kind is "tool" or "reasoning" or "system" || entry.Text.Length > 8000 ? "<pre class='plain'>" + E(text) + "</pre>" : MarkdownHtml(text, view); }
+            try { content = kind is "tool" or "reasoning" or "system" || entry.Text.Length > 8000 ? "<pre class='plain'>" + E(text) + "</pre>" : MarkdownHtml(text, view, inlineImages); }
             catch (Exception) { content = "<pre class='plain'>" + E(text) + "</pre>"; }
             bool operation = kind is "tool" or "reasoning" or "system";
             if (operation && !operationGroup)
@@ -95,13 +101,14 @@ public static class Transcript
         }
         if (operationGroup) html.Append("</details></section>");
         if (readingOlder) html.Append("<p class='history'><a href='fa-history://latest'>回到最新记录</a></p>");
-        if (view.OutputFiles is { Count: > 0 })
+        var galleryFiles = view.OutputFiles?.Where(f => !f.Id.StartsWith("inbox/", StringComparison.Ordinal)).ToArray() ?? [];
+        if (galleryFiles.Length > 0)
         {
-            foreach (var picture in view.OutputFiles.Where(f => ImageThumbnail.Supported(f.Name)))
+            foreach (var picture in galleryFiles.Where(f => ImageThumbnail.Supported(f.Name)))
                 if (!html.ToString().Contains("data-attachment='" + E(picture.Id) + "'", StringComparison.Ordinal))
                     html.Append(AttachmentHtml(picture));
-            html.Append($"<aside class='files'><details id='session-files'><summary>会话文件 · {view.OutputFiles.Count} 个</summary><div class='file-list'>");
-            foreach (var file in view.OutputFiles)
+            html.Append($"<aside class='files'><details id='session-files'><summary>会话文件 · {galleryFiles.Length} 个</summary><div class='file-list'>");
+            foreach (var file in galleryFiles)
                 html.Append($"<p><a href='attachment:{Uri.EscapeDataString(file.Name)}'>{E(file.Name)} · {file.Size / 1024d:N0} KB · 下载</a></p>");
             html.Append("</div></details></aside>");
         }

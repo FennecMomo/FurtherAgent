@@ -61,7 +61,7 @@ public partial class MainWindow
         { StatusBar.Text = "该设备已经断开，请重新连接后打开会话。"; return false; }
         ActivateDevice(device);
         SaveDraft();
-        if (selectedId != completion.SessionId) ClearAttachments();
+        if (selectedId != completion.SessionId) { StopChatImagePrefetch(); ClearAttachments(); }
         selectedId = completion.SessionId; current = null; promptSignature = null;
         Composer.Text = drafts.GetValueOrDefault(selectedId, "");
         int version = ++selectionVersion; SetSessionEnabled(false);

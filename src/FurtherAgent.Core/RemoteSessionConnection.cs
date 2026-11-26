@@ -71,7 +71,7 @@ public sealed class RemoteSessionConnection(RemoteDevice owner, RegistryClient r
                         await channel.DisposeAsync();
                         throw new IOException("设备连接已更新，正在恢复会话通道。");
                     }
-                    opened = new RpcPeer(channel);
+                    opened = new RpcPeer(channel) { IsDirectRoute = physical.IsDirectRoute };
                     var sync = new SessionSyncDecoder();
                     var observed = opened;
                     opened.Notification += (method, args) =>

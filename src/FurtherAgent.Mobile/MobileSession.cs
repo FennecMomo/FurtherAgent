@@ -89,6 +89,8 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     }
     private void Notify() => Changed?.Invoke();
     private RpcPeer Peer => remote is { IsConnected: true } r ? r.Peer : throw new IOException("连接已断开，请等待恢复后再操作。");
+    public RpcPeer? ImagePeer(string sessionId) =>
+        selecting is null && selected == sessionId && remote is { IsConnected: true } owner ? owner.Peer : null;
 
     private async Task Run(Func<Task> action)
     {
@@ -295,8 +297,15 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
 
     private void SetOutputFiles(List<RemoteFile> output)
     {
-        if (View is not null) View = View with { OutputFiles = output };
-        if (latest is not null && latest.Id == View?.Id) latest = latest with { OutputFiles = output };
+        if (View is null) return;
+        var sentImages = View.OutputFiles?.Where(file => file.Id.StartsWith("inbox/", StringComparison.Ordinal)) ?? [];
+        var visibleFiles = output.Concat(sentImages).ToList();
+        View = View with { OutputFiles = visibleFiles };
+        if (latest is not null && latest.Id == View.Id && (latest.OutputFiles is null || !latest.OutputFiles.SequenceEqual(visibleFiles)))
+        {
+            latest = latest with { OutputFiles = visibleFiles };
+            if (cache is not null) _ = cache.SaveLatestAsync(cacheScope, latest);
+        }
     }
     private async Task RefreshFilesCoreAsync()
     {
@@ -312,9 +321,11 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
 
     public async Task<FileThumbnail> ThumbnailAsync(string sessionId, RemoteFile file, CancellationToken ct = default)
     {
-        var result = await new FileTransferClient(Peer).ThumbnailAsync(sessionId, file.Id, ct);
+        var peer = ImagePeer(sessionId) ?? throw new IOException("请先打开对应会话再读取图片。");
+        var result = await new FileTransferClient(peer).ThumbnailAsync(sessionId, file.Id, ct);
         if (result.MediaType != "image/jpeg" || result.Width <= 0 || result.Height <= 0 || result.Width > 320 || result.Height > 240 ||
-            result.Data.Length > (ImageThumbnail.MaxEncodedBytes + 2) / 3 * 4)
+            result.Data.Length > (ImageThumbnail.MaxEncodedBytes + 2) / 3 * 4 ||
+            !string.IsNullOrEmpty(file.Version) && result.Version != file.Version)
             throw new IOException("缩略图数据无效。");
         Convert.FromBase64String(result.Data);
         return result;

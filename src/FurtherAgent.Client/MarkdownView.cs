@@ -44,6 +44,8 @@ public sealed class MarkdownView : RichTextBox
         Padding = new Thickness(0); VerticalScrollBarVisibility = ScrollBarVisibility.Disabled;
         HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
     }
+    internal void RefreshAttachmentVisuals() => Refresh();
+
     private void Refresh()
     {
         bool codex = VisualTheme.GetIsCodex(this);

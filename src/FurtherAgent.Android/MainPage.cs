@@ -188,6 +188,17 @@ public sealed partial class MainPage : ContentPage
             else if (uri.Scheme == "attachment") await Act(async () =>
             {
                 string name = Uri.UnescapeDataString(args.Url["attachment:".Length..]);
+                var cachedFile = RemoteFileReferences.Resolve(session.View?.OutputFiles, name);
+                if (cachedFile is not null && await downloadedAttachments.FindOrWaitAsync(AttachmentKey(cachedFile)) is { } cachedImage)
+                {
+                    await OpenDownloadedFileAsync(cachedImage);
+                    return;
+                }
+                if (cachedFile is not null && cachedFile.Id.StartsWith("inbox/", StringComparison.Ordinal))
+                {
+                    await DownloadOutputAsync(cachedFile);
+                    return;
+                }
                 var output = await session.ListOutputFilesAsync();
                 var file = RemoteFileReferences.Resolve(output, name)
                     ?? throw new IOException("附件尚未生成或已移除，请稍后重试。");
@@ -285,49 +296,22 @@ public sealed partial class MainPage : ContentPage
             var renderingSession = session; bool renderingPreview = preview;
             var view = preview ? Transcript.Preview : session.View ?? new SessionView("empty", "", "", "idle", null, [], []);
             bool hasOlder = session.HasOlder, older = session.ReadingOlder;
-            string html = await Task.Run(() => Transcript.Render(view, hasOlder, older));
+            var inlineImages = new List<RemoteFile>();
+            string html = await Task.Run(() => Transcript.Render(view, hasOlder, older, inlineImages: inlineImages));
             if (!ReferenceEquals(renderingSession, session) || renderingPreview != preview || !preview && session.View is not null && !ReferenceEquals(view, session.View)) { pendingRender = true; return; }
-            if (lastHtml == html && lastSession == view.Id) { prependHistory = false; return; }
-            bool reset = lastSession != view.Id;
+            bool changed = lastHtml != html || lastSession != view.Id;
             bool prepend = prependHistory; prependHistory = false;
-            await transcript.EvaluateJavaScriptAsync($"renderTranscript({JsonSerializer.Serialize(html)}, {(reset ? "true" : "false")}, {(prepend ? "true" : "false")});");
-            lastHtml = html; lastSession = view.Id;
-            if (!preview) _ = LoadImagePreviewsAsync(renderingSession, view);
+            if (changed)
+            {
+                bool reset = lastSession != view.Id;
+                await transcript.EvaluateJavaScriptAsync($"renderTranscript({JsonSerializer.Serialize(html)}, {(reset ? "true" : "false")}, {(prepend ? "true" : "false")});");
+                lastHtml = html; lastSession = view.Id;
+            }
+            UpdateImagePreviews(renderingSession, view, inlineImages, changed);
         }
         catch (Exception ex) { status.Text = "记录显示失败，可重新选择会话：" + ex.Message; }
         finally { rendering = false; }
     }
-    private readonly Dictionary<string, string> imagePreviews = [];
-    private readonly HashSet<string> loadingImagePreviews = [];
-    private readonly SemaphoreSlim imagePreviewSlots = new(2);
-    private async Task LoadImagePreviewsAsync(MobileSession owner, SessionView view)
-    {
-        if (!ImageThumbnail.CanRequest(owner.Agent)) return;
-        string connection = activeConnection ?? "";
-        foreach (var file in (view.OutputFiles ?? []).Where(f => ImageThumbnail.Supported(f.Name)))
-        {
-            string key = DownloadedAttachments.Key(connection, view.Id, file);
-            if (!loadingImagePreviews.Add(key)) continue;
-            await imagePreviewSlots.WaitAsync();
-            try
-            {
-                if (session != owner || session.View?.Id != view.Id) return;
-                if (!imagePreviews.TryGetValue(key, out string? data))
-                {
-                    using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
-                    var thumbnail = await owner.ThumbnailAsync(view.Id, file, timeout.Token);
-                    data = "data:image/jpeg;base64," + thumbnail.Data;
-                    if (imagePreviews.Count >= 64) imagePreviews.Remove(imagePreviews.Keys.First());
-                    imagePreviews[key] = data;
-                }
-                if (session == owner && session.View?.Id == view.Id && webReady)
-                    await transcript.EvaluateJavaScriptAsync($"setAttachmentImage({JsonSerializer.Serialize(file.Id)},{JsonSerializer.Serialize(file.Version)},{JsonSerializer.Serialize(data)});");
-            }
-            catch { /* Leave the attachment clickable if the thumbnail is unavailable. */ }
-            finally { imagePreviewSlots.Release(); loadingImagePreviews.Remove(key); }
-        }
-    }
-
     public void SaveDraft()
     {
         if (!loadingDraft && draftKey.Length > 0) Preferences.Set(draftKey, composer.Text ?? "");
@@ -381,6 +365,7 @@ public sealed partial class MainPage : ContentPage
             OnChanged();
             return;
         }
+        StopImagePreviews();
         SaveDraft(); session = target; activeConnection = id; scope = id;
         preview = false; lastHtml = lastSession = ""; prependHistory = false; OnChanged();
     }
@@ -400,6 +385,7 @@ public sealed partial class MainPage : ContentPage
     public async Task SelectAsync(string id)
     {
         if (!openingCompletion) CompletionNotifications.CancelPending();
+        StopImagePreviews();
         SaveDraft(); await session.SelectAsync(id); OnChanged();
     }
     public Task PreviewAsync()
@@ -413,6 +399,7 @@ public sealed partial class MainPage : ContentPage
     {
         if (closed) { closed = false; ConnectionRuntime.Changed += OnChanged; timer.Start(); }
         suspended = false;
+        QueueRender();
         SaveDraft();
         if (connections.Entries.Count > 0) StartConnectionService();
         await ConnectionRuntime.CheckConnectionsAsync();
@@ -479,6 +466,7 @@ public sealed partial class MainPage : ContentPage
     public void Suspend()
     {
         suspended = true;
+        StopImagePreviews();
         SaveDraft();
         // Do not keep recording after Home, screen lock, or switching applications.
         voiceHeld = false; voiceDiscard = true;
@@ -585,11 +573,10 @@ public sealed partial class MainPage : ContentPage
             await DownloadOutputAsync(output[index]);
         });
     }
-    private readonly DownloadedAttachments downloadedAttachments = new(Path.Combine(FileSystem.AppDataDirectory, "downloads"));
     private async Task DownloadOutputAsync(RemoteFile file)
     {
-        string key = DownloadedAttachments.Key(activeConnection ?? "", session.View?.Id ?? "", file);
-        if (downloadedAttachments.Find(key) is { } existing)
+        string key = AttachmentKey(file);
+        if (await downloadedAttachments.FindOrWaitAsync(key) is { } existing)
         {
             await OpenDownloadedFileAsync(existing);
             return;
@@ -613,7 +600,7 @@ public sealed partial class MainPage : ContentPage
         }
         catch (OperationCanceledException) when (cancel.IsCancellationRequested)
         { status.Text = "下载已取消，未完成的文件已清理。"; return; }
-        finally { downloadCancel = null; downloadStatus = null; RefreshButtons(); }
+        finally { downloadCancel = null; downloadStatus = null; refreshImagePreviews = true; QueueRender(); RefreshButtons(); }
         status.Text = "下载完成并已校验：" + name;
         string choice = await DisplayActionSheetAsync("下载完成：" + name, "稍后", null, "打开文件", "保存或分享");
         if (choice == "打开文件") await OpenDownloadedFileAsync(path);

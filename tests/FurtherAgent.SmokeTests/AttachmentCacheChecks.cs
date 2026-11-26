@@ -24,6 +24,27 @@ internal static class AttachmentCacheChecks
             check(cache.Find(key) is null, "Changed local size is not reused");
             File.Delete(path);
             check(cache.Find(key) is null, "Deleted local attachment requires a fresh download");
+
+            string outbox = Path.Combine(root, "outbox");
+            var sent = new RemoteFile("inbox/" + new string('a', 32) + "__sent.png", "sent.png", 21, Version: "v1");
+            var unsent = new RemoteFile("inbox/" + new string('b', 32) + "__draft.png", "draft.png", 55, Version: "v1");
+            var result = new RemoteFile("outbox/result.png", "result.png", 32, Version: "v2");
+            string sentPath = Path.Combine(root, "inbox", Path.GetFileName(sent.Id));
+            string sentText = "收到这张图" + ChatPresentation.UploadFooter + Json.Node(sentPath).ToJsonString();
+            string externalText = "无关路径" + ChatPresentation.UploadFooter + Json.Node(Path.Combine(root, "elsewhere", Path.GetFileName(unsent.Id))).ToJsonString();
+            var view = new SessionView("session-a", "", "", "idle", null,
+                [new("user", sentText), new("user", externalText)], []);
+            var linked = ChatPresentation.IncludeFiles(view, new FileWorkspace(outbox, FileTransferStore.MaxFileBytes,
+                FileTransferStore.ChunkBytes, [sent, unsent, result]));
+            check(linked.OutputFiles?.Select(f => f.Id).SequenceEqual([result.Id, sent.Id]) == true &&
+                linked.Messages[0].Text == "收到这张图\n\n![图片](attachment:" + Uri.EscapeDataString(sent.Id) + ")",
+                "chat includes only verified already-sent inbox image links alongside output metadata");
+            check(linked.Messages[1].Text == externalText && view.Messages[0].Text == sentText,
+                "unrelated paths and the underlying persisted chat are left intact");
+            var sameNameOutput = result with { Id = "outbox/sent.png", Name = sent.Name };
+            check(RemoteFileReferences.Resolve([sent, sameNameOutput], "attachment:sent.png") == sameNameOutput &&
+                RemoteFileReferences.Resolve([sent, sameNameOutput], "attachment:" + Uri.EscapeDataString(sent.Id)) == sent,
+                "an existing output filename link stays compatible with explicitly addressed sent images");
         }
         finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
     }

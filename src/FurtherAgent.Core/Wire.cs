@@ -81,6 +81,7 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
     private RpcPeer? redirect;
     public bool HasPendingCalls => !pending.IsEmpty;
     public bool IsClosed => lifetime.IsCancellationRequested;
+    public bool IsDirectRoute { get; internal init; } = transport is LanTransport or PublicPeerTransport;
     internal bool SupportsTransportPing { get; set; }
     internal bool SupportsSessionChannels { get; set; }
     internal SessionChannelMultiplexer? SessionChannels { get; set; }
@@ -113,7 +114,9 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
         => CallCoreAsync(method, args, ct, responseTimeout, false);
     internal Task<JsonNode?> CallChannelAsync(string method, object? args, CancellationToken ct = default, TimeSpan? responseTimeout = null)
         => CallCoreAsync(method, args, ct, responseTimeout, true);
-    private async Task<JsonNode?> CallCoreAsync(string method, object? args, CancellationToken ct, TimeSpan? responseTimeout, bool finishPhysicalWrite)
+    internal Task<JsonNode?> CallDirectAsync(string method, object? args, CancellationToken ct)
+        => CallCoreAsync(method, args, ct, null, true, directOnly: true);
+    private async Task<JsonNode?> CallCoreAsync(string method, object? args, CancellationToken ct, TimeSpan? responseTimeout, bool finishPhysicalWrite, bool directOnly = false)
     {
         string id = Guid.NewGuid().ToString("N");
         var source = new TaskCompletionSource<JsonNode?>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -124,10 +127,11 @@ public sealed class RpcPeer(IJsonTransport transport) : IAsyncDisposable
             if (forwarded is null)
             {
                 if (lifetime.IsCancellationRequested) throw new IOException("连接已断开。");
+                if (directOnly && !IsDirectRoute) throw new IOException("图片预取需要直连。");
                 pending[id] = source;
             }
         }
-        if (forwarded is not null) return await forwarded.CallCoreAsync(method, args, ct, responseTimeout, finishPhysicalWrite);
+        if (forwarded is not null) return await forwarded.CallCoreAsync(method, args, ct, responseTimeout, finishPhysicalWrite, directOnly);
         try
         {
             await WriteAsync(Json.Node(new { id, method, args }), ct, finishPhysicalWrite);

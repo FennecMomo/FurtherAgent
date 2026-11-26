@@ -105,6 +105,7 @@ public partial class MainWindow
             {
                 if (!online) added.Recovery?.Cancel();
                 if (activeDevice != added) return;
+                if (!online) StopChatImagePrefetch();
                 RemoteStatus.Text = message; SetSessionEnabled(false); RefreshButton.IsEnabled = online;
                 StatusBar.Text = message + " 重连会恢复会话显示；不会自动重发消息或确认操作。";
             });
@@ -253,6 +254,7 @@ public partial class MainWindow
     private void ActivateDevice(DeviceContext device)
     {
         if (activeDevice == device) { CloseOverlays(); ShowConversations(); return; }
+        StopChatImagePrefetch();
         SaveActiveDevice(); CloseOverlays();
         selectionVersion++; modelSettingsGeneration++; browseVersion++;
         activeDevice = device; remote = device.Remote; remoteRegistry = device.Registry; heartbeat = device.Heartbeat; agent = device.Agent;

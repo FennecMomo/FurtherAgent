@@ -13,7 +13,7 @@ using Ellipse = System.Windows.Shapes.Ellipse;
 
 namespace FurtherAgent.Client;
 
-internal sealed class MiniWindow : Window
+internal sealed partial class MiniWindow : Window
 {
     private readonly string server, code, sessionId, positionPath;
     private readonly Func<string> readDraft;
@@ -57,11 +57,12 @@ internal sealed class MiniWindow : Window
     private sealed class TranscriptRow : DockPanel
     {
         public bool IsUser { get; }
-        public MarkdownView Body { get; } = new() { LimitLength = false, IsTabStop = false };
+        public MarkdownView Body { get; }
 
-        public TranscriptRow(bool isUser)
+        public TranscriptRow(bool isUser, Func<string, FrameworkElement?> attachmentFactory)
         {
             IsUser = isUser;
+            Body = new MarkdownView { LimitLength = false, IsTabStop = false, AttachmentFactory = attachmentFactory };
             if (isUser)
             {
                 var label = new TextBlock
@@ -102,6 +103,13 @@ internal sealed class MiniWindow : Window
     public MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
         string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade,
         RemoteDevice? sharedRemote, RegistryClient? sharedRegistry, SubmissionRecovery submissionRecovery, string deviceIdentity)
+        : this(server, code, sessionId, sessionTitle, initialView, positionPath, readDraft, writeDraft, showMain,
+            shortcutSlot, cascade, sharedRemote, sharedRegistry, submissionRecovery, deviceIdentity, null, null) { }
+
+    internal MiniWindow(string server, string code, string sessionId, string sessionTitle, SessionView initialView,
+        string positionPath, Func<string> readDraft, Action<string> writeDraft, Action showMain, int shortcutSlot, int cascade,
+        RemoteDevice? sharedRemote, RegistryClient? sharedRegistry, SubmissionRecovery submissionRecovery, string deviceIdentity,
+        DownloadedAttachments? chatImages, string? legacyImageScope)
     {
         this.server = server; this.code = code; this.sessionId = sessionId; this.positionPath = positionPath;
         this.sharedRemote = sharedRemote; this.sharedRegistry = sharedRegistry;
@@ -110,6 +118,8 @@ internal sealed class MiniWindow : Window
         this.readDraft = readDraft; this.writeDraft = writeDraft; this.showMain = showMain;
         this.submissionRecovery = submissionRecovery;
         submissionKey = (deviceIdentity, sessionId);
+        this.chatImages = chatImages;
+        this.legacyImageScope = legacyImageScope;
         view = initialView;
         ShortcutSlot = shortcutSlot;
         SetSessionTitle(sessionTitle);
@@ -453,20 +463,22 @@ internal sealed class MiniWindow : Window
     private void RenderLatestMessages()
     {
         if (collapsed || dragging || !followLatest || view is null) return;
+        bool imagesChanged = UpdateChatImageContext(view);
         int index = 0;
         foreach (var message in view.Messages.Where(HistoryPaging.IsConversation))
         {
             bool isUser = ChatPresentation.Kind(message) == "user";
             if (index == context.Children.Count)
-                context.Children.Add(new TranscriptRow(isUser));
+                context.Children.Add(new TranscriptRow(isUser, CreateChatImageVisual));
             else if (((TranscriptRow)context.Children[index]).IsUser != isUser)
             {
                 context.Children.RemoveAt(index);
-                context.Children.Insert(index, new TranscriptRow(isUser));
+                context.Children.Insert(index, new TranscriptRow(isUser, CreateChatImageVisual));
             }
             var row = (TranscriptRow)context.Children[index++];
             string markdown = ChatPresentation.Display(message).Text;
             if (row.Body.Markdown != markdown) row.Body.Markdown = markdown;
+            else if (imagesChanged && MarkdownView.AttachmentReferences(markdown).Any()) row.Body.RefreshAttachmentVisuals();
         }
         if (index < context.Children.Count) context.Children.RemoveRange(index, context.Children.Count - index);
         ScrollToLatestAfterLayout();

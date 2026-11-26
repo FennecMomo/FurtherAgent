@@ -75,11 +75,13 @@ public sealed class FileTransferStore : IDisposable
             {
                 if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) continue;
                 var info = new FileInfo(path); if (info.Length > MaxFileBytes) continue;
-                files.Add(new(area + "/" + info.Name, area == "inbox" && info.Name.Length > 34 ? info.Name[34..] : info.Name, info.Length, Version: info.Length + "-" + info.LastWriteTimeUtc.Ticks));
+                files.Add(new(area + "/" + info.Name, area == "inbox" && info.Name.Length > 34 ? info.Name[34..] : info.Name, info.Length, Version: VersionOf(info)));
                 if (files.Count > 200) throw new IOException("会话文件过多，请在接入端清理后重试。");
             }
         return new(Path.Combine(dir, "outbox"), MaxFileBytes, ChunkBytes, files);
     }
+    private static string VersionOf(FileInfo info) => info.Length + "-" + info.LastWriteTimeUtc.Ticks;
+
     private static async Task<string> Hash(string path, CancellationToken ct)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, ChunkBytes, true);
@@ -136,7 +138,7 @@ public sealed class FileTransferStore : IDisposable
         string fileId = args["id"]!.ToString(); string file = Resolve(session, fileId);
         if (method == "files/thumbnail")
         {
-            var info = new FileInfo(file); string version = info.Length + "-" + info.LastWriteTimeUtc.Ticks;
+            string version = VersionOf(new FileInfo(file));
             string cacheKey = file + "|" + version;
             if (!thumbnails.TryGetValue(cacheKey, out var thumbnail))
             {
@@ -146,7 +148,15 @@ public sealed class FileTransferStore : IDisposable
             }
             return Json.Node(thumbnail);
         }
-        if (method == "files/stat") return Json.Node(new RemoteFile(fileId, Path.GetFileName(file), new FileInfo(file).Length, await Hash(file, ct)));
+        if (method == "files/stat")
+        {
+            var info = new FileInfo(file);
+            long size = info.Length;
+            string version = VersionOf(info), hash = await Hash(file, ct);
+            info.Refresh();
+            if (VersionOf(info) != version) throw new IOException("文件已变化，请重新下载。");
+            return Json.Node(new RemoteFile(fileId, info.Name, size, hash, version));
+        }
         if (method == "files/read")
         {
             long offset = args["offset"]!.GetValue<long>(); int count = args["count"]!.GetValue<int>();
@@ -168,7 +178,7 @@ public sealed class FileTransferStore : IDisposable
     {
         var paths = ids.Take(21).Select(id => Resolve(session, id)).ToArray();
         if (paths.Length > 20) throw new ArgumentException("每条消息最多附加 20 个文件。");
-        return paths.Length == 0 ? text : text + "\n\n用户上传的文件：\n" +
+        return paths.Length == 0 ? text : text + ChatPresentation.UploadFooter +
             string.Join("\n", paths.Select(p => Json.Node(p).ToJsonString()));
     }
     public void Dispose()
@@ -213,12 +223,35 @@ public sealed class FileTransferClient(RpcPeer peer)
             throw;
         }
     }
-    public async Task<RemoteFile> DownloadAsync(string session, string id, string destination, IProgress<FileProgress>? progress = null, CancellationToken ct = default)
+    public Task<RemoteFile> DownloadAsync(string session, string id, string destination, IProgress<FileProgress>? progress = null, CancellationToken ct = default)
+        => DownloadCoreAsync(session, id, destination, progress, null, ct);
+
+    internal Task<RemoteFile> DownloadDirectImageAsync(string session, RemoteFile expected, string destination, CancellationToken ct)
+        => DownloadCoreAsync(session, expected.Id, destination, null, expected, ct);
+
+    private async Task<RemoteFile> DownloadCoreAsync(string session, string id, string destination, IProgress<FileProgress>? progress,
+        RemoteFile? expected, CancellationToken ct)
     {
+        Task<JsonNode?> CallAsync(string method, object args) => expected is null
+            ? peer.CallAsync(method, args, ct) : peer.CallDirectAsync(method, args, ct);
         string target = Path.GetFullPath(destination);
         if (File.Exists(target)) throw new IOException("目标文件已存在，请选择新名称。");
-        var info = Json.Read<RemoteFile>(await peer.CallAsync("files/stat", new { session, id }, ct));
+        var info = Json.Read<RemoteFile>(await CallAsync("files/stat", new { session, id }));
         if (info.Size < 0 || info.Size > FileTransferStore.MaxFileBytes || info.Sha256.Length != 64) throw new IOException("远端文件信息无效。");
+        if (expected is not null)
+        {
+            string version = info.Version;
+            if (expected.Version.Length > 0 && version.Length == 0)
+            {
+                // Older hosts provide the current version in files/list only.
+                var workspace = Json.Read<FileWorkspace>(await CallAsync("files/list", new { session }));
+                version = workspace.Files.FirstOrDefault(file => file.Id == id && file.Size == info.Size)?.Version ?? "";
+            }
+            if (info.Id != id || info.Size != expected.Size ||
+                expected.Version.Length > 0 && version != expected.Version ||
+                expected.Sha256.Length > 0 && !string.Equals(info.Sha256, expected.Sha256, StringComparison.OrdinalIgnoreCase))
+                throw new IOException("聊天图片已变化，请等待更新后的会话记录。");
+        }
         string part = target + "." + Guid.NewGuid().ToString("N") + ".part";
         try
         {
@@ -227,7 +260,7 @@ public sealed class FileTransferClient(RpcPeer peer)
                 using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256); long offset = 0;
                 while (offset < info.Size)
                 {
-                    var chunk = await peer.CallAsync("files/read", new { session, id, offset, count = (int)Math.Min(FileTransferStore.ChunkBytes, info.Size - offset) }, ct);
+                    var chunk = await CallAsync("files/read", new { session, id, offset, count = (int)Math.Min(FileTransferStore.ChunkBytes, info.Size - offset) });
                     string data = chunk!["data"]!.ToString();
                     if (data.Length > (FileTransferStore.ChunkBytes + 2) / 3 * 4) throw new IOException("远端分块过大。");
                     byte[] bytes = Convert.FromBase64String(data);

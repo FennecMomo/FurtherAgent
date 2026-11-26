@@ -1,3 +1,9 @@
+## 2026-11-26 直连聊天图片缓存 0.17.1 / Android 0.14.5
+
+- Windows Release 和 Android Release Compile 通过。10 项点对点检查确认 Mini 共用设备直连、原图通过校验后写入持久缓存、点击可复用进行中的下载、旧版本文件不会被误用，以及退回中继后不自动下载原图。14 项局域网回归及附件缓存、Android 聊天图片渲染、WPF 图片和 Mini 离屏检查通过。
+- 待实机测试：B 更新后，在 Windows 主窗口、Mini 和 Android 打开含用户发送图片及 Agent 输出图片的长历史，检查首屏、较早分页、点击原图和重开会话。分别验证公网点对点、局域网和退回公网中继，以及重新建立直连时续取未缓存的图片。
+- 本轮交付源码。未在已安装客户端、真实 Android 设备或 B 接入端操作。
+
 ## 2026-11-23 Codex 接入端和桌面 0.17.0 / Android 0.14.4
 
 - Windows 共享模式让 Codex Desktop 和 FurtherAgent 加入同一个本机 App Server。新接入路径可以订阅原会话的增量、活动轮次、完成和原生审批，支持向当前轮追加、停止、回答问题以及会话设置。旧版 IPC 和普通启动时的原生队列继续提供兼容。启用方式见 [共享 App Server](Codex-Shared-App-Server.md)。

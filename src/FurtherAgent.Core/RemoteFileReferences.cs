@@ -17,8 +17,11 @@ public static class RemoteFileReferences
         var entries = files.ToArray();
         var exact = entries.FirstOrDefault(f => f.Id == value);
         if (exact is not null) return exact;
+        if (value.StartsWith("inbox/", StringComparison.Ordinal)) return null;
         string name = value.Split('/')[^1];
-        var matches = entries.Where(f => f.Name == name || f.Id.Split('/')[^1] == name).Take(2).ToArray();
+        var matches = entries.Where(f => f.Name == name || f.Id.Split('/')[^1] == name).ToArray();
+        var outputs = matches.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).Take(2).ToArray();
+        if (outputs.Length > 0) return outputs.Length == 1 ? outputs[0] : null;
         return matches.Length == 1 ? matches[0] : null;
     }
 }
