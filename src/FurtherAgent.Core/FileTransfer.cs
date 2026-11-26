@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 namespace FurtherAgent.Core;
 
 public record RemoteFile(string Id, string Name, long Size, string Sha256 = "", string Version = "")
-{ public string DisplayName => $"{(Id.StartsWith("outbox/", StringComparison.Ordinal) ? "Agent 输出" : "上传文件")} · {Name} · {Size:N0} bytes"; }
+{ public string DisplayName => $"{(Id.StartsWith("inbox/", StringComparison.Ordinal) ? "上传文件" : "Agent 输出")} · {Name} · {Size:N0} bytes"; }
 public record FileWorkspace(string Outbox, long MaxFileBytes, int ChunkBytes, List<RemoteFile> Files);
 public record FileProgress(long Completed, long Total);
 
@@ -56,7 +56,10 @@ public sealed class FileTransferStore : IDisposable
     {
         var parts = id.Split('/');
         if (parts.Length != 2 || parts[0] is not ("inbox" or "outbox")) throw new ArgumentException("无效文件 ID。");
-        string path = Path.Combine(Workspace(session), parts[0], FileName(parts[1]));
+        return ValidateReadableFile(Path.Combine(Workspace(session), parts[0], FileName(parts[1])));
+    }
+    private static string ValidateReadableFile(string path)
+    {
         NoLink(path);
         if (new FileInfo(path).Length > MaxFileBytes) throw new IOException("文件超过 100 MiB 上限。");
         return path;
@@ -80,20 +83,22 @@ public sealed class FileTransferStore : IDisposable
             }
         return new(Path.Combine(dir, "outbox"), MaxFileBytes, ChunkBytes, files);
     }
-    private static string VersionOf(FileInfo info) => info.Length + "-" + info.LastWriteTimeUtc.Ticks;
+    internal static string VersionOf(FileInfo info) => info.Length + "-" + info.LastWriteTimeUtc.Ticks;
 
     private static async Task<string> Hash(string path, CancellationToken ct)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, ChunkBytes, true);
         return Convert.ToHexString(await SHA256.HashDataAsync(stream, ct));
     }
-    public async Task<JsonNode> HandleAsync(string method, JsonNode args, CancellationToken ct)
+    public Task<JsonNode> HandleAsync(string method, JsonNode args, CancellationToken ct) => HandleAsync(method, args, null, ct);
+
+    internal async Task<JsonNode> HandleAsync(string method, JsonNode args, ChatImageFiles? chatImages, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
-        try { return await HandleCoreAsync(method, args, ct); }
+        try { return await HandleCoreAsync(method, args, chatImages, ct); }
         finally { gate.Release(); }
     }
-    private async Task<JsonNode> HandleCoreAsync(string method, JsonNode args, CancellationToken ct)
+    private async Task<JsonNode> HandleCoreAsync(string method, JsonNode args, ChatImageFiles? chatImages, CancellationToken ct)
     {
         foreach (var stale in uploads.Where(p => p.Value.UpdatedAt < DateTime.UtcNow.AddHours(-1)).ToArray())
         {
@@ -135,7 +140,10 @@ public sealed class FileTransferStore : IDisposable
             File.Move(upload.Part, upload.Target, false); uploads.Remove(id);
             return Json.Node(new RemoteFile("inbox/" + Path.GetFileName(upload.Target), upload.Name, upload.Size, upload.Hash));
         }
-        string fileId = args["id"]!.ToString(); string file = Resolve(session, fileId);
+        string fileId = args["id"]!.ToString();
+        string file = (method is "files/thumbnail" or "files/stat" or "files/read") && fileId.StartsWith("image/", StringComparison.Ordinal)
+            ? ValidateReadableFile(chatImages?.Resolve(session, fileId) ?? throw new IOException("该图片不属于当前会话或已不可用。"))
+            : Resolve(session, fileId);
         if (method == "files/thumbnail")
         {
             string version = VersionOf(new FileInfo(file));

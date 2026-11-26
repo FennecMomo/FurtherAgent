@@ -1,3 +1,9 @@
+## 2026-11-26 Codex 项目截图历史预览 0.17.2 / Android 0.14.6
+
+- 截图中的 DesktopMaid 回复已经使用 Markdown 图片语法，引用位于 B 项目目录的 `/D:/…/catalog-*.png`。0.17.1 的客户端预取只处理已登记的图片。新版 B 先登记会话工作区中的这些图片，再输出历史分页，保留原始 Codex 记录。
+- Windows Release 与 Android Release Compile 通过。隔离测试用真实 PNG 模拟 `/盘符:/项目/截图.png`，验证了旧页解析、附件版本和原图字节一致、Android 正文预览、WPF 附件渲染和已有缓存行为。
+- 待实机验证：B 跑起 0.17.2 后，Windows 0.17.1 重新打开 Codex-Home 的 DesktopMaid「主开发」，确认两张历史截图显示在对应位置，直连重复打开复用缓存。Android 0.14.6 现场翻页和手动点开仍待测试。
+
 ## 2026-11-26 直连聊天图片缓存 0.17.1 / Android 0.14.5
 
 - Windows Release 和 Android Release Compile 通过。10 项点对点检查确认 Mini 共用设备直连、原图通过校验后写入持久缓存、点击可复用进行中的下载、旧版本文件不会被误用，以及退回中继后不自动下载原图。14 项局域网回归及附件缓存、Android 聊天图片渲染、WPF 图片和 Mini 离屏检查通过。

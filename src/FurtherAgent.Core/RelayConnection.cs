@@ -244,6 +244,7 @@ public sealed class DeviceHost : IAsyncDisposable
             adapter.Changed += view => updates.Writer.TryWrite(view);
             adapter.Faulted += message => { Status?.Invoke(message); socket.Abort(); };
             string? attachedSession = null;
+            var chatImages = new ChatImageFiles();
             TaskCompletionSource? attaching = null;
             peer.ResponseSent += method =>
             {
@@ -253,8 +254,9 @@ public sealed class DeviceHost : IAsyncDisposable
             {
                 view = OperationSummary.ForTransport(view);
                 if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) return view;
-                try { return ChatPresentation.IncludeFiles(view, files.Value.List(view.Id)); }
-                catch (IOException) { return view with { StatusDetail = view.StatusDetail + " · 输出文件列表暂不可用，请打开会话文件查看。" }; }
+                try { view = ChatPresentation.IncludeFiles(view, files.Value.List(view.Id)); }
+                catch (IOException) { view = view with { StatusDetail = view.StatusDetail + " · 输出文件列表暂不可用，请打开会话文件查看。" }; }
+                return adapter.Info.Id == "codex" ? chatImages.Project(view) : view;
             }
             async Task<JsonNode> Attach(string id, CancellationToken token)
             {
@@ -274,7 +276,7 @@ public sealed class DeviceHost : IAsyncDisposable
             async Task<JsonNode?> FileOperation(string method, JsonNode? args, CancellationToken token)
             {
                 if (adapter.Info.Id == "dsh" && !adapter.Info.CanFiles) throw new NotSupportedException("当前 DSH 实例尚未开放文件传输。");
-                _ = FileSession(args); return await files.Value.HandleAsync(method, args!, token);
+                _ = FileSession(args); return await files.Value.HandleAsync(method, args!, chatImages, token);
             }
             async Task<JsonNode?> SendFiles(JsonNode? args, CancellationToken token)
             {

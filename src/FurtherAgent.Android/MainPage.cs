@@ -194,7 +194,7 @@ public sealed partial class MainPage : ContentPage
                     await OpenDownloadedFileAsync(cachedImage);
                     return;
                 }
-                if (cachedFile is not null && cachedFile.Id.StartsWith("inbox/", StringComparison.Ordinal))
+                if (cachedFile is not null && !cachedFile.Id.StartsWith("outbox/", StringComparison.Ordinal))
                 {
                     await DownloadOutputAsync(cachedFile);
                     return;

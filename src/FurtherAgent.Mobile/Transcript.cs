@@ -101,7 +101,7 @@ public static class Transcript
         }
         if (operationGroup) html.Append("</details></section>");
         if (readingOlder) html.Append("<p class='history'><a href='fa-history://latest'>回到最新记录</a></p>");
-        var galleryFiles = view.OutputFiles?.Where(f => !f.Id.StartsWith("inbox/", StringComparison.Ordinal)).ToArray() ?? [];
+        var galleryFiles = view.OutputFiles?.Where(f => f.Id.StartsWith("outbox/", StringComparison.Ordinal)).ToArray() ?? [];
         if (galleryFiles.Length > 0)
         {
             foreach (var picture in galleryFiles.Where(f => ImageThumbnail.Supported(f.Name)))

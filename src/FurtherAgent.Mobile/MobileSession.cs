@@ -298,8 +298,8 @@ public sealed class MobileSession(Action<Action> dispatch, HistoryCache? cache =
     private void SetOutputFiles(List<RemoteFile> output)
     {
         if (View is null) return;
-        var sentImages = View.OutputFiles?.Where(file => file.Id.StartsWith("inbox/", StringComparison.Ordinal)) ?? [];
-        var visibleFiles = output.Concat(sentImages).ToList();
+        var inlineFiles = View.OutputFiles?.Where(file => !file.Id.StartsWith("outbox/", StringComparison.Ordinal)) ?? [];
+        var visibleFiles = output.Concat(inlineFiles).ToList();
         View = View with { OutputFiles = visibleFiles };
         if (latest is not null && latest.Id == View.Id && (latest.OutputFiles is null || !latest.OutputFiles.SequenceEqual(visibleFiles)))
         {

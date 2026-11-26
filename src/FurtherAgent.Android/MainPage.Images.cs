@@ -48,7 +48,7 @@ public sealed partial class MainPage
         HashSet<string> inlineIds, string connection, CancellationToken ct)
     {
         foreach (var file in (view.OutputFiles ?? [])
-            .Where(file => ImageThumbnail.Supported(file.Name) && (!file.Id.StartsWith("inbox/", StringComparison.Ordinal) || inlineIds.Contains(file.Id)))
+            .Where(file => ImageThumbnail.Supported(file.Name) && (file.Id.StartsWith("outbox/", StringComparison.Ordinal) || inlineIds.Contains(file.Id)))
             .OrderByDescending(file => inlineIds.Contains(file.Id)))
         {
             if (ct.IsCancellationRequested) return;
